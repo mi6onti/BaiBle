@@ -136,7 +136,10 @@ async function callClaude(user, maxTokens=600, attempt=0) {
   try {
     res = await fetch(CLAUDE_PROXY, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+      },
       body: JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:maxTokens, messages:[{role:"user",content:`${JSON_SYS}\n\n${user}`}] }),
     });
   } catch(e) {
