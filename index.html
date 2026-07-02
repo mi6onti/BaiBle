@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aperture</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    body { background: #1c1917; margin: 0; }
+    .font-display { font-family: 'Space Grotesk', sans-serif; }
+    .font-read    { font-family: 'Source Serif 4', Georgia, serif; }
+    .font-mono-cal{ font-family: 'JetBrains Mono', monospace; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+/* ------------------------------------------------------------------ */
+/* Icons (inline SVG to avoid lucide dependency)                       */
+/* ------------------------------------------------------------------ */
+const Icon = ({ d, size = 16 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d={d} />
+  </svg>
+);
+const ApertureIcon = ({ size }) => (
+  <svg width={size||20} height={size||20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="14.31" y1="8" x2="20.05" y2="17.94"/><line x1="9.69" y1="8" x2="21.17" y2="8"/><line x1="7.38" y1="12" x2="13.12" y2="2.06"/><line x1="9.69" y1="16" x2="3.95" y2="6.06"/><line x1="14.31" y1="16" x2="2.83" y2="16"/><line x1="16.62" y1="12" x2="10.88" y2="21.94"/>
+  </svg>
+);
+const ChevronLeft  = ({ size }) => <Icon size={size||16} d="M15 18l-6-6 6-6" />;
+const ChevronRight = ({ size }) => <Icon size={size||16} d="M9 18l6-6-6-6" />;
+const Sparkles     = ({ size }) => <Icon size={size||16} d="M12 3l1.88 5.76L20 10l-6.12 1.24L12 17l-1.88-5.76L4 10l6.12-1.24z" />;
+const Loader2      = ({ size, className }) => (
+  <svg width={size||16} height={size||16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+  </svg>
+);
+
+/* ------------------------------------------------------------------ */
+/* Config                                                              */
+/* ------------------------------------------------------------------ */
+const SUPABASE_URL  = "https://ochtxuziiblkpcrphrmx.supabase.co";
+const SUPABASE_KEY  = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
+const CLAUDE_PROXY  = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
+const JSON_SYS      = "You return ONLY valid JSON. No markdown fences, no preamble, no commentary, no trailing text.";
+
+let USE_LOCAL = (() => {
+  try { return localStorage.getItem("aperture:_mode") === "local"; } catch { return false; }
+})();
+
+const LEVELS = [
+  { level: 1, label: "Аналогия",   hint: "everyday comparison" },
+  { level: 2, label: "Пример",     hint: "concrete scenario" },
+  { level: 3, label: "Механика",   hint: "how it works" },
+  { level: 4, label: "Дефиниция",  hint: "formal terms" },
+  { level: 5, label: "Дълбочина",  hint: "expert nuance" },
+];
+
+const PERSONALITIES = [
+  { code: "O", name: "Любопитни",     hint: "Creative, curious — love metaphors and big-picture thinking" },
+  { code: "C", name: "Методични",     hint: "Organized, disciplined — prefer structure, steps and clear rules" },
+  { code: "E", name: "Комуникативни", hint: "Social, expressive — learn through stories and real interactions" },
+  { code: "A", name: "Съпричастни",   hint: "Cooperative, empathetic — respond well to human context" },
+  { code: "N", name: "Аналитични",    hint: "Precise, critical — want edge cases, caveats and full accuracy" },
+];
+
+/* ------------------------------------------------------------------ */
+/* Storage                                                             */
+/* ------------------------------------------------------------------ */
+async function loadJSON(key, fallback) {
+  if (USE_LOCAL) {
+    try { const r = localStorage.getItem("aperture:" + key); return r ? JSON.parse(r) : fallback; }
+    catch { return fallback; }
+  }
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    );
+    if (!res.ok) throw new Error(`${res.status}`);
+    const rows = await res.json();
+    return rows.length > 0 ? rows[0].value : fallback;
+  } catch { return fallback; }
+}
+
+async function saveJSON(key, value) {
+  if (USE_LOCAL) {
+    try { localStorage.setItem("aperture:" + key, JSON.stringify(value)); return { ok: true }; }
+    catch (e) { return { ok: false, detail: e.message }; }
+  }
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store?on_conflict=key`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify({ key, value }),
+    });
+    if (!res.ok) { const b = await res.text(); return { ok: false, detail: `${res.status}: ${b.slice(0,200)}` }; }
+    return { ok: true };
+  } catch (e) { return { ok: false, detail: `${e.name}: ${e.message}` }; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+function slugify(s) {
+  const base = (s||"").toLowerCase().trim().replace(/[^a-z0-9а-я]+/gi,"-").replace(/(^-|-$)/g,"").slice(0,40);
+  return base || "x"+Math.random().toString(36).slice(2,7);
+}
+function topPreferred(scoreMap, fallbackKey) {
+  const e = Object.entries(scoreMap||{});
+  if (!e.length) return fallbackKey;
+  e.sort((a,b)=>b[1]-a[1]);
+  return e[0][1]>0 ? e[0][0] : fallbackKey;
+}
+function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
+
+/* ------------------------------------------------------------------ */
+/* Claude API                                                          */
+/* ------------------------------------------------------------------ */
+async function callClaude(user, maxTokens=600, attempt=0) {
+  let res;
+  try {
+    res = await fetch(CLAUDE_PROXY, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:maxTokens, messages:[{role:"user",content:`${JSON_SYS}\n\n${user}`}] }),
+    });
+  } catch(e) {
+    if (attempt<3) { await sleep(700*(attempt+1)); return callClaude(user,maxTokens,attempt+1); }
+    throw new Error(`[fetch] ${e.message}`);
+  }
+  if (res.status===429 && attempt<3) { await sleep(1500*(attempt+1)); return callClaude(user,maxTokens,attempt+1); }
+  let data;
+  try { data = await res.json(); }
+  catch(e) {
+    if (attempt<3) { await sleep(700*(attempt+1)); return callClaude(user,maxTokens,attempt+1); }
+    throw new Error(`[parse] ${e.message}`);
+  }
+  if (!res.ok) throw new Error(`[http] ${res.status}: ${JSON.stringify(data).slice(0,150)}`);
+  if (!data?.content) throw new Error(`[shape] ${JSON.stringify(data).slice(0,150)}`);
+  const text = data.content.map(b=>b.text||"").join("\n");
+  let clean = text.replace(/```json/gi,"").replace(/```/g,"").trim();
+  const fi=clean.indexOf("{"), la=clean.lastIndexOf("}");
+  if (fi!==-1&&la>fi) clean=clean.slice(fi,la+1);
+  try { return JSON.parse(clean); }
+  catch(e) { throw new Error(`[json] ${e.message} | raw=${text.slice(0,100)}`); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Generation                                                          */
+/* ------------------------------------------------------------------ */
+async function genHierarchy(topic) {
+  const d = await callClaude(`Design a self-study curriculum for "${topic}". List 4-6 subtopics in learning order, under 5 words each, no numbering. Match language of topic. Never use " inside text.\nReturn: {"names":["..."]}`, 500);
+  const names = d.names||[];
+  const subtopics = [];
+  for (const name of names) {
+    const s = await callClaude(`Topic: "${topic}" > "${name}". List 3-4 sub-subtopics, under 6 words each. Match language. Never use " inside.\nReturn: {"subsubtopics":["..."]}`, 400);
+    subtopics.push({ name, subsubtopics: s.subsubtopics||[] });
+  }
+  return subtopics;
+}
+async function genAbstraction(topic, sub, subsub) {
+  const levels = [];
+  for (const m of LEVELS) {
+    const d = await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`, 600);
+    levels.push({ level:m.level, text:d.text||"" });
+  }
+  return levels;
+}
+async function genAllPersonalities(topic, sub, subsub) {
+  const results = [];
+  for (const p of PERSONALITIES) {
+    const d = await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`, 600);
+    results.push({ code:p.code, text:d.text||"" });
+  }
+  return results;
+}
+async function genBlend(topic, sub, subsub, level, code) {
+  const lvl = LEVELS.find(l=>l.level===level);
+  const per = PERSONALITIES.find(p=>p.code===code);
+  const d = await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) blending level "${lvl?.label}" (${lvl?.hint}) with framing for a "${per?.name}" learner (${per?.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`, 800);
+  return d.text||"";
+}
+async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
+  const rated=[], confused=[];
+  for (const [key,nd] of Object.entries(nodeDataMap)) {
+    const unit=key.split("/").slice(1).join(" › ");
+    if ((nd.tunedAbstraction?.length||0)+(nd.tunedPersonality?.length||0)+(nd.tunedBlendKey?1:0)>0) rated.push(unit);
+    if (nd.unitConfused) confused.push(unit);
+  }
+  const topLvl = LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
+  const topPer = PERSONALITIES.find(p=>p.code===topPreferred(prefs.personality,null))?.name;
+  const d = await callClaude(
+    `Learner studying "${topic}". Subtopics: ${hierarchy.map(s=>s.name).join(", ")}.
+Rated as helpful: ${rated.join(", ")||"none yet"}.
+Marked as completely unclear: ${confused.join(", ")||"none"}.
+Preferred style: level "${topLvl||"unknown"}", channel "${topPer||"unknown"}".
+Write 120-180 words in Bulgarian. Three sections:
+1 Какво знаеш
+2 Какво липсва — include unclear units and missing foundational knowledge
+3 Следваща стъпка — one concrete next thing
+Never use " inside.\nReturn: {"knows":"...","missing":"...","next":"..."}`, 800);
+  return d;
+}
+
+/* ------------------------------------------------------------------ */
+/* Small UI                                                            */
+/* ------------------------------------------------------------------ */
+function Spinner({label}) {
+  return <div className="flex items-center gap-2 text-stone-400 text-sm py-6 justify-center">
+    <Loader2 size={16} className="animate-spin" /><span className="font-mono-cal">{label}</span>
+  </div>;
+}
+function ErrorNote({message, onRetry}) {
+  return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3">
+    <span className="break-all">{message}</span>
+    {onRetry && <button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}
+  </div>;
+}
+function TuneButton({tuned, onClick}) {
+  return <button onClick={onClick} disabled={tuned}
+    className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>
+    {tuned?"Харесва ✓":"Харесвам"}
+  </button>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Main App                                                            */
+/* ------------------------------------------------------------------ */
+function Aperture() {
+  const [booting, setBooting]           = useState(true);
+  const [storageMode, setStorageMode]   = useState(()=>{ try{return localStorage.getItem("aperture:_mode")==="local"?"local":"supabase";}catch{return"local";} });
+  const [topics, setTopics]             = useState([]);
+  const [prefs, setPrefs]               = useState({abstraction:{},personality:{}});
+  const [topicInput, setTopicInput]     = useState("");
+  const [currentTopic, setCurrentTopic] = useState(null);
+  const [hierarchy, setHierarchy]       = useState(null);
+  const [loadingHierarchy, setLoadingH] = useState(false);
+  const [homeError, setHomeError]       = useState(null);
+  const [subtopicIdx, setSubtopicIdx]   = useState(null);
+  const [subsubIdx, setSubsubIdx]       = useState(null);
+  const [nodeId, setNodeId]             = useState(null);
+  const [nodeData, setNodeData]         = useState(null);
+  const [tab, setTab]                   = useState("levels");
+  const [loadingLevels, setLoadingL]    = useState(false);
+  const [loadingChannels, setLoadingC]  = useState(false);
+  const [loadingBlend, setLoadingB]     = useState(false);
+  const [nodeError, setNodeError]       = useState(null);
+  const [levelCheck, setLevelCheck]     = useState(null);
+  const [loadingLC, setLoadingLC]       = useState(false);
+  const [lcError, setLcError]           = useState(null);
+  const [dbTest, setDbTest]             = useState(null);
+  const [dbTesting, setDbTesting]       = useState(false);
+
+  const canBlend = Object.keys(prefs.abstraction||{}).length>0 && Object.keys(prefs.personality||{}).length>0;
+  const topLevel = topPreferred(prefs.abstraction, null);
+
+  useEffect(()=>{
+    if (!booting) return;
+    (async()=>{
+      const t = await loadJSON("topics",[]);
+      const p = await loadJSON("prefs",{abstraction:{},personality:{}});
+      setTopics(t); setPrefs(p); setBooting(false);
+    })();
+  },[booting]);
+
+  function toggleStorage() {
+    const next = storageMode==="supabase"?"local":"supabase";
+    USE_LOCAL = next==="local";
+    try{localStorage.setItem("aperture:_mode",next);}catch{}
+    setStorageMode(next);
+    setTopics([]); setPrefs({abstraction:{},personality:{}});
+    setCurrentTopic(null); setHierarchy(null);
+    setSubtopicIdx(null); setSubsubIdx(null);
+    setNodeId(null); setNodeData(null); setBooting(true);
+  }
+
+  function goHome() {
+    setCurrentTopic(null); setHierarchy(null);
+    setSubtopicIdx(null); setSubsubIdx(null);
+    setNodeId(null); setNodeData(null); setLevelCheck(null);
+  }
+
+  async function testSupabase() {
+    setDbTesting(true); setDbTest(null);
+    const wasLocal = USE_LOCAL; USE_LOCAL = false;
+    try {
+      const r = await saveJSON("_conntest",{ping:Date.now()});
+      if (!r.ok) { setDbTest(`❌ Запис: ${r.detail}`); return; }
+      const rb = await loadJSON("_conntest",null);
+      setDbTest(rb ? `✅ Supabase работи!` : `⚠️ Запис мина, четене върна: ${JSON.stringify(rb)}`);
+    } catch(e) { setDbTest(`❌ ${e.message}`); }
+    finally { USE_LOCAL=wasLocal; setDbTesting(false); }
+  }
+
+  async function startTopic(title) {
+    const trimmed = title.trim(); if (!trimmed) return;
+    const id = slugify(trimmed);
+    setHomeError(null); setHierarchy(null);
+    setSubtopicIdx(null); setSubsubIdx(null);
+    setNodeId(null); setNodeData(null); setLevelCheck(null); setTopicInput("");
+    let existing = topics.find(t=>t.id===id);
+    if (!existing) {
+      existing = {id, title:trimmed, createdAt:Date.now()};
+      const next = [existing,...topics];
+      setTopics(next); await saveJSON("topics",next);
+    }
+    setCurrentTopic(existing);
+    const cached = await loadJSON(`hierarchy:${id}`,null);
+    if (cached) { setHierarchy(cached.subtopics); return; }
+    setLoadingH(true);
+    try {
+      const subtopics = await genHierarchy(trimmed);
+      setHierarchy(subtopics);
+      await saveJSON(`hierarchy:${id}`,{title:trimmed,subtopics});
+    } catch(e) { setHomeError(`Грешка: ${e.message}`); }
+    finally { setLoadingH(false); }
+  }
+
+  async function openNode(subIdx, ssIdx) {
+    setSubtopicIdx(subIdx); setSubsubIdx(ssIdx);
+    setTab("levels"); setNodeError(null);
+    const sub = hierarchy[subIdx].name;
+    const subsub = hierarchy[subIdx].subsubtopics[ssIdx];
+    const id = `${currentTopic.id}/${slugify(sub)}/${slugify(subsub)}`;
+    setNodeId(id);
+    const EMPTY = {abstraction:[],personality:[],blend:null,tunedAbstraction:[],tunedPersonality:[],tunedBlendKey:null,unitConfused:false};
+    const cached = await loadJSON(`node:${id}`,EMPTY);
+    setNodeData(cached);
+    if (!cached.abstraction?.length) doLoadLevels(id,sub,subsub,cached);
+  }
+
+  async function doLoadLevels(id,sub,subsub,base) {
+    setLoadingL(true); setNodeError(null);
+    try {
+      const abstraction = await genAbstraction(currentTopic.title,sub,subsub);
+      const updated = {...base,abstraction};
+      setNodeData(updated);
+      const r = await saveJSON(`node:${id}`,updated);
+      if (!r.ok) setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    } catch(e) { setNodeError(`Грешка: ${e.message}`); }
+    finally { setLoadingL(false); }
+  }
+
+  async function doLoadChannels(id,sub,subsub) {
+    setLoadingC(true); setNodeError(null);
+    try {
+      const personality = await genAllPersonalities(currentTopic.title,sub,subsub);
+      setNodeData(prev=>{
+        const u={...prev,personality};
+        saveJSON(`node:${id}`,u).then(r=>{ if(!r.ok) setNodeError(`Канали не са запазени: ${r.detail}`); });
+        return u;
+      });
+    } catch(e) { setNodeError(`Грешка: ${e.message}`); }
+    finally { setLoadingC(false); }
+  }
+
+  function switchTab(next) {
+    setTab(next); setNodeError(null);
+    if (!nodeData||!currentTopic||!hierarchy) return;
+    const sub=hierarchy[subtopicIdx].name, subsub=hierarchy[subtopicIdx].subsubtopics[subsubIdx];
+    if (next==="channels"&&!nodeData.personality?.length&&!loadingChannels) doLoadChannels(nodeId,sub,subsub);
+    if (next==="blend"&&!nodeData.blend&&!loadingBlend&&canBlend) doGenBlend(nodeId,sub,subsub);
+  }
+
+  async function doGenBlend(id,sub,subsub) {
+    const level=Number(topPreferred(prefs.abstraction,3));
+    const code=topPreferred(prefs.personality,"O");
+    setLoadingB(true); setNodeError(null);
+    try {
+      const text = await genBlend(currentTopic.title,sub,subsub,level,code);
+      setNodeData(prev=>{
+        const u={...prev,blend:{text,level,code},tunedBlendKey:null};
+        saveJSON(`node:${id}`,u).then(r=>{ if(!r.ok) setNodeError(`Микс не е запазен: ${r.detail}`); });
+        return u;
+      });
+    } catch(e) { setNodeError(`Грешка: ${e.message}`); }
+    finally { setLoadingB(false); }
+  }
+
+  async function tune(type, key) {
+    if (!nodeData) return;
+    const field=type==="abstraction"?"tunedAbstraction":"tunedPersonality";
+    if (nodeData[field]?.includes(key)) return;
+    const updNode={...nodeData,[field]:[...(nodeData[field]||[]),key]};
+    const updPrefs={...prefs,[type]:{...prefs[type],[key]:(prefs[type]?.[key]||0)+1}};
+    setNodeData(updNode); setPrefs(updPrefs);
+    await saveJSON(`node:${nodeId}`,updNode);
+    await saveJSON("prefs",updPrefs);
+  }
+
+  async function tuneBlend() {
+    if (!nodeData?.blend||nodeData.tunedBlendKey) return;
+    const {level,code}=nodeData.blend;
+    const updNode={...nodeData,tunedBlendKey:`${level}-${code}`};
+    const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1},personality:{...prefs.personality,[code]:(prefs.personality?.[code]||0)+1}};
+    setNodeData(updNode); setPrefs(updPrefs);
+    await saveJSON(`node:${nodeId}`,updNode);
+    await saveJSON("prefs",updPrefs);
+  }
+
+  async function markUnitConfused() {
+    if (!nodeData||nodeData.unitConfused) return;
+    const u={...nodeData,unitConfused:true};
+    setNodeData(u); await saveJSON(`node:${nodeId}`,u);
+  }
+  async function unmarkUnitConfused() {
+    if (!nodeData||!nodeData.unitConfused) return;
+    const u={...nodeData,unitConfused:false};
+    setNodeData(u); await saveJSON(`node:${nodeId}`,u);
+  }
+
+  async function runLevelCheck() {
+    setLoadingLC(true); setLcError(null); setLevelCheck(null);
+    try {
+      const nodeMap={};
+      for (const sub of hierarchy) {
+        for (const subsub of sub.subsubtopics) {
+          const id=`${currentTopic.id}/${slugify(sub.name)}/${slugify(subsub)}`;
+          const nd=await loadJSON(`node:${id}`,null);
+          if (nd) nodeMap[id]=nd;
+        }
+      }
+      setLevelCheck(await genLevelCheck(currentTopic.title,hierarchy,prefs,nodeMap));
+    } catch(e) { setLcError(`Грешка: ${e.message}`); }
+    finally { setLoadingLC(false); }
+  }
+
+  /* render */
+  return (
+    <div className="min-h-screen bg-stone-950 text-stone-200">
+      <header className="border-b border-stone-800 px-4 py-3 flex items-center justify-between">
+        <button onClick={goHome} className="flex items-center gap-2 group">
+          <span className="text-amber-500"><ApertureIcon size={20} /></span>
+          <span className="font-display font-bold text-lg text-stone-100">Aperture</span>
+          {currentTopic && <span className="font-mono-cal text-xs text-stone-500">/ {currentTopic.title}</span>}
+        </button>
+        <button onClick={toggleStorage}
+          className={`font-mono-cal text-xs uppercase tracking-wide px-2 py-1 rounded border transition-colors ${storageMode==="supabase"?"border-emerald-800 text-emerald-500 bg-emerald-950/30":"border-amber-800 text-amber-500 bg-amber-950/30"}`}>
+          {storageMode==="supabase"?"☁ Supabase":"📱 Local"}
+        </button>
+      </header>
+      <main className="max-w-2xl mx-auto px-4 py-8">
+        {booting ? <Spinner label="зареждам…" />
+          : !currentTopic ? (
+            <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
+              onStart={()=>startTopic(topicInput)} topics={topics}
+              onResume={t=>startTopic(t.title)} error={homeError}
+              onTestDb={testSupabase} dbTesting={dbTesting} dbTest={dbTest} />
+          ) : loadingHierarchy ? <Spinner label="изграждам учебен план…" />
+          : !hierarchy ? <ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>startTopic(currentTopic.title)} />
+          : subtopicIdx===null ? (
+            <SubtopicList topic={currentTopic.title} hierarchy={hierarchy}
+              onPick={i=>{setLevelCheck(null);setSubtopicIdx(i);}}
+              onLevelCheck={runLevelCheck} loadingLevelCheck={loadingLC}
+              levelCheck={levelCheck} levelCheckError={lcError} />
+          ) : subsubIdx===null ? (
+            <SubsubList topic={currentTopic.title} subtopic={hierarchy[subtopicIdx]}
+              onBack={()=>{setSubtopicIdx(null);setNodeId(null);setNodeData(null);}}
+              onPick={i=>openNode(subtopicIdx,i)} />
+          ) : (
+            <NodeView
+              topic={currentTopic.title} subtopic={hierarchy[subtopicIdx].name}
+              subsub={hierarchy[subtopicIdx].subsubtopics[subsubIdx]}
+              onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
+              tab={tab} setTab={switchTab} nodeData={nodeData}
+              loadingLevels={loadingLevels} loadingChannels={loadingChannels} loadingBlend={loadingBlend}
+              error={nodeError}
+              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].subsubtopics[subsubIdx],nodeData)}
+              onRetryChannels={()=>doLoadChannels(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].subsubtopics[subsubIdx])}
+              onTuneAbstraction={key=>tune("abstraction",key)}
+              onTunePersonality={key=>tune("personality",key)}
+              onTuneBlend={tuneBlend}
+              onUnitConfused={markUnitConfused}
+              onUnitUnconfused={unmarkUnitConfused}
+              prefs={prefs} topLevel={topLevel}
+              canBlend={canBlend} onGenerateBlend={()=>{const s=hierarchy[subtopicIdx].name,ss=hierarchy[subtopicIdx].subsubtopics[subsubIdx];doGenBlend(nodeId,s,ss);}}
+            />
+          )}
+      </main>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Screens                                                             */
+/* ------------------------------------------------------------------ */
+function HomeScreen({topicInput,setTopicInput,onStart,topics,onResume,error,onTestDb,dbTesting,dbTest}) {
+  return <div className="space-y-8">
+    <div>
+      <h1 className="font-display text-2xl font-bold text-stone-100 mb-1">Какво искаш да научиш?</h1>
+      <p className="font-read text-stone-400 text-sm">Напиши тема — Aperture изгражда учебния план и открива кой стил на обяснение те кара да разбираш.</p>
+    </div>
+    <div className="flex gap-2">
+      <input value={topicInput} onChange={e=>setTopicInput(e.target.value)}
+        onKeyDown={e=>{if(e.key==="Enter")onStart();}}
+        placeholder="напр. Статистика, термодинамика, римско право…"
+        className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read placeholder:text-stone-500 focus:outline-none focus:border-amber-600" />
+      <button onClick={onStart} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 rounded">Старт</button>
+    </div>
+    {error && <ErrorNote message={error} />}
+    <div className="border border-stone-800 rounded p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Тест на Supabase</span>
+        <button onClick={onTestDb} disabled={dbTesting} className="font-mono-cal text-xs text-amber-500 hover:text-amber-400 disabled:opacity-50">
+          {dbTesting?"тествам…":"тествай"}
+        </button>
+      </div>
+      {dbTest && <pre className="font-mono-cal text-xs text-stone-300 whitespace-pre-wrap break-all">{dbTest}</pre>}
+    </div>
+    {topics.length>0 && <div>
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500 mb-2">Продължи</div>
+      <div className="space-y-1">
+        {topics.map(t=>(
+          <button key={t.id} onClick={()=>onResume(t)}
+            className="w-full text-left px-3 py-2 rounded border border-stone-800 hover:border-stone-600 flex items-center justify-between group">
+            <span className="font-read text-stone-200">{t.title}</span>
+            <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
+          </button>
+        ))}
+      </div>
+    </div>}
+  </div>;
+}
+
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError}) {
+  return <div className="space-y-4">
+    <div className="flex items-center justify-between gap-2">
+      <h2 className="font-display text-xl font-bold text-stone-100">{topic}</h2>
+      <button onClick={onLevelCheck} disabled={loadingLevelCheck}
+        className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50 shrink-0">
+        {loadingLevelCheck ? <Loader2 size={12} className="animate-spin"/> : <Sparkles size={12}/>}
+        Провери ниво
+      </button>
+    </div>
+    {levelCheckError && <ErrorNote message={levelCheckError}/>}
+    {levelCheck && <div className="rounded border border-stone-700 bg-stone-900/60 p-4 space-y-4">
+      <div><div className="font-mono-cal text-xs uppercase tracking-wide text-emerald-500 mb-1">Какво знаеш</div>
+        <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.knows}</p></div>
+      <div><div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500 mb-1">Какво липсва</div>
+        <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.missing}</p></div>
+      <div><div className="font-mono-cal text-xs uppercase tracking-wide text-sky-500 mb-1">Следваща стъпка</div>
+        <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.next}</p></div>
+    </div>}
+    <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Теми</div>
+    <div className="space-y-1">
+      {hierarchy.map((s,i)=>(
+        <button key={i} onClick={()=>onPick(i)}
+          className="w-full text-left px-3 py-3 rounded border border-stone-800 hover:border-amber-600/50 flex items-center justify-between group">
+          <span className="font-read text-stone-100">{s.name}</span>
+          <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
+        </button>
+      ))}
+    </div>
+  </div>;
+}
+
+function SubsubList({topic,subtopic,onBack,onPick}) {
+  return <div className="space-y-4">
+    <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+      <ChevronLeft size={16}/> {topic}
+    </button>
+    <h2 className="font-display text-xl font-bold text-stone-100">{subtopic.name}</h2>
+    <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Единици</div>
+    <div className="space-y-1">
+      {subtopic.subsubtopics.map((s,i)=>(
+        <button key={i} onClick={()=>onPick(i)}
+          className="w-full text-left px-3 py-3 rounded border border-stone-800 hover:border-amber-600/50 flex items-center justify-between group">
+          <span className="font-read text-stone-100">{s}</span>
+          <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
+        </button>
+      ))}
+    </div>
+  </div>;
+}
+
+function NodeView({topic,subtopic,subsub,onBack,tab,setTab,nodeData,loadingLevels,loadingChannels,loadingBlend,error,onRetryLevels,onRetryChannels,onTuneAbstraction,onTunePersonality,onTuneBlend,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}) {
+  const unitConfused = !!nodeData?.unitConfused;
+  return <div className="space-y-5">
+    <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+      <ChevronLeft size={16}/> {subtopic}
+    </button>
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <div className="font-mono-cal text-xs text-stone-500">{topic} › {subtopic}</div>
+        <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+      </div>
+      <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+        {unitConfused?"Неясно ✓":"Не разбирам"}
+      </button>
+    </div>
+    <div className="flex gap-1 border-b border-stone-800">
+      {[{id:"levels",label:"Нива"},{id:"channels",label:"Канали"},{id:"blend",label:"Микс"}].map(t=>(
+        <button key={t.id} onClick={()=>setTab(t.id)}
+          className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-2 border-b-2 transition-colors ${tab===t.id?"border-amber-500 text-amber-400":"border-transparent text-stone-500 hover:text-stone-300"}`}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+    {error && <ErrorNote message={error} onRetry={tab==="levels"?onRetryLevels:tab==="channels"?onRetryChannels:undefined}/>}
+    {tab==="levels" && <LevelsPanel loading={loadingLevels} levels={nodeData?.abstraction||[]} tuned={nodeData?.tunedAbstraction||[]} onTune={onTuneAbstraction} topLevel={topLevel}/>}
+    {tab==="channels" && <ChannelsPanel loading={loadingChannels} personality={nodeData?.personality||[]} tuned={nodeData?.tunedPersonality||[]} onTune={onTunePersonality} scores={prefs.personality}/>}
+    {tab==="blend" && <BlendPanel canBlend={canBlend} blend={nodeData?.blend} loading={loadingBlend} onGenerate={onGenerateBlend} tuned={!!nodeData?.tunedBlendKey} onTune={onTuneBlend}/>}
+  </div>;
+}
+
+function LevelsPanel({loading,levels,tuned,onTune,topLevel}) {
+  if (loading) return <Spinner label="генерирам 5 нива…"/>;
+  if (!levels.length) return null;
+  return <div className="space-y-4">
+    <div className="flex justify-between border-b border-stone-800 pb-2">
+      {LEVELS.map(l=>{
+        const isTuned=tuned.includes(l.level), isTop=String(l.level)===String(topLevel);
+        return <div key={l.level} className="flex flex-col items-center gap-1 flex-1">
+          <span className={`font-mono-cal text-xs ${isTuned?"text-amber-500":"text-stone-500"}`}>{l.level}</span>
+          <span className={`h-3 w-px ${isTuned?"bg-amber-500":"bg-stone-700"}`}/>
+          <span className={`font-mono-cal text-xs uppercase tracking-wide text-center ${isTuned?"text-amber-400":"text-stone-500"}`}>{l.label}</span>
+          {isTop && <span className="text-[10px] text-emerald-500 font-mono-cal">най-добро</span>}
+        </div>;
+      })}
+    </div>
+    <div className="space-y-3">
+      {levels.map(lv=>{
+        const meta=LEVELS.find(l=>l.level===lv.level), isTuned=tuned.includes(lv.level);
+        return <div key={lv.level} className={`rounded border p-4 ${isTuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
+          <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {lv.level} · {meta?.label}</div>
+          <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
+          <div className="mt-2"><TuneButton tuned={isTuned} onClick={()=>onTune(lv.level)}/></div>
+        </div>;
+      })}
+    </div>
+  </div>;
+}
+
+function ChannelsPanel({loading,personality,tuned,onTune,scores}) {
+  if (loading) return <Spinner label="генерирам 5 канала…"/>;
+  if (!personality.length) return null;
+  const maxScore=Math.max(1,...Object.values(scores||{}));
+  const sorted=[...personality].sort((a,b)=>(scores[b.code]||0)-(scores[a.code]||0));
+  return <div className="space-y-3">
+    {sorted.map(p=>{
+      const meta=PERSONALITIES.find(t=>t.code===p.code), isTuned=tuned.includes(p.code), score=scores[p.code]||0;
+      return <div key={p.code} className={`rounded border p-4 ${isTuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
+        <div className="flex items-baseline gap-2 mb-1">
+          <span className="font-mono-cal text-sm font-medium text-stone-100">{meta?.name}</span>
+          <span className="font-mono-cal text-xs text-stone-500">{meta?.code}</span>
+        </div>
+        {score>0 && <div className="h-1 bg-stone-800 rounded mb-2 overflow-hidden">
+          <div className="h-full bg-emerald-600" style={{width:`${Math.round((score/maxScore)*100)}%`}}/>
+        </div>}
+        <p className="font-read text-stone-200 leading-relaxed text-lg">{p.text}</p>
+        <div className="mt-2"><TuneButton tuned={isTuned} onClick={()=>onTune(p.code)}/></div>
+      </div>;
+    })}
+  </div>;
+}
+
+function BlendPanel({canBlend,blend,loading,onGenerate,tuned,onTune}) {
+  if (!canBlend) return <p className="font-read text-stone-500 text-sm py-6">Оцени поне едно ниво и един канал — миксът се изгражда от твоята обратна връзка от всички теми.</p>;
+  if (loading) return <Spinner label="смесвам обяснението…"/>;
+  if (!blend) return <button onClick={onGenerate} className="flex items-center gap-2 font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">
+    <Sparkles size={16}/> Генерирай микс
+  </button>;
+  const lvl=LEVELS.find(l=>l.level===blend.level), per=PERSONALITIES.find(p=>p.code===blend.code);
+  return <div className={`rounded border p-4 ${tuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
+    <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {blend.level} {lvl?.label} + {per?.name}</div>
+    <p className="font-read text-stone-200 leading-relaxed text-lg">{blend.text}</p>
+    <div className="mt-2"><TuneButton tuned={tuned} onClick={onTune}/></div>
+    <p className="font-mono-cal text-[11px] text-stone-600 mt-2">Оценката влияе глобално на алгоритъма.</p>
+    <button onClick={onGenerate} className="mt-2 font-mono-cal text-xs text-stone-500 hover:text-amber-400">Генерирай отново</button>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Aperture/>);
+</script>
+</body>
+</html>
