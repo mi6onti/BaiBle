@@ -118,7 +118,7 @@ async function callClaude(user, maxTokens=600, attempt=0) {
 // T.1: generate short display name from prompt
 async function genTopicName(prompt) {
   const d = await callClaude(
-    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Match the language of the prompt. Never use " inside.\nReturn: {"name":"..."}`,
+    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Write the name in the SAME language as the prompt above (detect it and match exactly). Never use " inside.\nReturn: {"name":"..."}`,
     200
   );
   return d.name || prompt.slice(0,40);
@@ -127,14 +127,14 @@ async function genTopicName(prompt) {
 async function genHierarchy(prompt, learningProfile) {
   const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
   const d = await callClaude(
-    `Design a self-study curriculum for: "${prompt}".${profileHint}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Match language of prompt. Never use " inside.\nReturn: {"names":["..."]}`,
+    `Design a self-study curriculum for: "${prompt}".${profileHint}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly — if the prompt is in Bulgarian, write in Bulgarian; if in English, write in English; etc). Never use " inside.\nReturn: {"names":["..."]}`,
     500
   );
   const names = d.names||[];
   const subtopics = [];
   for(const name of names){
     const s = await callClaude(
-      `Topic: "${prompt}" > "${name}". List 3-4 sub-subtopics, under 6 words each. Match language. Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
+      `Topic: "${prompt}" > "${name}". List 3-4 sub-subtopics, under 6 words each. Write them in the SAME language as the topic above (match exactly). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
       400
     );
     subtopics.push({name,subsubtopics:s.subsubtopics||[]});
@@ -145,7 +145,7 @@ async function genHierarchy(prompt, learningProfile) {
 async function genAbstraction(topic, sub, subsub) {
   const levels=[];
   for(const m of LEVELS){
-    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`,600);
+    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
     levels.push({level:m.level,text:d.text||""});
   }
   return levels;
@@ -154,7 +154,7 @@ async function genAbstraction(topic, sub, subsub) {
 async function genAllPersonalities(topic, sub, subsub) {
   const results=[];
   for(const p of PERSONALITIES){
-    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`,600);
+    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
     results.push({code:p.code,text:d.text||""});
   }
   return results;
@@ -164,7 +164,7 @@ async function genAllPersonalities(topic, sub, subsub) {
 async function genBlend(topic, sub, subsub, level) {
   const lvl = LEVELS.find(l=>l.level===level);
   const d = await callClaude(
-    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`,
+    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,
     800
   );
   return d.text||"";
@@ -183,11 +183,11 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
 Rated as helpful: ${rated.join(", ")||"none yet"}.
 Marked as completely unclear: ${confused.join(", ")||"none"}.
 Preferred explanation level: "${topLvl||"unknown"}".
-Write 120-180 words in Bulgarian. Three sections:
-1 Какво знаеш
-2 Какво липсва — include unclear units and missing foundational knowledge
-3 Следваща стъпка — one concrete next thing
-Never use " inside.\nReturn: {"knows":"...","missing":"...","next":"..."}`,
+Write 120-180 words TOTAL, in the SAME language as the topic above (detect it from the topic text and match it exactly — do not default to any other language). Three sections, with section labels also translated into that same language:
+1 first section — what they likely know
+2 second section — what's missing, including unclear units and missing foundational knowledge
+3 third section — one concrete next thing to study
+Never use " inside text.\nReturn: {"knows":"...","missing":"...","next":"..."}`,
     800
   );
   return d;
@@ -196,7 +196,7 @@ Never use " inside.\nReturn: {"knows":"...","missing":"...","next":"..."}`,
 // T.5: generate adapted topic as full new plan
 async function genAdaptedTopicName(originalTopic, levelCheck) {
   const d = await callClaude(
-    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Match language. Never use " inside.\nReturn: {"name":"..."}`,
+    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly). Never use " inside.\nReturn: {"name":"..."}`,
     200
   );
   return d.name || `Адаптирана: ${originalTopic}`;
