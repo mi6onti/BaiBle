@@ -233,7 +233,12 @@ Never use " inside.\nReturn: {"profile":"..."}`,
   return d.profile||null;
 }
 
-function topicLabel(t){ return t.name || t.title || t.prompt || "(без заглавие)"; }
+function topicLabel(t){
+  if(!t) return "(без заглавие)";
+  const candidates=[t.name,t.title,t.prompt,t.topic,t.text,t.query];
+  for(const c of candidates){ if(typeof c==="string" && c.trim().length>0) return c.trim(); }
+  return t.id ? `План ${t.id.slice(0,8)}` : "(без заглавие)";
+}
 function Spinner({label}){return <div className="flex items-center gap-2 text-stone-400 text-sm py-6 justify-center"><Loader2 size={16} className="animate-spin"/><span className="font-mono-cal">{label}</span></div>;}
 function ErrorNote({message,onRetry}){return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3"><span className="break-all">{message}</span>{onRetry&&<button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}</div>;}
 function TuneButton({tuned,onClick}){return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
