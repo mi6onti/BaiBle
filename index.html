@@ -202,19 +202,31 @@ async function genAdaptedTopicName(originalTopic, levelCheck) {
   return d.name || `Адаптирана: ${originalTopic}`;
 }
 
-// T.7: build learning profile from topic history
+// T.7 updated: all active topics = interest; high engagement = priority
 async function genLearningProfile(topics, nodeDataMap) {
-  if(!topics.length) return null;
-  const deleted = topics.filter(t=>t.deletedAt).map(t=>`"${t.name}" (archived)`);
-  const active  = topics.filter(t=>!t.deletedAt);
-  const engaged = active.filter(t=>{
+  const allTopics = topics.filter(t=>!t.deletedAt);
+  const deleted   = topics.filter(t=>t.deletedAt).map(t=>t.name||t.prompt).filter(Boolean);
+  if(!allTopics.length&&!deleted.length) return null;
+
+  // score each active topic by engagement
+  const scored = allTopics.map(t=>{
     const keys=Object.keys(nodeDataMap).filter(k=>k.startsWith(t.id+"/"));
-    return keys.some(k=>(nodeDataMap[k]?.tunedAbstraction?.length||0)>0||(nodeDataMap[k]?.unitConfused));
-  }).map(t=>t.name);
-  if(!engaged.length&&!deleted.length) return null;
-  const d=await callClaude(
-    `A learner has used a study app. Topics they engaged with (liked/marked): ${engaged.join(", ")||"none"}. Topics they archived/deleted: ${deleted.join(", ")||"none"}.
-Summarize in 2-3 sentences what kind of learning structure and content this person prefers, to guide future curriculum generation. Be specific and actionable for a curriculum designer.
+    const likes=keys.reduce((s,k)=>(s+(nodeDataMap[k]?.tunedAbstraction?.length||0)+(nodeDataMap[k]?.tunedBlendKey?1:0)),0);
+    const confused=keys.filter(k=>nodeDataMap[k]?.unitConfused).length;
+    return {name:t.name||t.prompt, likes, confused, hasActivity:likes>0||confused>0};
+  });
+
+  const priority   = scored.filter(t=>t.likes>=3).map(t=>t.name);
+  const interested = scored.filter(t=>t.likes>0&&t.likes<3).map(t=>t.name);
+  const passive    = scored.filter(t=>!t.hasActivity).map(t=>t.name);
+
+  const d = await callClaude(
+    `A learner uses a study app. Analyze their learning preferences to guide future curriculum generation.
+Priority topics (high engagement, many likes): ${priority.join(", ")||"none"}.
+Interested topics (some activity): ${interested.join(", ")||"none"}.
+Passive topics (saved but not yet studied): ${passive.join(", ")||"none"}.
+Archived/deleted topics (did not find value): ${deleted.join(", ")||"none"}.
+In 2-3 sentences, describe what kind of learning structure, depth, and content areas this person prefers. Be specific and actionable for a curriculum designer.
 Never use " inside.\nReturn: {"profile":"..."}`,
     400
   );
@@ -510,7 +522,6 @@ function Aperture() {
             <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
               onStart={()=>startTopic(topicInput)} topics={activeTopics} deletedTopics={deletedTopics}
               onResume={resumeTopic} error={homeError}
-              onTestDb={testSupabase} dbTesting={dbTesting} dbTest={dbTest}
               onDelete={softDeleteTopic} onRestore={restoreTopic}
               showTrash={showTrash} setShowTrash={setShowTrash}/>
           ):loadingH?<Spinner label="изграждам учебен план…"/>
@@ -550,7 +561,7 @@ function Aperture() {
 }
 
 /* ── Screens ─────────────────────────────────────────────────────────── */
-function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,error,onTestDb,dbTesting,dbTest,onDelete,onRestore,showTrash,setShowTrash}){
+function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,error,onDelete,onRestore,showTrash,setShowTrash}){
   return <div className="space-y-8">
     <div>
       <h1 className="font-display text-2xl font-bold text-stone-100 mb-1">Какво искаш да научиш?</h1>
@@ -564,13 +575,6 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
       <button onClick={onStart} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 rounded">Старт</button>
     </div>
     {error&&<ErrorNote message={error}/>}
-    <div className="border border-stone-800 rounded p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Тест на Supabase</span>
-        <button onClick={onTestDb} disabled={dbTesting} className="font-mono-cal text-xs text-amber-500 hover:text-amber-400 disabled:opacity-50">{dbTesting?"тествам…":"тествай"}</button>
-      </div>
-      {dbTest&&<pre className="font-mono-cal text-xs text-stone-300 whitespace-pre-wrap break-all">{dbTest}</pre>}
-    </div>
     {topics.length>0&&<div>
       <div className="flex items-center justify-between mb-2">
         <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Активни планове</div>
@@ -581,11 +585,12 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
           <div key={t.id} className="flex items-center gap-2 group">
             <button onClick={()=>onResume(t)} className="flex-1 text-left px-3 py-2 rounded border border-stone-800 hover:border-stone-600 flex items-center justify-between">
               <div>
-                <div className="font-read text-stone-200">{t.name}</div>
+                <div className="font-read text-stone-200">{t.name||t.prompt}</div>
+                {t.name&&t.prompt&&t.name!==t.prompt&&<div className="font-mono-cal text-[10px] text-stone-500 mt-0.5 truncate max-w-xs">{t.prompt}</div>}
                 {t.parentId&&<div className="font-mono-cal text-[10px] text-stone-500">↳ адаптиран план</div>}
                 {t.childId&&<div className="font-mono-cal text-[10px] text-sky-600">→ има адаптация</div>}
               </div>
-              <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
+              <span className="text-stone-600 group-hover:text-amber-500 shrink-0"><ChevronRight size={16}/></span>
             </button>
             <button onClick={()=>onDelete(t.id)} className="p-2 text-stone-600 hover:text-red-400 transition-colors"><Trash2 size={14}/></button>
           </div>
@@ -598,7 +603,7 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
         {deletedTopics.map(t=>(
           <div key={t.id} className="flex items-center gap-2">
             <div className="flex-1 px-3 py-2 rounded border border-stone-800/50 opacity-50">
-              <div className="font-read text-stone-400 text-sm">{t.name}</div>
+              <div className="font-read text-stone-400 text-sm">{t.name||t.prompt}</div>
             </div>
             <button onClick={()=>onRestore(t.id)} className="font-mono-cal text-xs text-stone-500 hover:text-emerald-400 px-2">↩ върни</button>
           </div>
@@ -616,9 +621,9 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   return <div className="space-y-4">
     <div className="flex items-start justify-between gap-2">
       <div>
-        <h2 className="font-display text-xl font-bold text-stone-100">{topic.name}</h2>
-        {topic.prompt&&topic.prompt!==topic.name&&(
-          <p className="font-read text-stone-500 text-sm mt-1 leading-relaxed">{topic.prompt}</p>
+        <h2 className="font-display text-xl font-bold text-stone-100">{topic.name||topic.prompt}</h2>
+        {topic.name&&topic.prompt&&topic.name!==topic.prompt&&(
+          <p className="font-read text-stone-400 text-sm mt-1 leading-relaxed">{topic.prompt}</p>
         )}
       </div>
       <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>
