@@ -15,432 +15,479 @@
     .font-display { font-family: 'Space Grotesk', sans-serif; }
     .font-read    { font-family: 'Source Serif 4', Georgia, serif; }
     .font-mono-cal{ font-family: 'JetBrains Mono', monospace; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .animate-spin { animation: spin 1s linear infinite; }
   </style>
 </head>
 <body>
 <div id="root"></div>
-
 <script type="text/babel">
 const { useState, useEffect } = React;
 
-/* ------------------------------------------------------------------ */
-/* Icons (inline SVG to avoid lucide dependency)                       */
-/* ------------------------------------------------------------------ */
-const Icon = ({ d, size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d={d} />
-  </svg>
-);
-const ApertureIcon = ({ size }) => (
-  <svg width={size||20} height={size||20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="10"/><line x1="14.31" y1="8" x2="20.05" y2="17.94"/><line x1="9.69" y1="8" x2="21.17" y2="8"/><line x1="7.38" y1="12" x2="13.12" y2="2.06"/><line x1="9.69" y1="16" x2="3.95" y2="6.06"/><line x1="14.31" y1="16" x2="2.83" y2="16"/><line x1="16.62" y1="12" x2="10.88" y2="21.94"/>
-  </svg>
-);
-const ChevronLeft  = ({ size }) => <Icon size={size||16} d="M15 18l-6-6 6-6" />;
-const ChevronRight = ({ size }) => <Icon size={size||16} d="M9 18l6-6-6-6" />;
-const Sparkles     = ({ size }) => <Icon size={size||16} d="M12 3l1.88 5.76L20 10l-6.12 1.24L12 17l-1.88-5.76L4 10l6.12-1.24z" />;
-const Loader2      = ({ size, className }) => (
-  <svg width={size||16} height={size||16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-  </svg>
-);
+/* ── Icons ─────────────────────────────────────────────────────────── */
+const Ic = ({d,size=16}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>;
+const ApertureIcon  = ({size=20}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="14.31" y1="8" x2="20.05" y2="17.94"/><line x1="9.69" y1="8" x2="21.17" y2="8"/><line x1="7.38" y1="12" x2="13.12" y2="2.06"/><line x1="9.69" y1="16" x2="3.95" y2="6.06"/><line x1="14.31" y1="16" x2="2.83" y2="16"/><line x1="16.62" y1="12" x2="10.88" y2="21.94"/></svg>;
+const ChevronLeft   = ({size=16}) => <Ic size={size} d="M15 18l-6-6 6-6"/>;
+const ChevronRight  = ({size=16}) => <Ic size={size} d="M9 18l6-6-6-6"/>;
+const Sparkles      = ({size=16}) => <Ic size={size} d="M12 3l1.88 5.76L20 10l-6.12 1.24L12 17l-1.88-5.76L4 10l6.12-1.24z"/>;
+const Trash2        = ({size=16}) => <Ic size={size} d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M9 6V4h6v2"/>;
+const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>;
+const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
-/* ------------------------------------------------------------------ */
-/* Config                                                              */
-/* ------------------------------------------------------------------ */
-const SUPABASE_URL  = "https://ochtxuziiblkpcrphrmx.supabase.co";
-const SUPABASE_KEY  = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
-const CLAUDE_PROXY  = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
-const JSON_SYS      = "You return ONLY valid JSON. No markdown fences, no preamble, no commentary, no trailing text.";
+/* ── Config ─────────────────────────────────────────────────────────── */
+const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
+const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
+const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
+const JSON_SYS     = "You return ONLY valid JSON. No markdown fences, no preamble, no trailing text.";
 
-let USE_LOCAL = (() => {
-  try { return localStorage.getItem("aperture:_mode") === "local"; } catch { return false; }
-})();
+let USE_LOCAL = (() => { try { return localStorage.getItem("aperture:_mode") === "local"; } catch { return false; } })();
 
 const LEVELS = [
-  { level: 1, label: "Аналогия",   hint: "everyday comparison" },
-  { level: 2, label: "Пример",     hint: "concrete scenario" },
-  { level: 3, label: "Механика",   hint: "how it works" },
-  { level: 4, label: "Дефиниция",  hint: "formal terms" },
-  { level: 5, label: "Дълбочина",  hint: "expert nuance" },
+  {level:1,label:"Аналогия",hint:"everyday comparison"},
+  {level:2,label:"Пример",hint:"concrete scenario"},
+  {level:3,label:"Механика",hint:"how it works"},
+  {level:4,label:"Дефиниция",hint:"formal terms"},
+  {level:5,label:"Дълбочина",hint:"expert nuance"},
 ];
-
 const PERSONALITIES = [
-  { code: "O", name: "Любопитни",     hint: "Creative, curious — love metaphors and big-picture thinking" },
-  { code: "C", name: "Методични",     hint: "Organized, disciplined — prefer structure, steps and clear rules" },
-  { code: "E", name: "Комуникативни", hint: "Social, expressive — learn through stories and real interactions" },
-  { code: "A", name: "Съпричастни",   hint: "Cooperative, empathetic — respond well to human context" },
-  { code: "N", name: "Аналитични",    hint: "Precise, critical — want edge cases, caveats and full accuracy" },
+  {code:"O",name:"Любопитни",hint:"Creative, curious — love metaphors and big-picture thinking"},
+  {code:"C",name:"Методични",hint:"Organized, disciplined — prefer structure, steps and clear rules"},
+  {code:"E",name:"Комуникативни",hint:"Social, expressive — learn through stories and real interactions"},
+  {code:"A",name:"Съпричастни",hint:"Cooperative, empathetic — respond well to human context"},
+  {code:"N",name:"Аналитични",hint:"Precise, critical — want edge cases, caveats and full accuracy"},
 ];
 
-/* ------------------------------------------------------------------ */
-/* Storage                                                             */
-/* ------------------------------------------------------------------ */
+/* ── Storage ─────────────────────────────────────────────────────────── */
 async function loadJSON(key, fallback) {
-  if (USE_LOCAL) {
-    try { const r = localStorage.getItem("aperture:" + key); return r ? JSON.parse(r) : fallback; }
-    catch { return fallback; }
-  }
+  if (USE_LOCAL) { try { const r=localStorage.getItem("aperture:"+key); return r?JSON.parse(r):fallback; } catch{return fallback;} }
   try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
-      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
-    );
-    if (!res.ok) throw new Error(`${res.status}`);
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
+      {headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`}});
+    if (!res.ok) throw new Error(res.status);
     const rows = await res.json();
-    return rows.length > 0 ? rows[0].value : fallback;
+    return rows.length>0 ? rows[0].value : fallback;
   } catch { return fallback; }
 }
-
 async function saveJSON(key, value) {
-  if (USE_LOCAL) {
-    try { localStorage.setItem("aperture:" + key, JSON.stringify(value)); return { ok: true }; }
-    catch (e) { return { ok: false, detail: e.message }; }
-  }
+  if (USE_LOCAL) { try{localStorage.setItem("aperture:"+key,JSON.stringify(value));return{ok:true};}catch(e){return{ok:false,detail:e.message};} }
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store?on_conflict=key`, {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=representation",
-      },
-      body: JSON.stringify({ key, value }),
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store?on_conflict=key`,{
+      method:"POST",
+      headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=representation"},
+      body:JSON.stringify({key,value})
     });
-    if (!res.ok) { const b = await res.text(); return { ok: false, detail: `${res.status}: ${b.slice(0,200)}` }; }
-    return { ok: true };
-  } catch (e) { return { ok: false, detail: `${e.name}: ${e.message}` }; }
+    if (!res.ok){const b=await res.text();return{ok:false,detail:`${res.status}: ${b.slice(0,200)}`};}
+    return {ok:true};
+  } catch(e){return{ok:false,detail:`${e.name}: ${e.message}`};}
 }
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
-function slugify(s) {
-  const base = (s||"").toLowerCase().trim().replace(/[^a-z0-9а-я]+/gi,"-").replace(/(^-|-$)/g,"").slice(0,40);
-  return base || "x"+Math.random().toString(36).slice(2,7);
-}
-function topPreferred(scoreMap, fallbackKey) {
-  const e = Object.entries(scoreMap||{});
-  if (!e.length) return fallbackKey;
-  e.sort((a,b)=>b[1]-a[1]);
-  return e[0][1]>0 ? e[0][0] : fallbackKey;
-}
-function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
+/* ── Helpers ─────────────────────────────────────────────────────────── */
+function slugify(s){const b=(s||"").toLowerCase().trim().replace(/[^a-z0-9а-я]+/gi,"-").replace(/(^-|-$)/g,"").slice(0,40);return b||"x"+Math.random().toString(36).slice(2,7);}
+function topPreferred(m,fb){const e=Object.entries(m||{});if(!e.length)return fb;e.sort((a,b)=>b[1]-a[1]);return e[0][1]>0?e[0][0]:fb;}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 
-/* ------------------------------------------------------------------ */
-/* Claude API                                                          */
-/* ------------------------------------------------------------------ */
+/* ── Claude API ──────────────────────────────────────────────────────── */
 async function callClaude(user, maxTokens=600, attempt=0) {
   let res;
   try {
-    res = await fetch(CLAUDE_PROXY, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${SUPABASE_KEY}`,
-      },
-      body: JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:maxTokens, messages:[{role:"user",content:`${JSON_SYS}\n\n${user}`}] }),
-    });
+    res = await fetch(CLAUDE_PROXY,{method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`},
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:`${JSON_SYS}\n\n${user}`}]})});
   } catch(e) {
-    if (attempt<3) { await sleep(700*(attempt+1)); return callClaude(user,maxTokens,attempt+1); }
+    if(attempt<3){await sleep(700*(attempt+1));return callClaude(user,maxTokens,attempt+1);}
     throw new Error(`[fetch] ${e.message}`);
   }
-  if (res.status===429 && attempt<3) { await sleep(1500*(attempt+1)); return callClaude(user,maxTokens,attempt+1); }
+  if(res.status===429&&attempt<3){await sleep(1500*(attempt+1));return callClaude(user,maxTokens,attempt+1);}
   let data;
-  try { data = await res.json(); }
-  catch(e) {
-    if (attempt<3) { await sleep(700*(attempt+1)); return callClaude(user,maxTokens,attempt+1); }
+  try{data=await res.json();}catch(e){
+    if(attempt<3){await sleep(700*(attempt+1));return callClaude(user,maxTokens,attempt+1);}
     throw new Error(`[parse] ${e.message}`);
   }
-  if (!res.ok) throw new Error(`[http] ${res.status}: ${JSON.stringify(data).slice(0,150)}`);
-  if (!data?.content) throw new Error(`[shape] ${JSON.stringify(data).slice(0,150)}`);
-  const text = data.content.map(b=>b.text||"").join("\n");
-  let clean = text.replace(/```json/gi,"").replace(/```/g,"").trim();
-  const fi=clean.indexOf("{"), la=clean.lastIndexOf("}");
-  if (fi!==-1&&la>fi) clean=clean.slice(fi,la+1);
-  try { return JSON.parse(clean); }
-  catch(e) { throw new Error(`[json] ${e.message} | raw=${text.slice(0,100)}`); }
+  if(!res.ok) throw new Error(`[http] ${res.status}: ${JSON.stringify(data).slice(0,150)}`);
+  if(!data?.content) throw new Error(`[shape] ${JSON.stringify(data).slice(0,100)}`);
+  const text=data.content.map(b=>b.text||"").join("\n");
+  let clean=text.replace(/```json/gi,"").replace(/```/g,"").trim();
+  const fi=clean.indexOf("{"),la=clean.lastIndexOf("}");
+  if(fi!==-1&&la>fi)clean=clean.slice(fi,la+1);
+  try{return JSON.parse(clean);}catch(e){throw new Error(`[json] ${e.message} | raw=${text.slice(0,100)}`);}
 }
 
-/* ------------------------------------------------------------------ */
-/* Generation                                                          */
-/* ------------------------------------------------------------------ */
-async function genHierarchy(topic) {
-  const d = await callClaude(`Design a self-study curriculum for "${topic}". List 4-6 subtopics in learning order, under 5 words each, no numbering. Match language of topic. Never use " inside text.\nReturn: {"names":["..."]}`, 500);
+/* ── Generation ──────────────────────────────────────────────────────── */
+
+// T.1: generate short display name from prompt
+async function genTopicName(prompt) {
+  const d = await callClaude(
+    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Match the language of the prompt. Never use " inside.\nReturn: {"name":"..."}`,
+    200
+  );
+  return d.name || prompt.slice(0,40);
+}
+
+async function genHierarchy(prompt, learningProfile) {
+  const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
+  const d = await callClaude(
+    `Design a self-study curriculum for: "${prompt}".${profileHint}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Match language of prompt. Never use " inside.\nReturn: {"names":["..."]}`,
+    500
+  );
   const names = d.names||[];
   const subtopics = [];
-  for (const name of names) {
-    const s = await callClaude(`Topic: "${topic}" > "${name}". List 3-4 sub-subtopics, under 6 words each. Match language. Never use " inside.\nReturn: {"subsubtopics":["..."]}`, 400);
-    subtopics.push({ name, subsubtopics: s.subsubtopics||[] });
+  for(const name of names){
+    const s = await callClaude(
+      `Topic: "${prompt}" > "${name}". List 3-4 sub-subtopics, under 6 words each. Match language. Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
+      400
+    );
+    subtopics.push({name,subsubtopics:s.subsubtopics||[]});
   }
   return subtopics;
 }
+
 async function genAbstraction(topic, sub, subsub) {
-  const levels = [];
-  for (const m of LEVELS) {
-    const d = await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`, 600);
-    levels.push({ level:m.level, text:d.text||"" });
+  const levels=[];
+  for(const m of LEVELS){
+    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`,600);
+    levels.push({level:m.level,text:d.text||""});
   }
   return levels;
 }
+
 async function genAllPersonalities(topic, sub, subsub) {
-  const results = [];
-  for (const p of PERSONALITIES) {
-    const d = await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`, 600);
-    results.push({ code:p.code, text:d.text||"" });
+  const results=[];
+  for(const p of PERSONALITIES){
+    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`,600);
+    results.push({code:p.code,text:d.text||""});
   }
   return results;
 }
-async function genBlend(topic, sub, subsub, level, code) {
+
+// T.4: blend only uses abstraction (levels) ratings
+async function genBlend(topic, sub, subsub, level) {
   const lvl = LEVELS.find(l=>l.level===level);
-  const per = PERSONALITIES.find(p=>p.code===code);
-  const d = await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) blending level "${lvl?.label}" (${lvl?.hint}) with framing for a "${per?.name}" learner (${per?.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`, 800);
+  const d = await callClaude(
+    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Match language. Never use " inside.\nReturn: {"text":"..."}`,
+    800
+  );
   return d.text||"";
 }
+
 async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
-  const rated=[], confused=[];
-  for (const [key,nd] of Object.entries(nodeDataMap)) {
+  const rated=[],confused=[];
+  for(const [key,nd] of Object.entries(nodeDataMap)){
     const unit=key.split("/").slice(1).join(" › ");
-    if ((nd.tunedAbstraction?.length||0)+(nd.tunedPersonality?.length||0)+(nd.tunedBlendKey?1:0)>0) rated.push(unit);
-    if (nd.unitConfused) confused.push(unit);
+    if((nd.tunedAbstraction?.length||0)+(nd.tunedBlendKey?1:0)>0) rated.push(unit);
+    if(nd.unitConfused) confused.push(unit);
   }
-  const topLvl = LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
-  const topPer = PERSONALITIES.find(p=>p.code===topPreferred(prefs.personality,null))?.name;
-  const d = await callClaude(
+  const topLvl=LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
+  const d=await callClaude(
     `Learner studying "${topic}". Subtopics: ${hierarchy.map(s=>s.name).join(", ")}.
 Rated as helpful: ${rated.join(", ")||"none yet"}.
 Marked as completely unclear: ${confused.join(", ")||"none"}.
-Preferred style: level "${topLvl||"unknown"}", channel "${topPer||"unknown"}".
+Preferred explanation level: "${topLvl||"unknown"}".
 Write 120-180 words in Bulgarian. Three sections:
 1 Какво знаеш
 2 Какво липсва — include unclear units and missing foundational knowledge
 3 Следваща стъпка — one concrete next thing
-Never use " inside.\nReturn: {"knows":"...","missing":"...","next":"..."}`, 800);
+Never use " inside.\nReturn: {"knows":"...","missing":"...","next":"..."}`,
+    800
+  );
   return d;
 }
 
-/* ------------------------------------------------------------------ */
-/* Small UI                                                            */
-/* ------------------------------------------------------------------ */
-function Spinner({label}) {
-  return <div className="flex items-center gap-2 text-stone-400 text-sm py-6 justify-center">
-    <Loader2 size={16} className="animate-spin" /><span className="font-mono-cal">{label}</span>
-  </div>;
-}
-function ErrorNote({message, onRetry}) {
-  return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3">
-    <span className="break-all">{message}</span>
-    {onRetry && <button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}
-  </div>;
-}
-function TuneButton({tuned, onClick}) {
-  return <button onClick={onClick} disabled={tuned}
-    className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>
-    {tuned?"Харесва ✓":"Харесвам"}
-  </button>;
+// T.5: generate adapted topic as full new plan
+async function genAdaptedTopicName(originalTopic, levelCheck) {
+  const d = await callClaude(
+    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Match language. Never use " inside.\nReturn: {"name":"..."}`,
+    200
+  );
+  return d.name || `Адаптирана: ${originalTopic}`;
 }
 
-/* ------------------------------------------------------------------ */
-/* Main App                                                            */
-/* ------------------------------------------------------------------ */
+// T.7: build learning profile from topic history
+async function genLearningProfile(topics, nodeDataMap) {
+  if(!topics.length) return null;
+  const deleted = topics.filter(t=>t.deletedAt).map(t=>`"${t.name}" (archived)`);
+  const active  = topics.filter(t=>!t.deletedAt);
+  const engaged = active.filter(t=>{
+    const keys=Object.keys(nodeDataMap).filter(k=>k.startsWith(t.id+"/"));
+    return keys.some(k=>(nodeDataMap[k]?.tunedAbstraction?.length||0)>0||(nodeDataMap[k]?.unitConfused));
+  }).map(t=>t.name);
+  if(!engaged.length&&!deleted.length) return null;
+  const d=await callClaude(
+    `A learner has used a study app. Topics they engaged with (liked/marked): ${engaged.join(", ")||"none"}. Topics they archived/deleted: ${deleted.join(", ")||"none"}.
+Summarize in 2-3 sentences what kind of learning structure and content this person prefers, to guide future curriculum generation. Be specific and actionable for a curriculum designer.
+Never use " inside.\nReturn: {"profile":"..."}`,
+    400
+  );
+  return d.profile||null;
+}
+
+/* ── Small UI ────────────────────────────────────────────────────────── */
+function Spinner({label}){return <div className="flex items-center gap-2 text-stone-400 text-sm py-6 justify-center"><Loader2 size={16} className="animate-spin"/><span className="font-mono-cal">{label}</span></div>;}
+function ErrorNote({message,onRetry}){return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3"><span className="break-all">{message}</span>{onRetry&&<button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}</div>;}
+function TuneButton({tuned,onClick}){return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
+
+/* ── Main App ────────────────────────────────────────────────────────── */
 function Aperture() {
-  const [booting, setBooting]           = useState(true);
-  const [storageMode, setStorageMode]   = useState(()=>{ try{return localStorage.getItem("aperture:_mode")==="local"?"local":"supabase";}catch{return"local";} });
-  const [topics, setTopics]             = useState([]);
-  const [prefs, setPrefs]               = useState({abstraction:{},personality:{}});
-  const [topicInput, setTopicInput]     = useState("");
-  const [currentTopic, setCurrentTopic] = useState(null);
-  const [hierarchy, setHierarchy]       = useState(null);
-  const [loadingHierarchy, setLoadingH] = useState(false);
-  const [homeError, setHomeError]       = useState(null);
-  const [subtopicIdx, setSubtopicIdx]   = useState(null);
-  const [subsubIdx, setSubsubIdx]       = useState(null);
-  const [nodeId, setNodeId]             = useState(null);
-  const [nodeData, setNodeData]         = useState(null);
-  const [tab, setTab]                   = useState("levels");
-  const [loadingLevels, setLoadingL]    = useState(false);
-  const [loadingChannels, setLoadingC]  = useState(false);
-  const [loadingBlend, setLoadingB]     = useState(false);
-  const [nodeError, setNodeError]       = useState(null);
-  const [levelCheck, setLevelCheck]     = useState(null);
-  const [loadingLC, setLoadingLC]       = useState(false);
-  const [lcError, setLcError]           = useState(null);
-  const [dbTest, setDbTest]             = useState(null);
-  const [dbTesting, setDbTesting]       = useState(false);
+  const [booting,setBooting]           = useState(true);
+  const [storageMode,setStorageMode]   = useState(()=>{try{return localStorage.getItem("aperture:_mode")==="local"?"local":"supabase";}catch{return"local";}});
+  const [topics,setTopics]             = useState([]);      // [{id,name,prompt,createdAt,deletedAt?,parentId?,childId?}]
+  const [prefs,setPrefs]               = useState({abstraction:{},personality:{}});
+  const [topicInput,setTopicInput]     = useState("");
+  const [currentTopic,setCurrentTopic] = useState(null);
+  const [hierarchy,setHierarchy]       = useState(null);
+  const [loadingH,setLoadingH]         = useState(false);
+  const [homeError,setHomeError]       = useState(null);
+  const [subtopicIdx,setSubtopicIdx]   = useState(null);
+  const [subsubIdx,setSubsubIdx]       = useState(null);
+  const [nodeId,setNodeId]             = useState(null);
+  const [nodeData,setNodeData]         = useState(null);
+  const [tab,setTab]                   = useState("levels");
+  const [loadingL,setLoadingL]         = useState(false);
+  const [loadingB,setLoadingB]         = useState(false);
+  const [nodeError,setNodeError]       = useState(null);
+  const [levelCheck,setLevelCheck]     = useState(null);
+  const [loadingLC,setLoadingLC]       = useState(false);
+  const [lcError,setLcError]           = useState(null);
+  const [generatingAdapted,setGA]      = useState(false);
+  const [dbTest,setDbTest]             = useState(null);
+  const [dbTesting,setDbTesting]       = useState(false);
+  const [showTrash,setShowTrash]       = useState(false);
 
-  const canBlend = Object.keys(prefs.abstraction||{}).length>0 && Object.keys(prefs.personality||{}).length>0;
-  const topLevel = topPreferred(prefs.abstraction, null);
+  const canBlend = Object.keys(prefs.abstraction||{}).length>0;
+  const topLevel = topPreferred(prefs.abstraction,null);
+  const activeTopics  = topics.filter(t=>!t.deletedAt);
+  const deletedTopics = topics.filter(t=>t.deletedAt);
 
   useEffect(()=>{
-    if (!booting) return;
+    if(!booting)return;
     (async()=>{
-      const t = await loadJSON("topics",[]);
-      const p = await loadJSON("prefs",{abstraction:{},personality:{}});
-      setTopics(t); setPrefs(p); setBooting(false);
+      const t=await loadJSON("topics",[]);
+      const p=await loadJSON("prefs",{abstraction:{},personality:{}});
+      setTopics(t);setPrefs(p);setBooting(false);
     })();
   },[booting]);
 
-  function toggleStorage() {
-    const next = storageMode==="supabase"?"local":"supabase";
-    USE_LOCAL = next==="local";
+  function toggleStorage(){
+    const next=storageMode==="supabase"?"local":"supabase";
+    USE_LOCAL=next==="local";
     try{localStorage.setItem("aperture:_mode",next);}catch{}
     setStorageMode(next);
-    setTopics([]); setPrefs({abstraction:{},personality:{}});
-    setCurrentTopic(null); setHierarchy(null);
-    setSubtopicIdx(null); setSubsubIdx(null);
-    setNodeId(null); setNodeData(null); setBooting(true);
+    setTopics([]);setPrefs({abstraction:{},personality:{}});
+    setCurrentTopic(null);setHierarchy(null);
+    setSubtopicIdx(null);setSubsubIdx(null);
+    setNodeId(null);setNodeData(null);setBooting(true);
   }
 
-  function goHome() {
-    setCurrentTopic(null); setHierarchy(null);
-    setSubtopicIdx(null); setSubsubIdx(null);
-    setNodeId(null); setNodeData(null); setLevelCheck(null);
+  function goHome(){
+    setCurrentTopic(null);setHierarchy(null);
+    setSubtopicIdx(null);setSubsubIdx(null);
+    setNodeId(null);setNodeData(null);setLevelCheck(null);
   }
 
-  async function testSupabase() {
-    setDbTesting(true); setDbTest(null);
-    const wasLocal = USE_LOCAL; USE_LOCAL = false;
-    try {
-      const r = await saveJSON("_conntest",{ping:Date.now()});
-      if (!r.ok) { setDbTest(`❌ Запис: ${r.detail}`); return; }
-      const rb = await loadJSON("_conntest",null);
-      setDbTest(rb ? `✅ Supabase работи!` : `⚠️ Запис мина, четене върна: ${JSON.stringify(rb)}`);
-    } catch(e) { setDbTest(`❌ ${e.message}`); }
-    finally { USE_LOCAL=wasLocal; setDbTesting(false); }
+  async function testSupabase(){
+    setDbTesting(true);setDbTest(null);
+    const wasLocal=USE_LOCAL;USE_LOCAL=false;
+    try{
+      const r=await saveJSON("_conntest",{ping:Date.now()});
+      if(!r.ok){setDbTest(`❌ Запис: ${r.detail}`);return;}
+      const rb=await loadJSON("_conntest",null);
+      setDbTest(rb?`✅ Supabase работи!`:`⚠️ Запис мина, четене: ${JSON.stringify(rb)}`);
+    }catch(e){setDbTest(`❌ ${e.message}`);}
+    finally{USE_LOCAL=wasLocal;setDbTesting(false);}
   }
 
-  async function startTopic(title) {
-    const trimmed = title.trim(); if (!trimmed) return;
-    const id = slugify(trimmed);
-    setHomeError(null); setHierarchy(null);
-    setSubtopicIdx(null); setSubsubIdx(null);
-    setNodeId(null); setNodeData(null); setLevelCheck(null); setTopicInput("");
-    let existing = topics.find(t=>t.id===id);
-    if (!existing) {
-      existing = {id, title:trimmed, createdAt:Date.now()};
-      const next = [existing,...topics];
-      setTopics(next); await saveJSON("topics",next);
-    }
-    setCurrentTopic(existing);
-    const cached = await loadJSON(`hierarchy:${id}`,null);
-    if (cached) { setHierarchy(cached.subtopics); return; }
+  async function startTopic(prompt) {
+    const trimmed=prompt.trim();if(!trimmed)return;
+    setHomeError(null);setHierarchy(null);
+    setSubtopicIdx(null);setSubsubIdx(null);
+    setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");
+
+    // build learning profile for better curriculum
+    let learningProfile=null;
+    try{
+      const allNodeKeys=await loadJSON("allNodeKeys",[]);
+      const nodeMap={};
+      for(const k of allNodeKeys.slice(0,30)){const nd=await loadJSON(`node:${k}`,null);if(nd)nodeMap[k]=nd;}
+      learningProfile=await genLearningProfile(topics,nodeMap);
+    }catch(e){console.warn("profile gen failed",e);}
+
+    // check if already exists by prompt
+    const id=slugify(trimmed)+"-"+Date.now().toString(36);
     setLoadingH(true);
-    try {
-      const subtopics = await genHierarchy(trimmed);
+    try{
+      // T.1: generate display name from prompt
+      const name=await genTopicName(trimmed);
+      const newTopic={id,name,prompt:trimmed,createdAt:Date.now()};
+      const next=[newTopic,...topics];
+      setTopics(next);await saveJSON("topics",next);
+      setCurrentTopic(newTopic);
+
+      const subtopics=await genHierarchy(trimmed,learningProfile);
       setHierarchy(subtopics);
-      await saveJSON(`hierarchy:${id}`,{title:trimmed,subtopics});
-    } catch(e) { setHomeError(`Грешка: ${e.message}`); }
-    finally { setLoadingH(false); }
+      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics});
+    }catch(e){setHomeError(`Грешка: ${e.message}`);}
+    finally{setLoadingH(false);}
   }
 
-  async function openNode(subIdx, ssIdx) {
-    setSubtopicIdx(subIdx); setSubsubIdx(ssIdx);
-    setTab("levels"); setNodeError(null);
-    const sub = hierarchy[subIdx].name;
-    const subsub = hierarchy[subIdx].subsubtopics[ssIdx];
-    const id = `${currentTopic.id}/${slugify(sub)}/${slugify(subsub)}`;
+  async function resumeTopic(topic){
+    setHomeError(null);setHierarchy(null);
+    setSubtopicIdx(null);setSubsubIdx(null);
+    setNodeId(null);setNodeData(null);setLevelCheck(null);
+    setCurrentTopic(topic);
+    const cached=await loadJSON(`hierarchy:${topic.id}`,null);
+    if(cached){setHierarchy(cached.subtopics);}
+    else{
+      setLoadingH(true);
+      try{
+        const subtopics=await genHierarchy(topic.prompt||topic.name,null);
+        setHierarchy(subtopics);
+        await saveJSON(`hierarchy:${topic.id}`,{name:topic.name,prompt:topic.prompt,subtopics});
+      }catch(e){setHomeError(`Грешка: ${e.message}`);}
+      finally{setLoadingH(false);}
+    }
+  }
+
+  // T.2: soft delete
+  async function softDeleteTopic(topicId){
+    const next=topics.map(t=>t.id===topicId?{...t,deletedAt:Date.now()}:t);
+    setTopics(next);await saveJSON("topics",next);
+    if(currentTopic?.id===topicId)goHome();
+  }
+
+  // T.2: restore from trash
+  async function restoreTopic(topicId){
+    const next=topics.map(t=>t.id===topicId?{...t,deletedAt:undefined}:t);
+    setTopics(next);await saveJSON("topics",next);
+  }
+
+  async function openNode(subIdx,ssIdx){
+    setSubtopicIdx(subIdx);setSubsubIdx(ssIdx);
+    setTab("levels");setNodeError(null);
+    const sub=hierarchy[subIdx].name;
+    const subsub=hierarchy[subIdx].subsubtopics[ssIdx];
+    const id=`${currentTopic.id}/${slugify(sub)}/${slugify(subsub)}`;
     setNodeId(id);
-    const EMPTY = {abstraction:[],personality:[],blend:null,tunedAbstraction:[],tunedPersonality:[],tunedBlendKey:null,unitConfused:false};
-    const cached = await loadJSON(`node:${id}`,EMPTY);
+    const EMPTY={abstraction:[],personality:[],blend:null,tunedAbstraction:[],tunedPersonality:[],tunedBlendKey:null,unitConfused:false};
+    const cached=await loadJSON(`node:${id}`,EMPTY);
     setNodeData(cached);
-    if (!cached.abstraction?.length) doLoadLevels(id,sub,subsub,cached);
+    // track all node keys for learning profile
+    const allKeys=await loadJSON("allNodeKeys",[]);
+    if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+    if(!cached.abstraction?.length)doLoadLevels(id,sub,subsub,cached);
   }
 
-  async function doLoadLevels(id,sub,subsub,base) {
-    setLoadingL(true); setNodeError(null);
-    try {
-      const abstraction = await genAbstraction(currentTopic.title,sub,subsub);
-      const updated = {...base,abstraction};
+  async function doLoadLevels(id,sub,subsub,base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const abstraction=await genAbstraction(currentTopic.name||currentTopic.title,sub,subsub);
+      const updated={...base,abstraction};
       setNodeData(updated);
-      const r = await saveJSON(`node:${id}`,updated);
-      if (!r.ok) setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    } catch(e) { setNodeError(`Грешка: ${e.message}`); }
-    finally { setLoadingL(false); }
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
   }
 
-  async function doLoadChannels(id,sub,subsub) {
-    setLoadingC(true); setNodeError(null);
-    try {
-      const personality = await genAllPersonalities(currentTopic.title,sub,subsub);
-      setNodeData(prev=>{
-        const u={...prev,personality};
-        saveJSON(`node:${id}`,u).then(r=>{ if(!r.ok) setNodeError(`Канали не са запазени: ${r.detail}`); });
-        return u;
-      });
-    } catch(e) { setNodeError(`Грешка: ${e.message}`); }
-    finally { setLoadingC(false); }
+  function switchTab(next){
+    setTab(next);setNodeError(null);
+    // channels hidden (T.3) — no action for channels tab
+    if(next==="blend"&&!nodeData?.blend&&!loadingB&&canBlend){
+      const sub=hierarchy[subtopicIdx].name,subsub=hierarchy[subtopicIdx].subsubtopics[subsubIdx];
+      doGenBlend(nodeId,sub,subsub);
+    }
   }
 
-  function switchTab(next) {
-    setTab(next); setNodeError(null);
-    if (!nodeData||!currentTopic||!hierarchy) return;
-    const sub=hierarchy[subtopicIdx].name, subsub=hierarchy[subtopicIdx].subsubtopics[subsubIdx];
-    if (next==="channels"&&!nodeData.personality?.length&&!loadingChannels) doLoadChannels(nodeId,sub,subsub);
-    if (next==="blend"&&!nodeData.blend&&!loadingBlend&&canBlend) doGenBlend(nodeId,sub,subsub);
-  }
-
-  async function doGenBlend(id,sub,subsub) {
+  // T.4: blend uses only abstraction prefs
+  async function doGenBlend(id,sub,subsub){
     const level=Number(topPreferred(prefs.abstraction,3));
-    const code=topPreferred(prefs.personality,"O");
-    setLoadingB(true); setNodeError(null);
-    try {
-      const text = await genBlend(currentTopic.title,sub,subsub,level,code);
+    setLoadingB(true);setNodeError(null);
+    try{
+      const text=await genBlend(currentTopic.name||currentTopic.title,sub,subsub,level);
       setNodeData(prev=>{
-        const u={...prev,blend:{text,level,code},tunedBlendKey:null};
-        saveJSON(`node:${id}`,u).then(r=>{ if(!r.ok) setNodeError(`Микс не е запазен: ${r.detail}`); });
+        const u={...prev,blend:{text,level},tunedBlendKey:null};
+        saveJSON(`node:${id}`,u).then(r=>{if(!r.ok)setNodeError(`Микс не е запазен: ${r.detail}`);});
         return u;
       });
-    } catch(e) { setNodeError(`Грешка: ${e.message}`); }
-    finally { setLoadingB(false); }
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingB(false);}
   }
 
-  async function tune(type, key) {
-    if (!nodeData) return;
+  async function tune(type,key){
+    if(!nodeData)return;
     const field=type==="abstraction"?"tunedAbstraction":"tunedPersonality";
-    if (nodeData[field]?.includes(key)) return;
+    if(nodeData[field]?.includes(key))return;
     const updNode={...nodeData,[field]:[...(nodeData[field]||[]),key]};
     const updPrefs={...prefs,[type]:{...prefs[type],[key]:(prefs[type]?.[key]||0)+1}};
-    setNodeData(updNode); setPrefs(updPrefs);
+    setNodeData(updNode);setPrefs(updPrefs);
     await saveJSON(`node:${nodeId}`,updNode);
     await saveJSON("prefs",updPrefs);
   }
 
-  async function tuneBlend() {
-    if (!nodeData?.blend||nodeData.tunedBlendKey) return;
-    const {level,code}=nodeData.blend;
-    const updNode={...nodeData,tunedBlendKey:`${level}-${code}`};
-    const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1},personality:{...prefs.personality,[code]:(prefs.personality?.[code]||0)+1}};
-    setNodeData(updNode); setPrefs(updPrefs);
+  async function tuneBlend(){
+    if(!nodeData?.blend||nodeData.tunedBlendKey)return;
+    const {level}=nodeData.blend;
+    const updNode={...nodeData,tunedBlendKey:`${level}`};
+    const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+    setNodeData(updNode);setPrefs(updPrefs);
     await saveJSON(`node:${nodeId}`,updNode);
     await saveJSON("prefs",updPrefs);
   }
 
-  async function markUnitConfused() {
-    if (!nodeData||nodeData.unitConfused) return;
+  async function markUnitConfused(){
+    if(!nodeData||nodeData.unitConfused)return;
     const u={...nodeData,unitConfused:true};
-    setNodeData(u); await saveJSON(`node:${nodeId}`,u);
+    setNodeData(u);await saveJSON(`node:${nodeId}`,u);
   }
-  async function unmarkUnitConfused() {
-    if (!nodeData||!nodeData.unitConfused) return;
+  async function unmarkUnitConfused(){
+    if(!nodeData||!nodeData.unitConfused)return;
     const u={...nodeData,unitConfused:false};
-    setNodeData(u); await saveJSON(`node:${nodeId}`,u);
+    setNodeData(u);await saveJSON(`node:${nodeId}`,u);
   }
 
-  async function runLevelCheck() {
-    setLoadingLC(true); setLcError(null); setLevelCheck(null);
-    try {
+  async function runLevelCheck(){
+    setLoadingLC(true);setLcError(null);setLevelCheck(null);
+    try{
       const nodeMap={};
-      for (const sub of hierarchy) {
-        for (const subsub of sub.subsubtopics) {
+      for(const sub of hierarchy){
+        for(const subsub of sub.subsubtopics){
           const id=`${currentTopic.id}/${slugify(sub.name)}/${slugify(subsub)}`;
           const nd=await loadJSON(`node:${id}`,null);
-          if (nd) nodeMap[id]=nd;
+          if(nd)nodeMap[id]=nd;
         }
       }
-      setLevelCheck(await genLevelCheck(currentTopic.title,hierarchy,prefs,nodeMap));
-    } catch(e) { setLcError(`Грешка: ${e.message}`); }
-    finally { setLoadingLC(false); }
+      setLevelCheck(await genLevelCheck(currentTopic.name||currentTopic.prompt,hierarchy,prefs,nodeMap));
+    }catch(e){setLcError(`Грешка: ${e.message}`);}
+    finally{setLoadingLC(false);}
+  }
+
+  // T.5: generate adapted topic
+  async function generateAdaptedTopic(){
+    if(!levelCheck||!currentTopic)return;
+    setGA(true);
+    try{
+      const adaptedName=await genAdaptedTopicName(currentTopic.name||currentTopic.prompt,levelCheck);
+      const adaptedPrompt=`${currentTopic.prompt||currentTopic.name} — фокус върху: ${levelCheck.missing}. ${levelCheck.next}`;
+      const id=slugify(adaptedName)+"-"+Date.now().toString(36);
+
+      // T.6: link parent<->child
+      const newTopic={id,name:adaptedName,prompt:adaptedPrompt,createdAt:Date.now(),parentId:currentTopic.id};
+      const updatedTopics=topics.map(t=>t.id===currentTopic.id?{...t,childId:id}:t);
+      updatedTopics.unshift(newTopic);
+      setTopics(updatedTopics);
+      await saveJSON("topics",updatedTopics);
+
+      // generate hierarchy
+      setLoadingH(true);
+      const subtopics=await genHierarchy(adaptedPrompt,null);
+      await saveJSON(`hierarchy:${id}`,{name:adaptedName,prompt:adaptedPrompt,subtopics});
+
+      // navigate to new topic
+      setCurrentTopic(newTopic);
+      setHierarchy(subtopics);
+      setSubtopicIdx(null);setSubsubIdx(null);
+      setNodeId(null);setNodeData(null);setLevelCheck(null);
+    }catch(e){setLcError(`Грешка при генериране: ${e.message}`);}
+    finally{setGA(false);setLoadingH(false);}
   }
 
   /* render */
@@ -448,118 +495,170 @@ function Aperture() {
     <div className="min-h-screen bg-stone-950 text-stone-200">
       <header className="border-b border-stone-800 px-4 py-3 flex items-center justify-between">
         <button onClick={goHome} className="flex items-center gap-2 group">
-          <span className="text-amber-500"><ApertureIcon size={20} /></span>
+          <span className="text-amber-500"><ApertureIcon size={20}/></span>
           <span className="font-display font-bold text-lg text-stone-100">Aperture</span>
-          {currentTopic && <span className="font-mono-cal text-xs text-stone-500">/ {currentTopic.title}</span>}
+          {currentTopic && <span className="font-mono-cal text-xs text-stone-500">/ {currentTopic.name}</span>}
         </button>
         <button onClick={toggleStorage}
-          className={`font-mono-cal text-xs uppercase tracking-wide px-2 py-1 rounded border transition-colors ${storageMode==="supabase"?"border-emerald-800 text-emerald-500 bg-emerald-950/30":"border-amber-800 text-amber-500 bg-amber-950/30"}`}>
+          className={`font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border transition-colors ${storageMode==="supabase"?"border-emerald-800 text-emerald-500 bg-emerald-950/30":"border-amber-800 text-amber-500 bg-amber-950/30"}`}>
           {storageMode==="supabase"?"☁ Supabase":"📱 Local"}
         </button>
       </header>
       <main className="max-w-2xl mx-auto px-4 py-8">
-        {booting ? <Spinner label="зареждам…" />
-          : !currentTopic ? (
+        {booting?<Spinner label="зареждам…"/>
+          :!currentTopic?(
             <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
-              onStart={()=>startTopic(topicInput)} topics={topics}
-              onResume={t=>startTopic(t.title)} error={homeError}
-              onTestDb={testSupabase} dbTesting={dbTesting} dbTest={dbTest} />
-          ) : loadingHierarchy ? <Spinner label="изграждам учебен план…" />
-          : !hierarchy ? <ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>startTopic(currentTopic.title)} />
-          : subtopicIdx===null ? (
-            <SubtopicList topic={currentTopic.title} hierarchy={hierarchy}
+              onStart={()=>startTopic(topicInput)} topics={activeTopics} deletedTopics={deletedTopics}
+              onResume={resumeTopic} error={homeError}
+              onTestDb={testSupabase} dbTesting={dbTesting} dbTest={dbTest}
+              onDelete={softDeleteTopic} onRestore={restoreTopic}
+              showTrash={showTrash} setShowTrash={setShowTrash}/>
+          ):loadingH?<Spinner label="изграждам учебен план…"/>
+          :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>resumeTopic(currentTopic)}/>
+          :subtopicIdx===null?(
+            <SubtopicList topic={currentTopic} hierarchy={hierarchy}
               onPick={i=>{setLevelCheck(null);setSubtopicIdx(i);}}
               onLevelCheck={runLevelCheck} loadingLevelCheck={loadingLC}
-              levelCheck={levelCheck} levelCheckError={lcError} />
-          ) : subsubIdx===null ? (
-            <SubsubList topic={currentTopic.title} subtopic={hierarchy[subtopicIdx]}
+              levelCheck={levelCheck} levelCheckError={lcError}
+              onDelete={()=>softDeleteTopic(currentTopic.id)}
+              onGenerateAdapted={generateAdaptedTopic} generatingAdapted={generatingAdapted}
+              allTopics={topics}
+              onNavigateTopic={t=>{resumeTopic(t);}}/>
+          ):subsubIdx===null?(
+            <SubsubList topic={currentTopic} subtopic={hierarchy[subtopicIdx]}
               onBack={()=>{setSubtopicIdx(null);setNodeId(null);setNodeData(null);}}
-              onPick={i=>openNode(subtopicIdx,i)} />
-          ) : (
+              onPick={i=>openNode(subtopicIdx,i)}/>
+          ):(
             <NodeView
-              topic={currentTopic.title} subtopic={hierarchy[subtopicIdx].name}
+              topic={currentTopic.name||currentTopic.title}
+              subtopic={hierarchy[subtopicIdx].name}
               subsub={hierarchy[subtopicIdx].subsubtopics[subsubIdx]}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
-              loadingLevels={loadingLevels} loadingChannels={loadingChannels} loadingBlend={loadingBlend}
+              loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
               onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].subsubtopics[subsubIdx],nodeData)}
-              onRetryChannels={()=>doLoadChannels(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].subsubtopics[subsubIdx])}
               onTuneAbstraction={key=>tune("abstraction",key)}
-              onTunePersonality={key=>tune("personality",key)}
               onTuneBlend={tuneBlend}
-              onUnitConfused={markUnitConfused}
-              onUnitUnconfused={unmarkUnitConfused}
+              onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
-              canBlend={canBlend} onGenerateBlend={()=>{const s=hierarchy[subtopicIdx].name,ss=hierarchy[subtopicIdx].subsubtopics[subsubIdx];doGenBlend(nodeId,s,ss);}}
-            />
+              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].subsubtopics[subsubIdx])}/>
           )}
       </main>
     </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Screens                                                             */
-/* ------------------------------------------------------------------ */
-function HomeScreen({topicInput,setTopicInput,onStart,topics,onResume,error,onTestDb,dbTesting,dbTest}) {
+/* ── Screens ─────────────────────────────────────────────────────────── */
+function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,error,onTestDb,dbTesting,dbTest,onDelete,onRestore,showTrash,setShowTrash}){
   return <div className="space-y-8">
     <div>
       <h1 className="font-display text-2xl font-bold text-stone-100 mb-1">Какво искаш да научиш?</h1>
-      <p className="font-read text-stone-400 text-sm">Напиши тема — Aperture изгражда учебния план и открива кой стил на обяснение те кара да разбираш.</p>
+      <p className="font-read text-stone-400 text-sm">Напиши тема или въпрос — Aperture ще генерира учебен план и ще открие кой стил на обяснение ти пасва.</p>
     </div>
     <div className="flex gap-2">
       <input value={topicInput} onChange={e=>setTopicInput(e.target.value)}
         onKeyDown={e=>{if(e.key==="Enter")onStart();}}
-        placeholder="напр. Статистика, термодинамика, римско право…"
-        className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read placeholder:text-stone-500 focus:outline-none focus:border-amber-600" />
+        placeholder="напр. Как работи логистичната регресия?"
+        className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read placeholder:text-stone-500 focus:outline-none focus:border-amber-600"/>
       <button onClick={onStart} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 rounded">Старт</button>
     </div>
-    {error && <ErrorNote message={error} />}
+    {error&&<ErrorNote message={error}/>}
     <div className="border border-stone-800 rounded p-3 space-y-2">
       <div className="flex items-center justify-between">
         <span className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Тест на Supabase</span>
-        <button onClick={onTestDb} disabled={dbTesting} className="font-mono-cal text-xs text-amber-500 hover:text-amber-400 disabled:opacity-50">
-          {dbTesting?"тествам…":"тествай"}
-        </button>
+        <button onClick={onTestDb} disabled={dbTesting} className="font-mono-cal text-xs text-amber-500 hover:text-amber-400 disabled:opacity-50">{dbTesting?"тествам…":"тествай"}</button>
       </div>
-      {dbTest && <pre className="font-mono-cal text-xs text-stone-300 whitespace-pre-wrap break-all">{dbTest}</pre>}
+      {dbTest&&<pre className="font-mono-cal text-xs text-stone-300 whitespace-pre-wrap break-all">{dbTest}</pre>}
     </div>
-    {topics.length>0 && <div>
-      <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500 mb-2">Продължи</div>
+    {topics.length>0&&<div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Активни планове</div>
+        {deletedTopics.length>0&&<button onClick={()=>setShowTrash(!showTrash)} className="font-mono-cal text-xs text-stone-500 hover:text-amber-400 flex items-center gap-1"><Trash2 size={12}/>{showTrash?"скрий":"кошче"} ({deletedTopics.length})</button>}
+      </div>
       <div className="space-y-1">
         {topics.map(t=>(
-          <button key={t.id} onClick={()=>onResume(t)}
-            className="w-full text-left px-3 py-2 rounded border border-stone-800 hover:border-stone-600 flex items-center justify-between group">
-            <span className="font-read text-stone-200">{t.title}</span>
-            <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
-          </button>
+          <div key={t.id} className="flex items-center gap-2 group">
+            <button onClick={()=>onResume(t)} className="flex-1 text-left px-3 py-2 rounded border border-stone-800 hover:border-stone-600 flex items-center justify-between">
+              <div>
+                <div className="font-read text-stone-200">{t.name}</div>
+                {t.parentId&&<div className="font-mono-cal text-[10px] text-stone-500">↳ адаптиран план</div>}
+                {t.childId&&<div className="font-mono-cal text-[10px] text-sky-600">→ има адаптация</div>}
+              </div>
+              <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
+            </button>
+            <button onClick={()=>onDelete(t.id)} className="p-2 text-stone-600 hover:text-red-400 transition-colors"><Trash2 size={14}/></button>
+          </div>
+        ))}
+      </div>
+    </div>}
+    {showTrash&&deletedTopics.length>0&&<div>
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-600 mb-2">Архивирани</div>
+      <div className="space-y-1">
+        {deletedTopics.map(t=>(
+          <div key={t.id} className="flex items-center gap-2">
+            <div className="flex-1 px-3 py-2 rounded border border-stone-800/50 opacity-50">
+              <div className="font-read text-stone-400 text-sm">{t.name}</div>
+            </div>
+            <button onClick={()=>onRestore(t.id)} className="font-mono-cal text-xs text-stone-500 hover:text-emerald-400 px-2">↩ върни</button>
+          </div>
         ))}
       </div>
     </div>}
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError}) {
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic}){
+  // T.6: find related topics
+  const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
+  const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
+
   return <div className="space-y-4">
+    <div className="flex items-start justify-between gap-2">
+      <div>
+        <h2 className="font-display text-xl font-bold text-stone-100">{topic.name}</h2>
+        {topic.prompt&&topic.prompt!==topic.name&&(
+          <p className="font-read text-stone-500 text-sm mt-1 leading-relaxed">{topic.prompt}</p>
+        )}
+      </div>
+      <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>
+    </div>
+
+    {/* T.6: related topic links */}
+    {(parentTopic||childTopic)&&<div className="space-y-1">
+      {parentTopic&&<button onClick={()=>onNavigateTopic(parentTopic)} className="flex items-center gap-2 text-sm font-mono-cal text-stone-500 hover:text-amber-400">
+        <ChevronLeft size={14}/> Базов план: {parentTopic.name}
+      </button>}
+      {childTopic&&<button onClick={()=>onNavigateTopic(childTopic)} className="flex items-center gap-2 text-sm font-mono-cal text-sky-600 hover:text-sky-400">
+        Адаптиран план: {childTopic.name} <ArrowRight size={14}/>
+      </button>}
+    </div>}
+
     <div className="flex items-center justify-between gap-2">
-      <h2 className="font-display text-xl font-bold text-stone-100">{topic}</h2>
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Теми</div>
       <button onClick={onLevelCheck} disabled={loadingLevelCheck}
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50 shrink-0">
-        {loadingLevelCheck ? <Loader2 size={12} className="animate-spin"/> : <Sparkles size={12}/>}
+        {loadingLevelCheck?<Loader2 size={12} className="animate-spin"/>:<Sparkles size={12}/>}
         Провери ниво
       </button>
     </div>
-    {levelCheckError && <ErrorNote message={levelCheckError}/>}
-    {levelCheck && <div className="rounded border border-stone-700 bg-stone-900/60 p-4 space-y-4">
+
+    {levelCheckError&&<ErrorNote message={levelCheckError}/>}
+    {levelCheck&&<div className="rounded border border-stone-700 bg-stone-900/60 p-4 space-y-4">
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-emerald-500 mb-1">Какво знаеш</div>
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.knows}</p></div>
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500 mb-1">Какво липсва</div>
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.missing}</p></div>
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-sky-500 mb-1">Следваща стъпка</div>
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.next}</p></div>
+      {/* T.5: generate adapted plan button */}
+      <button onClick={onGenerateAdapted} disabled={generatingAdapted}
+        className="flex items-center gap-2 font-mono-cal text-xs uppercase tracking-wide bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white px-4 py-2 rounded transition-colors">
+        {generatingAdapted?<Loader2 size={14} className="animate-spin"/>:<Sparkles size={14}/>}
+        Генерирай адаптирана тема
+      </button>
     </div>}
-    <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Теми</div>
+
     <div className="space-y-1">
       {hierarchy.map((s,i)=>(
         <button key={i} onClick={()=>onPick(i)}
@@ -572,10 +671,10 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   </div>;
 }
 
-function SubsubList({topic,subtopic,onBack,onPick}) {
+function SubsubList({topic,subtopic,onBack,onPick}){
   return <div className="space-y-4">
     <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
-      <ChevronLeft size={16}/> {topic}
+      <ChevronLeft size={16}/> {topic.name||topic.title}
     </button>
     <h2 className="font-display text-xl font-bold text-stone-100">{subtopic.name}</h2>
     <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Единици</div>
@@ -591,8 +690,10 @@ function SubsubList({topic,subtopic,onBack,onPick}) {
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,onBack,tab,setTab,nodeData,loadingLevels,loadingChannels,loadingBlend,error,onRetryLevels,onRetryChannels,onTuneAbstraction,onTunePersonality,onTuneBlend,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}) {
-  const unitConfused = !!nodeData?.unitConfused;
+function NodeView({topic,subtopic,subsub,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onTuneAbstraction,onTuneBlend,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+  const unitConfused=!!nodeData?.unitConfused;
+  // T.3: channels tab hidden — only "levels" and "blend"
+  const TABS=[{id:"levels",label:"Нива"},{id:"blend",label:"Микс"}];
   return <div className="space-y-5">
     <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
       <ChevronLeft size={16}/> {subtopic}
@@ -608,38 +709,38 @@ function NodeView({topic,subtopic,subsub,onBack,tab,setTab,nodeData,loadingLevel
       </button>
     </div>
     <div className="flex gap-1 border-b border-stone-800">
-      {[{id:"levels",label:"Нива"},{id:"channels",label:"Канали"},{id:"blend",label:"Микс"}].map(t=>(
+      {TABS.map(t=>(
         <button key={t.id} onClick={()=>setTab(t.id)}
           className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-2 border-b-2 transition-colors ${tab===t.id?"border-amber-500 text-amber-400":"border-transparent text-stone-500 hover:text-stone-300"}`}>
           {t.label}
         </button>
       ))}
     </div>
-    {error && <ErrorNote message={error} onRetry={tab==="levels"?onRetryLevels:tab==="channels"?onRetryChannels:undefined}/>}
-    {tab==="levels" && <LevelsPanel loading={loadingLevels} levels={nodeData?.abstraction||[]} tuned={nodeData?.tunedAbstraction||[]} onTune={onTuneAbstraction} topLevel={topLevel}/>}
-    {tab==="channels" && <ChannelsPanel loading={loadingChannels} personality={nodeData?.personality||[]} tuned={nodeData?.tunedPersonality||[]} onTune={onTunePersonality} scores={prefs.personality}/>}
-    {tab==="blend" && <BlendPanel canBlend={canBlend} blend={nodeData?.blend} loading={loadingBlend} onGenerate={onGenerateBlend} tuned={!!nodeData?.tunedBlendKey} onTune={onTuneBlend}/>}
+    {error&&<ErrorNote message={error} onRetry={tab==="levels"?onRetryLevels:undefined}/>}
+    {tab==="levels"&&<LevelsPanel loading={loadingLevels} levels={nodeData?.abstraction||[]} tuned={nodeData?.tunedAbstraction||[]} onTune={onTuneAbstraction} topLevel={topLevel}/>}
+    {tab==="blend"&&<BlendPanel canBlend={canBlend} blend={nodeData?.blend} loading={loadingBlend} onGenerate={onGenerateBlend} tuned={!!nodeData?.tunedBlendKey} onTune={onTuneBlend}/>}
   </div>;
 }
 
-function LevelsPanel({loading,levels,tuned,onTune,topLevel}) {
-  if (loading) return <Spinner label="генерирам 5 нива…"/>;
-  if (!levels.length) return null;
+/* ── Panels ──────────────────────────────────────────────────────────── */
+function LevelsPanel({loading,levels,tuned,onTune,topLevel}){
+  if(loading)return <Spinner label="генерирам 5 нива…"/>;
+  if(!levels.length)return null;
   return <div className="space-y-4">
     <div className="flex justify-between border-b border-stone-800 pb-2">
       {LEVELS.map(l=>{
-        const isTuned=tuned.includes(l.level), isTop=String(l.level)===String(topLevel);
+        const isTuned=tuned.includes(l.level),isTop=String(l.level)===String(topLevel);
         return <div key={l.level} className="flex flex-col items-center gap-1 flex-1">
           <span className={`font-mono-cal text-xs ${isTuned?"text-amber-500":"text-stone-500"}`}>{l.level}</span>
           <span className={`h-3 w-px ${isTuned?"bg-amber-500":"bg-stone-700"}`}/>
           <span className={`font-mono-cal text-xs uppercase tracking-wide text-center ${isTuned?"text-amber-400":"text-stone-500"}`}>{l.label}</span>
-          {isTop && <span className="text-[10px] text-emerald-500 font-mono-cal">най-добро</span>}
+          {isTop&&<span className="text-[10px] text-emerald-500 font-mono-cal">най-добро</span>}
         </div>;
       })}
     </div>
     <div className="space-y-3">
       {levels.map(lv=>{
-        const meta=LEVELS.find(l=>l.level===lv.level), isTuned=tuned.includes(lv.level);
+        const meta=LEVELS.find(l=>l.level===lv.level),isTuned=tuned.includes(lv.level);
         return <div key={lv.level} className={`rounded border p-4 ${isTuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
           <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {lv.level} · {meta?.label}</div>
           <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
@@ -650,38 +751,13 @@ function LevelsPanel({loading,levels,tuned,onTune,topLevel}) {
   </div>;
 }
 
-function ChannelsPanel({loading,personality,tuned,onTune,scores}) {
-  if (loading) return <Spinner label="генерирам 5 канала…"/>;
-  if (!personality.length) return null;
-  const maxScore=Math.max(1,...Object.values(scores||{}));
-  const sorted=[...personality].sort((a,b)=>(scores[b.code]||0)-(scores[a.code]||0));
-  return <div className="space-y-3">
-    {sorted.map(p=>{
-      const meta=PERSONALITIES.find(t=>t.code===p.code), isTuned=tuned.includes(p.code), score=scores[p.code]||0;
-      return <div key={p.code} className={`rounded border p-4 ${isTuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
-        <div className="flex items-baseline gap-2 mb-1">
-          <span className="font-mono-cal text-sm font-medium text-stone-100">{meta?.name}</span>
-          <span className="font-mono-cal text-xs text-stone-500">{meta?.code}</span>
-        </div>
-        {score>0 && <div className="h-1 bg-stone-800 rounded mb-2 overflow-hidden">
-          <div className="h-full bg-emerald-600" style={{width:`${Math.round((score/maxScore)*100)}%`}}/>
-        </div>}
-        <p className="font-read text-stone-200 leading-relaxed text-lg">{p.text}</p>
-        <div className="mt-2"><TuneButton tuned={isTuned} onClick={()=>onTune(p.code)}/></div>
-      </div>;
-    })}
-  </div>;
-}
-
-function BlendPanel({canBlend,blend,loading,onGenerate,tuned,onTune}) {
-  if (!canBlend) return <p className="font-read text-stone-500 text-sm py-6">Оцени поне едно ниво и един канал — миксът се изгражда от твоята обратна връзка от всички теми.</p>;
-  if (loading) return <Spinner label="смесвам обяснението…"/>;
-  if (!blend) return <button onClick={onGenerate} className="flex items-center gap-2 font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">
-    <Sparkles size={16}/> Генерирай микс
-  </button>;
-  const lvl=LEVELS.find(l=>l.level===blend.level), per=PERSONALITIES.find(p=>p.code===blend.code);
+function BlendPanel({canBlend,blend,loading,onGenerate,tuned,onTune}){
+  if(!canBlend)return <p className="font-read text-stone-500 text-sm py-6">Оцени поне едно ниво от таб Нива — миксът се изгражда на база харесаните обяснения.</p>;
+  if(loading)return <Spinner label="смесвам обяснението…"/>;
+  if(!blend)return <button onClick={onGenerate} className="flex items-center gap-2 font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded"><Sparkles size={16}/> Генерирай микс</button>;
+  const lvl=LEVELS.find(l=>l.level===blend.level);
   return <div className={`rounded border p-4 ${tuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
-    <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {blend.level} {lvl?.label} + {per?.name}</div>
+    <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {blend.level} · {lvl?.label}</div>
     <p className="font-read text-stone-200 leading-relaxed text-lg">{blend.text}</p>
     <div className="mt-2"><TuneButton tuned={tuned} onClick={onTune}/></div>
     <p className="font-mono-cal text-[11px] text-stone-600 mt-2">Оценката влияе глобално на алгоритъма.</p>
