@@ -171,22 +171,37 @@ async function genBlend(topic, sub, subsub, level) {
 }
 
 async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
-  const rated=[],confused=[],improveUnits=[];
+  const rated=[],confused=[],improveUnits=[],ignoredUnits=[];
   let lowLevelSum=0, lowLevelCount=0;
+
+  // build full unit list from hierarchy to detect never-opened units too
+  const allUnitKeys=[];
+  for(const sub of hierarchy){
+    for(const subsub of sub.subsubtopics){
+      allUnitKeys.push({key:`${sub.name}/${subsub}`, label:`${sub.name} › ${subsub}`});
+    }
+  }
+
   for(const [key,nd] of Object.entries(nodeDataMap)){
     const unit=key.split("/").slice(1).join(" › ");
     const tunedLevels = nd.tunedAbstraction||[];
-    if(tunedLevels.length+(nd.tunedBlendKey?1:0)>0) rated.push(unit);
+    const hasAnyRating = tunedLevels.length>0 || !!nd.tunedBlendKey;
+    if(hasAnyRating) rated.push(unit);
     if(nd.unitConfused) confused.push(unit);
-    // T-new: unit is "understood but shallow" if the only levels liked are 1 or 2
+    // T-new: shallow understanding (levels 1-2 only)
     if(tunedLevels.length>0 && !nd.unitConfused){
       const maxLevel = Math.max(...tunedLevels);
-      if(maxLevel<=2){
-        improveUnits.push(unit);
-        lowLevelSum += maxLevel; lowLevelCount++;
-      }
+      if(maxLevel<=2){ improveUnits.push(unit); lowLevelSum+=maxLevel; lowLevelCount++; }
     }
+    // T-new: opened but never rated and never marked confused = disengaged
+    if(!hasAnyRating && !nd.unitConfused) ignoredUnits.push(unit);
   }
+  // T-new: units never even opened also count as disengaged
+  const openedRelKeys = new Set(Object.keys(nodeDataMap).map(k=>k.split("/").slice(1).join("/")));
+  for(const u of allUnitKeys){
+    if(!openedRelKeys.has(u.key)) ignoredUnits.push(u.label);
+  }
+
   const avgLowLevel = lowLevelCount>0 ? Math.round(lowLevelSum/lowLevelCount) : null;
   const topLvl=LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
   const d=await callClaude(
@@ -194,16 +209,18 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
 Rated as helpful: ${rated.join(", ")||"none yet"}.
 Marked as completely unclear: ${confused.join(", ")||"none"}.
 Understood only at a shallow level (only liked "Analogy" or "Example" explanations, levels 1-2, never went deeper): ${improveUnits.join(", ")||"none"}.
+Never engaged with — no level rated, no "did not understand" mark, possibly not even opened (likely low interest, not a knowledge gap): ${ignoredUnits.join(", ")||"none"}.
 Preferred explanation level overall: "${topLvl||"unknown"}".
-Write in the SAME language as the topic above (detect it and match exactly — do not default to any other language). Four sections, with section labels also translated into that same language:
+Write in the SAME language as the topic above (detect it and match exactly — do not default to any other language). Five sections, with section labels also translated into that same language:
 1 first section (100-140 words) — what they solidly know
-2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and explain what deeper understanding (mechanics, formal definition, or expert nuance) they still need to reach for each; if the list is empty, say there's nothing shallow yet
+2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and explain what deeper understanding they still need to reach for each; if empty, say there's nothing shallow yet
 3 third section (100-140 words) — what's missing entirely, including unclear/confused units and missing foundational knowledge
-4 fourth section (40-60 words) — one concrete next thing to study
-Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"...","next":"..."}`,
-    1000
+4 fourth section (50-90 words) — about the never-engaged units listed above: note that these seem to hold less interest for the learner rather than being a knowledge gap, and that future plans will deprioritize this kind of content; if empty, say everything has been engaged with
+5 fifth section (40-60 words) — one concrete next thing to study
+Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"...","ignored":"...","next":"..."}`,
+    1200
   );
-  return {...d, _improveUnits: improveUnits, _avgLowLevel: avgLowLevel};
+  return {...d, _improveUnits: improveUnits, _avgLowLevel: avgLowLevel, _ignoredUnits: ignoredUnits};
 }
 
 // T.5: generate adapted topic as full new plan
@@ -501,7 +518,10 @@ function Aperture() {
       const improveHint = (levelCheck.improve && levelCheck._improveUnits?.length)
         ? ` Also deepen understanding of these shallowly-understood topics: ${levelCheck.improve}${targetLvlLabel?` — aim to bring the learner up to a "${targetLvlLabel}" level of understanding on these.`:""}`
         : "";
-      const adaptedPrompt=`${currentTopic.prompt||currentTopic.name} — фокус върху: ${levelCheck.missing}. ${levelCheck.next}${improveHint}`;
+      const ignoredHint = (levelCheck._ignoredUnits?.length)
+        ? ` Minimize or deprioritize content similar to these topics the learner showed no interest in: ${levelCheck._ignoredUnits.join(", ")}.`
+        : "";
+      const adaptedPrompt=`${currentTopic.prompt||currentTopic.name} — фокус върху: ${levelCheck.missing}. ${levelCheck.next}${improveHint}${ignoredHint}`;
       const id=slugify(adaptedName)+"-"+Date.now().toString(36);
 
       // T.6: link parent<->child
@@ -679,6 +699,8 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.improve}</p></div>}
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500 mb-1">Какво липсва</div>
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.missing}</p></div>
+      {levelCheck.ignored&&<div><div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500 mb-1">Неангажиращи теми</div>
+        <p className="font-read text-stone-400 text-base leading-relaxed">{levelCheck.ignored}</p></div>}
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-sky-500 mb-1">Следваща стъпка</div>
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.next}</p></div>
       {/* T.5: generate adapted plan button */}
