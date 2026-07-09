@@ -171,26 +171,39 @@ async function genBlend(topic, sub, subsub, level) {
 }
 
 async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
-  const rated=[],confused=[];
+  const rated=[],confused=[],improveUnits=[];
+  let lowLevelSum=0, lowLevelCount=0;
   for(const [key,nd] of Object.entries(nodeDataMap)){
     const unit=key.split("/").slice(1).join(" › ");
-    if((nd.tunedAbstraction?.length||0)+(nd.tunedBlendKey?1:0)>0) rated.push(unit);
+    const tunedLevels = nd.tunedAbstraction||[];
+    if(tunedLevels.length+(nd.tunedBlendKey?1:0)>0) rated.push(unit);
     if(nd.unitConfused) confused.push(unit);
+    // T-new: unit is "understood but shallow" if the only levels liked are 1 or 2
+    if(tunedLevels.length>0 && !nd.unitConfused){
+      const maxLevel = Math.max(...tunedLevels);
+      if(maxLevel<=2){
+        improveUnits.push(unit);
+        lowLevelSum += maxLevel; lowLevelCount++;
+      }
+    }
   }
+  const avgLowLevel = lowLevelCount>0 ? Math.round(lowLevelSum/lowLevelCount) : null;
   const topLvl=LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
   const d=await callClaude(
     `Learner studying "${topic}". Subtopics: ${hierarchy.map(s=>s.name).join(", ")}.
 Rated as helpful: ${rated.join(", ")||"none yet"}.
 Marked as completely unclear: ${confused.join(", ")||"none"}.
-Preferred explanation level: "${topLvl||"unknown"}".
-Write 120-180 words TOTAL, in the SAME language as the topic above (detect it from the topic text and match it exactly — do not default to any other language). Three sections, with section labels also translated into that same language:
-1 first section — what they likely know
-2 second section — what's missing, including unclear units and missing foundational knowledge
-3 third section — one concrete next thing to study
-Never use " inside text.\nReturn: {"knows":"...","missing":"...","next":"..."}`,
-    800
+Understood only at a shallow level (only liked "Analogy" or "Example" explanations, levels 1-2, never went deeper): ${improveUnits.join(", ")||"none"}.
+Preferred explanation level overall: "${topLvl||"unknown"}".
+Write in the SAME language as the topic above (detect it and match exactly — do not default to any other language). Four sections, with section labels also translated into that same language:
+1 first section (100-140 words) — what they solidly know
+2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and explain what deeper understanding (mechanics, formal definition, or expert nuance) they still need to reach for each; if the list is empty, say there's nothing shallow yet
+3 third section (100-140 words) — what's missing entirely, including unclear/confused units and missing foundational knowledge
+4 fourth section (40-60 words) — one concrete next thing to study
+Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"...","next":"..."}`,
+    1000
   );
-  return d;
+  return {...d, _improveUnits: improveUnits, _avgLowLevel: avgLowLevel};
 }
 
 // T.5: generate adapted topic as full new plan
@@ -483,7 +496,12 @@ function Aperture() {
     setGA(true);
     try{
       const adaptedName=await genAdaptedTopicName(currentTopic.name||currentTopic.prompt,levelCheck);
-      const adaptedPrompt=`${currentTopic.prompt||currentTopic.name} — фокус върху: ${levelCheck.missing}. ${levelCheck.next}`;
+      const targetLevel = levelCheck._avgLowLevel ? Math.min(5, levelCheck._avgLowLevel+2) : null;
+      const targetLvlLabel = targetLevel ? LEVELS.find(l=>l.level===targetLevel)?.label : null;
+      const improveHint = (levelCheck.improve && levelCheck._improveUnits?.length)
+        ? ` Also deepen understanding of these shallowly-understood topics: ${levelCheck.improve}${targetLvlLabel?` — aim to bring the learner up to a "${targetLvlLabel}" level of understanding on these.`:""}`
+        : "";
+      const adaptedPrompt=`${currentTopic.prompt||currentTopic.name} — фокус върху: ${levelCheck.missing}. ${levelCheck.next}${improveHint}`;
       const id=slugify(adaptedName)+"-"+Date.now().toString(36);
 
       // T.6: link parent<->child
@@ -657,6 +675,8 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     {levelCheck&&<div className="rounded border border-stone-700 bg-stone-900/60 p-4 space-y-4">
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-emerald-500 mb-1">Какво знаеш</div>
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.knows}</p></div>
+      {levelCheck.improve&&<div><div className="font-mono-cal text-xs uppercase tracking-wide text-orange-500 mb-1">Какво разбираш, но има нужда да подобриш</div>
+        <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.improve}</p></div>}
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500 mb-1">Какво липсва</div>
         <p className="font-read text-stone-200 text-base leading-relaxed">{levelCheck.missing}</p></div>
       <div><div className="font-mono-cal text-xs uppercase tracking-wide text-sky-500 mb-1">Следваща стъпка</div>
