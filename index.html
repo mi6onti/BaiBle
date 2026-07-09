@@ -171,14 +171,14 @@ async function genBlend(topic, sub, subsub, level) {
 }
 
 async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
-  const rated=[],confused=[],improveUnits=[],ignoredUnits=[];
+  const solidUnits=[],confused=[],improveUnits=[],ignoredUnits=[];
   let lowLevelSum=0, lowLevelCount=0;
 
-  // build full unit list from hierarchy to detect never-opened units too
+  // build full unit list from hierarchy (SLUGIFIED to match nodeDataMap keys) to detect never-opened units
   const allUnitKeys=[];
   for(const sub of hierarchy){
     for(const subsub of sub.subsubtopics){
-      allUnitKeys.push({key:`${sub.name}/${subsub}`, label:`${sub.name} › ${subsub}`});
+      allUnitKeys.push({key:`${slugify(sub.name)}/${slugify(subsub)}`, label:`${sub.name} › ${subsub}`});
     }
   }
 
@@ -186,17 +186,16 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
     const unit=key.split("/").slice(1).join(" › ");
     const tunedLevels = nd.tunedAbstraction||[];
     const hasAnyRating = tunedLevels.length>0 || !!nd.tunedBlendKey;
-    if(hasAnyRating) rated.push(unit);
     if(nd.unitConfused) confused.push(unit);
-    // T-new: shallow understanding (levels 1-2 only)
     if(tunedLevels.length>0 && !nd.unitConfused){
       const maxLevel = Math.max(...tunedLevels);
       if(maxLevel<=2){ improveUnits.push(unit); lowLevelSum+=maxLevel; lowLevelCount++; }
+      else { solidUnits.push(unit); } // level 3+ counts as adequately/solidly understood
     }
-    // T-new: opened but never rated and never marked confused = disengaged
+    // opened but never rated and never marked confused = disengaged
     if(!hasAnyRating && !nd.unitConfused) ignoredUnits.push(unit);
   }
-  // T-new: units never even opened also count as disengaged
+  // units never even opened also count as disengaged (bug fix: match slugified keys)
   const openedRelKeys = new Set(Object.keys(nodeDataMap).map(k=>k.split("/").slice(1).join("/")));
   for(const u of allUnitKeys){
     if(!openedRelKeys.has(u.key)) ignoredUnits.push(u.label);
@@ -206,19 +205,20 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
   const topLvl=LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
   const d=await callClaude(
     `Learner studying "${topic}". Subtopics: ${hierarchy.map(s=>s.name).join(", ")}.
-Rated as helpful: ${rated.join(", ")||"none yet"}.
+Understood adequately or solidly (level 3+ explanations liked — "Mechanics", "Definition", or "Depth"): ${solidUnits.join(", ")||"none yet"}.
 Marked as completely unclear: ${confused.join(", ")||"none"}.
-Understood only at a shallow level (only liked "Analogy" or "Example" explanations, levels 1-2, never went deeper): ${improveUnits.join(", ")||"none"}.
-Never engaged with — no level rated, no "did not understand" mark, possibly not even opened (likely low interest, not a knowledge gap): ${ignoredUnits.join(", ")||"none"}.
+Understood only at a shallow level (only liked "Analogy" or "Example" explanations, levels 1-2 — this is INSUFFICIENT depth, not real command of the topic): ${improveUnits.join(", ")||"none"}.
+Never engaged with — no level rated, no "did not understand" mark, not opened (likely low interest, not a knowledge gap): ${ignoredUnits.join(", ")||"none"}.
 Preferred explanation level overall: "${topLvl||"unknown"}".
-Write in the SAME language as the topic above (detect it and match exactly — do not default to any other language). Five sections, with section labels also translated into that same language:
-1 first section (100-140 words) — what they solidly know
-2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and explain what deeper understanding they still need to reach for each; if empty, say there's nothing shallow yet
-3 third section (100-140 words) — what's missing entirely, including unclear/confused units and missing foundational knowledge
-4 fourth section (50-90 words) — about the never-engaged units listed above: note that these seem to hold less interest for the learner rather than being a knowledge gap, and that future plans will deprioritize this kind of content; if empty, say everything has been engaged with
+Write in the SAME language as the topic above (detect it and match exactly). Use an OBJECTIVE, calibrated, non-flattering tone throughout — this is a factual assessment, not encouragement. Do not use inflated praise language (avoid phrases like "solid foundation", "great grasp", "well done") for anything below level 3. Be precise about what each level of understanding actually means: level 1-2 (analogy/example only) = superficial, not yet real understanding; level 3 (mechanics) = adequate, functional understanding; level 4-5 (definition/depth) = solid, strong command.
+Five sections, with section labels also translated into that same language:
+1 first section (80-120 words) — objectively state what is adequately or solidly understood (from the level 3+ list only); if that list is empty, say plainly that nothing has reached an adequate depth yet, without softening it
+2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and state plainly that only surface-level analogy/example understanding exists, then explain what deeper understanding (mechanics, formal definition, or expert nuance) is still missing for each; if empty, say there's nothing at this shallow tier
+3 third section (100-140 words) — what's missing entirely, including confused units and missing foundational knowledge
+4 fourth section (50-90 words) — about the never-engaged units listed above: note plainly these appear low-interest rather than a knowledge gap, and future plans will deprioritize similar content; if empty, say everything has been engaged with
 5 fifth section (40-60 words) — one concrete next thing to study
 Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"...","ignored":"...","next":"..."}`,
-    1200
+    1300
   );
   return {...d, _improveUnits: improveUnits, _avgLowLevel: avgLowLevel, _ignoredUnits: ignoredUnits};
 }
