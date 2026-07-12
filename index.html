@@ -124,7 +124,40 @@ async function genTopicName(prompt) {
   return d.name || prompt.slice(0,40);
 }
 
-async function genHierarchy(prompt, learningProfile) {
+// detect if prompt refers to a specific book/chapter/literary work with sequential passages
+async function detectLiteraryMode(prompt) {
+  const d = await callClaude(
+    `Does this input refer to a SPECIFIC book, chapter, scripture passage, poem, or literary work whose actual sequential text (verses/passages/stanzas) should be studied in order — as opposed to a general topic, skill, or concept to learn about?
+Input: "${prompt}"
+Examples that ARE literary mode: "Евангелие от Матей, глава 1", "Gospel of Matthew chapter 1", "Sonnet 18 by Shakespeare", "Beowulf".
+Examples that are NOT literary mode: "Statistics", "How does logistic regression work", "Rust programming language", "History of Rome" (general topic, not one specific text's exact wording).
+Return: {"literary": true or false, "unitLabel": "the natural word for one sequential unit in this work, in the SAME language as the input — e.g. \\"стих\\" for Bible chapters, \\"пасаж\\" for prose, \\"строфа\\" for poems"}`,
+    250
+  );
+  return { literary: !!d.literary, unitLabel: d.unitLabel || "пасаж" };
+}
+
+async function genHierarchy(prompt, learningProfile, literary, unitLabel) {
+  if (literary) {
+    // literary mode: subtopics = sequential groupings, subsubtopics = individual verses/passages
+    const d = await callClaude(
+      `The user wants to study the actual sequential text of: "${prompt}".
+Divide it into 3-6 sequential groupings (e.g. verse ranges, scene breaks, stanza groups) in original order, under 6 words each, no numbering in the name itself. Write names in the SAME language as the input above (match exactly). Never use " inside.
+Return: {"names":["..."]}`,
+      500
+    );
+    const names = d.names||[];
+    const subtopics=[];
+    for(const name of names){
+      const s = await callClaude(
+        `Work: "${prompt}". Section: "${name}". List the individual ${unitLabel}s (sequential units) that belong in this section, IN ORDER, using their natural label (e.g. "${unitLabel} 1", "${unitLabel} 2" or however this work numbers its units). Use the SAME language as the input above. Never use " inside.
+Return: {"subsubtopics":["..."]}`,
+        500
+      );
+      subtopics.push({name, subsubtopics:s.subsubtopics||[]});
+    }
+    return subtopics;
+  }
   const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
   const d = await callClaude(
     `Design a self-study curriculum for: "${prompt}".${profileHint}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly — if the prompt is in Bulgarian, write in Bulgarian; if in English, write in English; etc). Never use " inside.\nReturn: {"names":["..."]}`,
@@ -142,10 +175,23 @@ async function genHierarchy(prompt, learningProfile) {
   return subtopics;
 }
 
-async function genAbstraction(topic, sub, subsub) {
+async function genAbstraction(topic, sub, subsub, literary, unitLabel) {
   const levels=[];
   for(const m of LEVELS){
-    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
+    if (literary && m.level===5) {
+      // last level = literal verbatim text of this specific unit
+      const d = await callClaude(
+        `Work: "${topic}" > "${sub}" > "${subsub}" (this is a specific ${unitLabel||"passage"}).
+Give the LITERAL, VERBATIM text of just this ${unitLabel||"passage"} exactly as it appears in the original work, in the SAME language as the topic chain above. If this is a public-domain, ancient, religious, or classical text, quote it exactly and completely. If this is a modern copyrighted work you cannot reproduce verbatim, instead give the closest faithful paraphrase and prefix it with a short note in brackets that this is a paraphrase, not the exact original wording.
+Never use " inside the returned text (use „ and " or rephrase quote marks if the original has them).
+Return: {"text":"..."}`,
+        500
+      );
+      levels.push({level:5, text:d.text||""});
+      continue;
+    }
+    const context = literary ? `this is commentary/context for the specific ${unitLabel||"passage"}, not the literal text itself` : "";
+    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint})${context?` — ${context}`:""}. Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
     levels.push({level:m.level,text:d.text||""});
   }
   return levels;
@@ -364,14 +410,16 @@ function Aperture() {
     try{
       // T.1: generate display name from prompt
       const name=await genTopicName(trimmed);
-      const newTopic={id,name,prompt:trimmed,createdAt:Date.now()};
+      // detect literary/verbatim-text mode
+      const lit = await detectLiteraryMode(trimmed);
+      const newTopic={id,name,prompt:trimmed,createdAt:Date.now(),literaryMode:lit.literary,unitLabel:lit.unitLabel};
       const next=[newTopic,...topics];
       setTopics(next);await saveJSON("topics",next);
       setCurrentTopic(newTopic);
 
-      const subtopics=await genHierarchy(trimmed,learningProfile);
+      const subtopics=await genHierarchy(trimmed,learningProfile,lit.literary,lit.unitLabel);
       setHierarchy(subtopics);
-      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics});
+      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics,literaryMode:lit.literary,unitLabel:lit.unitLabel});
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
     finally{setLoadingH(false);}
   }
@@ -386,9 +434,9 @@ function Aperture() {
     else{
       setLoadingH(true);
       try{
-        const subtopics=await genHierarchy(topic.prompt||topic.name,null);
+        const subtopics=await genHierarchy(topic.prompt||topic.name,null,topic.literaryMode,topic.unitLabel);
         setHierarchy(subtopics);
-        await saveJSON(`hierarchy:${topic.id}`,{name:topic.name,prompt:topic.prompt,subtopics});
+        await saveJSON(`hierarchy:${topic.id}`,{name:topic.name,prompt:topic.prompt,subtopics,literaryMode:topic.literaryMode,unitLabel:topic.unitLabel});
       }catch(e){setHomeError(`Грешка: ${e.message}`);}
       finally{setLoadingH(false);}
     }
@@ -426,7 +474,7 @@ function Aperture() {
   async function doLoadLevels(id,sub,subsub,base){
     setLoadingL(true);setNodeError(null);
     try{
-      const abstraction=await genAbstraction(currentTopic.name||currentTopic.title,sub,subsub);
+      const abstraction=await genAbstraction(currentTopic.name||currentTopic.title,sub,subsub,currentTopic.literaryMode,currentTopic.unitLabel);
       const updated={...base,abstraction};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
