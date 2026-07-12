@@ -206,25 +206,28 @@ Return: {"literary": true or false, "unitLabel": "the natural word for one seque
 
 async function genHierarchy(prompt, learningProfile, literary, unitLabel) {
   if (literary) {
-    // literary mode: subtopics = sequential groupings, subsubtopics = individual verses/passages
     const d = await callClaude(
       `The user wants to study the actual sequential text of: "${prompt}".
-Divide it into 3-6 sequential groupings (e.g. verse ranges, scene breaks, stanza groups) in original order, under 6 words each, no numbering in the name itself. Write names in the SAME language as the input above (match exactly). Never use " inside.
-Return: {"names":["..."]}`,
-      500
+Be HONEST about your confidence in this work's exact structure. If you are confident you know the real total number of ${unitLabel}s (e.g. a well-known Bible chapter, a famous short poem) — use the real, accurate count. If you are NOT confident about the exact count or structure (less famous or long works), give your best reasonable estimate but keep sections broader and rely more on natural narrative breaks (scenes, topic shifts) rather than claiming precise numbering you're not sure of.
+Divide the FULL range from 1 to your estimated total into 3-6 sequential, NON-OVERLAPPING sections that together cover the entire range with no gaps and no overlaps. Give each section a short descriptive name (under 6 words, no numbering in the name itself) in the SAME language as the input above. Never use " inside.
+Return: {"totalUnits": N, "confident": true or false, "sections": [{"name":"...", "start": N, "end": N}, ...]}`,
+      600
     );
-    const names = d.names||[];
+    const totalUnits = d.totalUnits || 0;
+    const confident = !!d.confident;
+    const sections = d.sections || [];
     const subtopics=[];
-    for(const name of names){
+    for(const sec of sections){
       const s = await callClaude(
-        `Work: "${prompt}". Section: "${name}". List the sequential ${unitLabel}s that belong in this section, IN ORDER, using their natural label (e.g. "${unitLabel} 1", "${unitLabel} 2" or however this work numbers its units).
-IMPORTANT: if individual ${unitLabel}s are very short (a single short sentence or less), GROUP 2-4 consecutive short ones together into one unit instead of listing them separately, so each unit has roughly enough content for a substantial explanation (comparable to a longer standalone ${unitLabel}). Only group consecutive ${unitLabel}s that are short — leave naturally long ones as their own unit.
+        `Work: "${prompt}" (total ${totalUnits} ${unitLabel}s). Section: "${sec.name}", covering ${unitLabel}s ${sec.start} through ${sec.end} (inclusive) — ONLY this exact range, nothing outside it.
+List them IN ORDER starting from ${unitLabel} ${sec.start} and ending at ${unitLabel} ${sec.end}, using their natural label.
+IMPORTANT: if individual ${unitLabel}s are very short (a single short sentence or less), GROUP 2-4 consecutive short ones together into one unit instead of listing them separately, so each unit has roughly enough content for a substantial explanation. Only group consecutive ${unitLabel}s that are short — leave naturally long ones as their own unit. Groups and standalone units together must still exactly cover ${sec.start}-${sec.end} with no gaps, no overlaps, and nothing outside this range.
 Label each unit as: "${unitLabel} N" or "${unitLabel} N-M" (for a group) followed by a colon and a short 2-5 word descriptive title of what happens in it, e.g. "${unitLabel} 1-3: кратко описание" — the descriptive title in the SAME language as the input above.
 Never use " inside.
 Return: {"subsubtopics":["..."]}`,
-        600
+        700
       );
-      subtopics.push({name, subsubtopics:s.subsubtopics||[]});
+      subtopics.push({name:sec.name, subsubtopics:s.subsubtopics||[], _confident:confident});
     }
     return subtopics;
   }
@@ -249,14 +252,19 @@ async function genAbstraction(topic, sub, subsub, literary, unitLabel) {
   const levels=[];
   for(const m of LEVELS){
     if (literary && m.level===5) {
-      // last level = literal verbatim text of this specific unit (may be a range/group of several short units)
+      // last level: verbatim quote ONLY if genuinely confident; otherwise an honest, close paraphrase
       const raw = await callClaudeRaw(
         `Work: "${topic}" > "${sub}" > "${subsub}".
-"${subsub}" may refer to a single ${unitLabel||"passage"} or a GROUP of consecutive ones (e.g. a range like "1-3"). Give the LITERAL, VERBATIM text of EVERY ${unitLabel||"passage"} in this unit, in order, each on its own line prefixed with its number, exactly as it appears in the original work, in the SAME language as the topic chain above. If this is a public-domain, ancient, religious, or classical text, quote it exactly and completely. If this is a modern copyrighted work you cannot reproduce verbatim, instead give the closest faithful paraphrase and prefix it with a short note in brackets that this is a paraphrase, not the exact original wording.
-Output ONLY the text itself, wrapped exactly like this and nothing else before or after: ###TEXT###the passage text here###TEXT_END###`,
+"${subsub}" may refer to a single ${unitLabel||"passage"} or a GROUP of consecutive ones (e.g. a range like "1-3").
+FIRST, internally assess your own confidence: do you actually know the exact original wording of this specific ${unitLabel||"passage"} well enough to quote it precisely, or would you be reconstructing/guessing at the exact phrasing?
+- If you are genuinely confident (well-known, widely-quoted, likely accurately memorized text): give the LITERAL, VERBATIM text of every ${unitLabel||"passage"} in this unit, in order, each on its own line prefixed with its number, in the SAME language as the topic chain above.
+- If you are NOT fully confident in the exact original wording: do NOT fabricate a quote that sounds verbatim but might not be accurate. Instead give a close, faithful paraphrase that captures the same events/ideas/detail and stays near the original phrasing where you can, in the SAME language as the topic chain above, and clearly mark it so the reader knows — prefix it with "[Близко до оригинала, не дословен цитат]" (translate this bracketed note into the same language as the rest of the text).
+Never use " inside the text.
+Output in this exact format and nothing else: ###VERBATIM###true or false###VERBATIM_END######TEXT###the passage text here###TEXT_END###`,
         1200
       );
-      levels.push({level:5, text:extractField(raw,"TEXT")});
+      const isVerbatim = extractField(raw,"VERBATIM").trim().toLowerCase()==="true";
+      levels.push({level:5, text:extractField(raw,"TEXT"), isVerbatim});
       continue;
     }
     const context = literary ? `this is commentary/context for the specific ${unitLabel||"passage"}, not the literal text itself` : "";
@@ -393,7 +401,7 @@ function Spinner({label}){return <div className="flex items-center gap-2 text-st
 function ErrorNote({message,onRetry}){return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3"><span className="break-all">{message}</span>{onRetry&&<button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}</div>;}
 function TuneButton({tuned,onClick}){return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
 
-/* ── Main App ────────────────────────────────────────────────────────── */
+
 function Aperture() {
   const [booting,setBooting]           = useState(true);
   const [storageMode,setStorageMode]   = useState(()=>{try{return localStorage.getItem("aperture:_mode")==="local"?"local":"supabase";}catch{return"local";}});
@@ -469,6 +477,11 @@ function Aperture() {
     setSubtopicIdx(null);setSubsubIdx(null);
     setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");
 
+    const lit = await (async()=>{ try{return await detectLiteraryMode(trimmed);}catch{return{literary:false,unitLabel:null};} })();
+    await createTopicAndGenerate(trimmed, lit.literary, lit.unitLabel);
+  }
+
+  async function createTopicAndGenerate(trimmed, literary, unitLabel){
     // build learning profile for better curriculum
     let learningProfile=null;
     try{
@@ -478,22 +491,18 @@ function Aperture() {
       learningProfile=await genLearningProfile(topics,nodeMap);
     }catch(e){console.warn("profile gen failed",e);}
 
-    // check if already exists by prompt
     const id=slugify(trimmed)+"-"+Date.now().toString(36);
     setLoadingH(true);
     try{
-      // T.1: generate display name from prompt
       const name=await genTopicName(trimmed);
-      // detect literary/verbatim-text mode
-      const lit = await detectLiteraryMode(trimmed);
-      const newTopic={id,name,prompt:trimmed,createdAt:Date.now(),literaryMode:lit.literary,unitLabel:lit.unitLabel};
+      const newTopic={id,name,prompt:trimmed,createdAt:Date.now(),literaryMode:literary,unitLabel};
       const next=[newTopic,...topics];
       setTopics(next);await saveJSON("topics",next);
       setCurrentTopic(newTopic);
 
-      const subtopics=await genHierarchy(trimmed,learningProfile,lit.literary,lit.unitLabel);
+      const subtopics=await genHierarchy(trimmed,learningProfile,literary,unitLabel);
       setHierarchy(subtopics);
-      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics,literaryMode:lit.literary,unitLabel:lit.unitLabel});
+      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics,literaryMode:literary,unitLabel});
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
     finally{setLoadingH(false);}
   }
@@ -916,7 +925,14 @@ function LevelsPanel({loading,levels,tuned,onTune,topLevel}){
       {levels.map(lv=>{
         const meta=LEVELS.find(l=>l.level===lv.level),isTuned=tuned.includes(lv.level);
         return <div key={lv.level} className={`rounded border p-4 ${isTuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
-          <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {lv.level} · {meta?.label}</div>
+          <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2 flex items-center gap-2">
+            Ниво {lv.level} · {meta?.label}
+            {lv.level===5 && lv.isVerbatim!==undefined && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${lv.isVerbatim?"bg-emerald-950/50 text-emerald-500":"bg-amber-950/50 text-amber-500"}`}>
+                {lv.isVerbatim?"дословен цитат":"близко до оригинала"}
+              </span>
+            )}
+          </div>
           <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
           <div className="mt-2"><TuneButton tuned={isTuned} onClick={()=>onTune(lv.level)}/></div>
         </div>;
