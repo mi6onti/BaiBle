@@ -185,7 +185,7 @@ async function genAbstraction(topic, sub, subsub, literary, unitLabel) {
 Give the LITERAL, VERBATIM text of just this ${unitLabel||"passage"} exactly as it appears in the original work, in the SAME language as the topic chain above. If this is a public-domain, ancient, religious, or classical text, quote it exactly and completely. If this is a modern copyrighted work you cannot reproduce verbatim, instead give the closest faithful paraphrase and prefix it with a short note in brackets that this is a paraphrase, not the exact original wording.
 Never use " inside the returned text (use „ and " or rephrase quote marks if the original has them).
 Return: {"text":"..."}`,
-        500
+        900
       );
       levels.push({level:5, text:d.text||""});
       continue;
