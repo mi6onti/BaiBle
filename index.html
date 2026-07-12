@@ -106,131 +106,25 @@ async function callClaude(user, maxTokens=600, attempt=0) {
   }
   if(!res.ok) throw new Error(`[http] ${res.status}: ${JSON.stringify(data).slice(0,150)}`);
   if(!data?.content) throw new Error(`[shape] ${JSON.stringify(data).slice(0,100)}`);
-  // auto-retry with bigger budget if response got cut off mid-generation
-  if(data.stop_reason==="max_tokens" && attempt<3 && maxTokens<4000){
-    return callClaude(user, Math.min(4000, maxTokens*2), attempt+1);
-  }
   const text=data.content.map(b=>b.text||"").join("\n");
   let clean=text.replace(/```json/gi,"").replace(/```/g,"").trim();
   const fi=clean.indexOf("{"),la=clean.lastIndexOf("}");
   if(fi!==-1&&la>fi)clean=clean.slice(fi,la+1);
-  try{return JSON.parse(clean);}
-  catch(e){
-    // truncated/malformed JSON — retry with bigger budget before giving up
-    if(attempt<3 && maxTokens<4000){
-      return callClaude(user, Math.min(4000, maxTokens*2), attempt+1);
-    }
-    throw new Error(`[json] ${e.message} | raw=${text.slice(0,100)}`);
-  }
+  try{return JSON.parse(clean);}catch(e){throw new Error(`[json] ${e.message} | raw=${text.slice(0,100)}`);}
 }
 
-// raw text call — no JSON parsing, avoids quote-breaking issues for prose-heavy fields
-async function callClaudeRaw(user, maxTokens=600, attempt=0) {
-  let res;
-  try {
-    res = await fetch(CLAUDE_PROXY,{method:"POST",
-      headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`},
-      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:user}]})});
-  } catch(e) {
-    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
-    throw new Error(`[fetch] ${e.message}`);
-  }
-  if(res.status===429&&attempt<3){await sleep(1500*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
-  let data;
-  try{data=await res.json();}catch(e){
-    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
-    throw new Error(`[parse] ${e.message}`);
-  }
-  if(!res.ok) throw new Error(`[http] ${res.status}: ${JSON.stringify(data).slice(0,150)}`);
-  if(!data?.content) throw new Error(`[shape] ${JSON.stringify(data).slice(0,100)}`);
-  if(data.stop_reason==="max_tokens" && attempt<3 && maxTokens<4000){
-    return callClaudeRaw(user, Math.min(4000, maxTokens*2), attempt+1);
-  }
-  return data.content.map(b=>b.text||"").join("\n").trim();
-}
-
-// extract a single field wrapped in markers ###NAME### ... ###NAME_END###
-function extractField(raw, name){
-  const start=`###${name}###`, end=`###${name}_END###`;
-  const si=raw.indexOf(start);
-  if(si===-1) return raw.trim().replace(/^["'„]+|["'"]+$/g,""); // fallback: whole raw, quotes stripped
-  const from=si+start.length;
-  const ei=raw.indexOf(end, from);
-  return (ei===-1 ? raw.slice(from) : raw.slice(from,ei)).trim();
-}
-
-// extract multiple SEQUENTIAL fields (###NAME1### text ###NAME2### text ... ###END###) — no per-field _END markers
-function extractSequentialFields(raw, names){
-  const positions = names.map(n=>({n, pos:raw.indexOf(`###${n}###`)}));
-  const result={};
-  for(let i=0;i<positions.length;i++){
-    const {n,pos}=positions[i];
-    if(pos===-1){ result[n]=""; continue; }
-    const start = pos + `###${n}###`.length;
-    let end = raw.indexOf("###END###", start);
-    for(let j=i+1;j<positions.length;j++){
-      if(positions[j].pos!==-1 && positions[j].pos>start){
-        end = end===-1 ? positions[j].pos : Math.min(end, positions[j].pos);
-        break;
-      }
-    }
-    result[n] = (end===-1 ? raw.slice(start) : raw.slice(start,end)).trim();
-  }
-  return result;
-}
-
-
+/* ── Generation ──────────────────────────────────────────────────────── */
 
 // T.1: generate short display name from prompt
 async function genTopicName(prompt) {
-  const raw = await callClaudeRaw(
-    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Write the name in the SAME language as the prompt above (detect it and match exactly). Output ONLY the name itself, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
+  const d = await callClaude(
+    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Write the name in the SAME language as the prompt above (detect it and match exactly). Never use " inside.\nReturn: {"name":"..."}`,
     200
   );
-  const name = extractField(raw, "NAME");
-  return name || prompt.slice(0,40);
+  return d.name || prompt.slice(0,40);
 }
 
-// detect if prompt refers to a specific book/chapter/literary work with sequential passages
-async function detectLiteraryMode(prompt) {
-  const d = await callClaude(
-    `Does this input refer to a SPECIFIC book, chapter, scripture passage, poem, or literary work whose actual sequential text (verses/passages/stanzas) should be studied in order — as opposed to a general topic, skill, or concept to learn about?
-Input: "${prompt}"
-Examples that ARE literary mode: "Евангелие от Матей, глава 1", "Gospel of Matthew chapter 1", "Sonnet 18 by Shakespeare", "Beowulf".
-Examples that are NOT literary mode: "Statistics", "How does logistic regression work", "Rust programming language", "History of Rome" (general topic, not one specific text's exact wording).
-Return: {"literary": true or false, "unitLabel": "the natural word for one sequential unit in this work, in the SAME language as the input — e.g. \\"стих\\" for Bible chapters, \\"пасаж\\" for prose, \\"строфа\\" for poems"}`,
-    250
-  );
-  return { literary: !!d.literary, unitLabel: d.unitLabel || "пасаж" };
-}
-
-async function genHierarchy(prompt, learningProfile, literary, unitLabel) {
-  if (literary) {
-    const d = await callClaude(
-      `The user wants to study the actual sequential text of: "${prompt}".
-Be HONEST about your confidence in this work's exact structure. If you are confident you know the real total number of ${unitLabel}s (e.g. a well-known Bible chapter, a famous short poem) — use the real, accurate count. If you are NOT confident about the exact count or structure (less famous or long works), give your best reasonable estimate but keep sections broader and rely more on natural narrative breaks (scenes, topic shifts) rather than claiming precise numbering you're not sure of.
-Divide the FULL range from 1 to your estimated total into 3-6 sequential, NON-OVERLAPPING sections that together cover the entire range with no gaps and no overlaps. Give each section a short descriptive name (under 6 words, no numbering in the name itself) in the SAME language as the input above. Never use " inside.
-Return: {"totalUnits": N, "confident": true or false, "sections": [{"name":"...", "start": N, "end": N}, ...]}`,
-      600
-    );
-    const totalUnits = d.totalUnits || 0;
-    const confident = !!d.confident;
-    const sections = d.sections || [];
-    const subtopics=[];
-    for(const sec of sections){
-      const s = await callClaude(
-        `Work: "${prompt}" (total ${totalUnits} ${unitLabel}s). Section: "${sec.name}", covering ${unitLabel}s ${sec.start} through ${sec.end} (inclusive) — ONLY this exact range, nothing outside it.
-List them IN ORDER starting from ${unitLabel} ${sec.start} and ending at ${unitLabel} ${sec.end}, using their natural label.
-IMPORTANT: if individual ${unitLabel}s are very short (a single short sentence or less), GROUP 2-4 consecutive short ones together into one unit instead of listing them separately, so each unit has roughly enough content for a substantial explanation. Only group consecutive ${unitLabel}s that are short — leave naturally long ones as their own unit. Groups and standalone units together must still exactly cover ${sec.start}-${sec.end} with no gaps, no overlaps, and nothing outside this range.
-Label each unit as: "${unitLabel} N" or "${unitLabel} N-M" (for a group) followed by a colon and a short 2-5 word descriptive title of what happens in it, e.g. "${unitLabel} 1-3: кратко описание" — the descriptive title in the SAME language as the input above.
-Never use " inside.
-Return: {"subsubtopics":["..."]}`,
-        700
-      );
-      subtopics.push({name:sec.name, subsubtopics:s.subsubtopics||[], _confident:confident});
-    }
-    return subtopics;
-  }
+async function genHierarchy(prompt, learningProfile) {
   const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
   const d = await callClaude(
     `Design a self-study curriculum for: "${prompt}".${profileHint}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly — if the prompt is in Bulgarian, write in Bulgarian; if in English, write in English; etc). Never use " inside.\nReturn: {"names":["..."]}`,
@@ -248,28 +142,11 @@ Return: {"subsubtopics":["..."]}`,
   return subtopics;
 }
 
-async function genAbstraction(topic, sub, subsub, literary, unitLabel) {
+async function genAbstraction(topic, sub, subsub) {
   const levels=[];
   for(const m of LEVELS){
-    if (literary && m.level===5) {
-      // last level: verbatim quote ONLY if genuinely confident; otherwise an honest, close paraphrase
-      const raw = await callClaudeRaw(
-        `Work: "${topic}" > "${sub}" > "${subsub}".
-"${subsub}" may refer to a single ${unitLabel||"passage"} or a GROUP of consecutive ones (e.g. a range like "1-3").
-FIRST, internally assess your own confidence: do you actually know the exact original wording of this specific ${unitLabel||"passage"} well enough to quote it precisely, or would you be reconstructing/guessing at the exact phrasing?
-- If you are genuinely confident (well-known, widely-quoted, likely accurately memorized text): give the LITERAL, VERBATIM text of every ${unitLabel||"passage"} in this unit, in order, each on its own line prefixed with its number, in the SAME language as the topic chain above.
-- If you are NOT fully confident in the exact original wording: do NOT fabricate a quote that sounds verbatim but might not be accurate. Instead give a close, faithful paraphrase that captures the same events/ideas/detail and stays near the original phrasing where you can, in the SAME language as the topic chain above, and clearly mark it so the reader knows — prefix it with "[Близко до оригинала, не дословен цитат]" (translate this bracketed note into the same language as the rest of the text).
-Never use " inside the text.
-Output in this exact format and nothing else: ###VERBATIM###true or false###VERBATIM_END######TEXT###the passage text here###TEXT_END###`,
-        1200
-      );
-      const isVerbatim = extractField(raw,"VERBATIM").trim().toLowerCase()==="true";
-      levels.push({level:5, text:extractField(raw,"TEXT"), isVerbatim});
-      continue;
-    }
-    const context = literary ? `this is commentary/context for the specific ${unitLabel||"passage"}, not the literal text itself` : "";
-    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint})${context?` — ${context}`:""}. Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
-    levels.push({level:m.level,text:extractField(raw,"TEXT")});
+    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
+    levels.push({level:m.level,text:d.text||""});
   }
   return levels;
 }
@@ -277,8 +154,8 @@ Output in this exact format and nothing else: ###VERBATIM###true or false###VERB
 async function genAllPersonalities(topic, sub, subsub) {
   const results=[];
   for(const p of PERSONALITIES){
-    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else: ###TEXT###the explanation here###TEXT_END###`,600);
-    results.push({code:p.code,text:extractField(raw,"TEXT")});
+    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
+    results.push({code:p.code,text:d.text||""});
   }
   return results;
 }
@@ -286,11 +163,11 @@ async function genAllPersonalities(topic, sub, subsub) {
 // T.4: blend only uses abstraction (levels) ratings
 async function genBlend(topic, sub, subsub, level) {
   const lvl = LEVELS.find(l=>l.level===level);
-  const raw = await callClaudeRaw(
-    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else: ###TEXT###the explanation here###TEXT_END###`,
+  const d = await callClaude(
+    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,
     800
   );
-  return extractField(raw,"TEXT");
+  return d.text||"";
 }
 
 async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
@@ -326,7 +203,7 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
 
   const avgLowLevel = lowLevelCount>0 ? Math.round(lowLevelSum/lowLevelCount) : null;
   const topLvl=LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
-  const raw=await callClaudeRaw(
+  const d=await callClaude(
     `Learner studying "${topic}". Subtopics: ${hierarchy.map(s=>s.name).join(", ")}.
 Understood adequately or solidly (level 3+ explanations liked — "Mechanics", "Definition", or "Depth"): ${solidUnits.join(", ")||"none yet"}.
 Marked as completely unclear: ${confused.join(", ")||"none"}.
@@ -334,30 +211,25 @@ Understood only at a shallow level (only liked "Analogy" or "Example" explanatio
 Never engaged with — no level rated, no "did not understand" mark, not opened (likely low interest, not a knowledge gap): ${ignoredUnits.join(", ")||"none"}.
 Preferred explanation level overall: "${topLvl||"unknown"}".
 Write in the SAME language as the topic above (detect it and match exactly). Use an OBJECTIVE, calibrated, non-flattering tone throughout — this is a factual assessment, not encouragement. Do not use inflated praise language (avoid phrases like "solid foundation", "great grasp", "well done") for anything below level 3. Be precise about what each level of understanding actually means: level 1-2 (analogy/example only) = superficial, not yet real understanding; level 3 (mechanics) = adequate, functional understanding; level 4-5 (definition/depth) = solid, strong command.
-Output EXACTLY five sections using these markers, nothing before the first marker or after the last one, no extra commentary:
-###KNOWS### (80-120 words) — objectively state what is adequately or solidly understood (from the level 3+ list only); if that list is empty, say plainly that nothing has reached an adequate depth yet, without softening it
-###IMPROVE### (60-100 words) — ONLY about the shallow-understanding units listed above: name them and state plainly that only surface-level analogy/example understanding exists, then explain what deeper understanding is still missing for each; if empty, say there's nothing at this shallow tier
-###MISSING### (100-140 words) — what's missing entirely, including confused units and missing foundational knowledge
-###IGNORED### (50-90 words) — about the never-engaged units listed above: note plainly these appear low-interest rather than a knowledge gap, and future plans will deprioritize similar content; if empty, say everything has been engaged with
-###NEXT### (40-60 words) — one concrete next thing to study
-###END###`,
-    1500
+Five sections, with section labels also translated into that same language:
+1 first section (80-120 words) — objectively state what is adequately or solidly understood (from the level 3+ list only); if that list is empty, say plainly that nothing has reached an adequate depth yet, without softening it
+2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and state plainly that only surface-level analogy/example understanding exists, then explain what deeper understanding (mechanics, formal definition, or expert nuance) is still missing for each; if empty, say there's nothing at this shallow tier
+3 third section (100-140 words) — what's missing entirely, including confused units and missing foundational knowledge
+4 fourth section (50-90 words) — about the never-engaged units listed above: note plainly these appear low-interest rather than a knowledge gap, and future plans will deprioritize similar content; if empty, say everything has been engaged with
+5 fifth section (40-60 words) — one concrete next thing to study
+Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"...","ignored":"...","next":"..."}`,
+    1300
   );
-  const fields = extractSequentialFields(raw, ["KNOWS","IMPROVE","MISSING","IGNORED","NEXT"]);
-  return {
-    knows: fields.KNOWS, improve: fields.IMPROVE, missing: fields.MISSING, ignored: fields.IGNORED, next: fields.NEXT,
-    _improveUnits: improveUnits, _avgLowLevel: avgLowLevel, _ignoredUnits: ignoredUnits
-  };
+  return {...d, _improveUnits: improveUnits, _avgLowLevel: avgLowLevel, _ignoredUnits: ignoredUnits};
 }
 
 // T.5: generate adapted topic as full new plan
 async function genAdaptedTopicName(originalTopic, levelCheck) {
-  const raw = await callClaudeRaw(
-    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly). Output ONLY the name, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
+  const d = await callClaude(
+    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly). Never use " inside.\nReturn: {"name":"..."}`,
     200
   );
-  const name = extractField(raw,"NAME");
-  return name || `Адаптирана: ${originalTopic}`;
+  return d.name || `Адаптирана: ${originalTopic}`;
 }
 
 // T.7 updated: all active topics = interest; high engagement = priority
@@ -378,17 +250,17 @@ async function genLearningProfile(topics, nodeDataMap) {
   const interested = scored.filter(t=>t.likes>0&&t.likes<3).map(t=>t.name);
   const passive    = scored.filter(t=>!t.hasActivity).map(t=>t.name);
 
-  const raw = await callClaudeRaw(
+  const d = await callClaude(
     `A learner uses a study app. Analyze their learning preferences to guide future curriculum generation.
 Priority topics (high engagement, many likes): ${priority.join(", ")||"none"}.
 Interested topics (some activity): ${interested.join(", ")||"none"}.
 Passive topics (saved but not yet studied): ${passive.join(", ")||"none"}.
 Archived/deleted topics (did not find value): ${deleted.join(", ")||"none"}.
 In 2-3 sentences, describe what kind of learning structure, depth, and content areas this person prefers. Be specific and actionable for a curriculum designer.
-Output ONLY the profile text, wrapped exactly like this and nothing else: ###PROFILE###the profile text here###PROFILE_END###`,
+Never use " inside.\nReturn: {"profile":"..."}`,
     400
   );
-  return extractField(raw,"PROFILE") || null;
+  return d.profile||null;
 }
 
 function topicLabel(t){
@@ -401,7 +273,7 @@ function Spinner({label}){return <div className="flex items-center gap-2 text-st
 function ErrorNote({message,onRetry}){return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3"><span className="break-all">{message}</span>{onRetry&&<button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}</div>;}
 function TuneButton({tuned,onClick}){return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
 
-
+/* ── Main App ────────────────────────────────────────────────────────── */
 function Aperture() {
   const [booting,setBooting]           = useState(true);
   const [storageMode,setStorageMode]   = useState(()=>{try{return localStorage.getItem("aperture:_mode")==="local"?"local":"supabase";}catch{return"local";}});
@@ -477,11 +349,6 @@ function Aperture() {
     setSubtopicIdx(null);setSubsubIdx(null);
     setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");
 
-    const lit = await (async()=>{ try{return await detectLiteraryMode(trimmed);}catch{return{literary:false,unitLabel:null};} })();
-    await createTopicAndGenerate(trimmed, lit.literary, lit.unitLabel);
-  }
-
-  async function createTopicAndGenerate(trimmed, literary, unitLabel){
     // build learning profile for better curriculum
     let learningProfile=null;
     try{
@@ -491,18 +358,20 @@ function Aperture() {
       learningProfile=await genLearningProfile(topics,nodeMap);
     }catch(e){console.warn("profile gen failed",e);}
 
+    // check if already exists by prompt
     const id=slugify(trimmed)+"-"+Date.now().toString(36);
     setLoadingH(true);
     try{
+      // T.1: generate display name from prompt
       const name=await genTopicName(trimmed);
-      const newTopic={id,name,prompt:trimmed,createdAt:Date.now(),literaryMode:literary,unitLabel};
+      const newTopic={id,name,prompt:trimmed,createdAt:Date.now()};
       const next=[newTopic,...topics];
       setTopics(next);await saveJSON("topics",next);
       setCurrentTopic(newTopic);
 
-      const subtopics=await genHierarchy(trimmed,learningProfile,literary,unitLabel);
+      const subtopics=await genHierarchy(trimmed,learningProfile);
       setHierarchy(subtopics);
-      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics,literaryMode:literary,unitLabel});
+      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics});
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
     finally{setLoadingH(false);}
   }
@@ -517,9 +386,9 @@ function Aperture() {
     else{
       setLoadingH(true);
       try{
-        const subtopics=await genHierarchy(topic.prompt||topic.name,null,topic.literaryMode,topic.unitLabel);
+        const subtopics=await genHierarchy(topic.prompt||topic.name,null);
         setHierarchy(subtopics);
-        await saveJSON(`hierarchy:${topic.id}`,{name:topic.name,prompt:topic.prompt,subtopics,literaryMode:topic.literaryMode,unitLabel:topic.unitLabel});
+        await saveJSON(`hierarchy:${topic.id}`,{name:topic.name,prompt:topic.prompt,subtopics});
       }catch(e){setHomeError(`Грешка: ${e.message}`);}
       finally{setLoadingH(false);}
     }
@@ -557,7 +426,7 @@ function Aperture() {
   async function doLoadLevels(id,sub,subsub,base){
     setLoadingL(true);setNodeError(null);
     try{
-      const abstraction=await genAbstraction(currentTopic.name||currentTopic.title,sub,subsub,currentTopic.literaryMode,currentTopic.unitLabel);
+      const abstraction=await genAbstraction(currentTopic.name||currentTopic.title,sub,subsub);
       const updated={...base,abstraction};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
@@ -925,14 +794,7 @@ function LevelsPanel({loading,levels,tuned,onTune,topLevel}){
       {levels.map(lv=>{
         const meta=LEVELS.find(l=>l.level===lv.level),isTuned=tuned.includes(lv.level);
         return <div key={lv.level} className={`rounded border p-4 ${isTuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
-          <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2 flex items-center gap-2">
-            Ниво {lv.level} · {meta?.label}
-            {lv.level===5 && lv.isVerbatim!==undefined && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${lv.isVerbatim?"bg-emerald-950/50 text-emerald-500":"bg-amber-950/50 text-amber-500"}`}>
-                {lv.isVerbatim?"дословен цитат":"близко до оригинала"}
-              </span>
-            )}
-          </div>
+          <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {lv.level} · {meta?.label}</div>
           <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
           <div className="mt-2"><TuneButton tuned={isTuned} onClick={()=>onTune(lv.level)}/></div>
         </div>;
