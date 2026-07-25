@@ -170,6 +170,35 @@ async function genBlend(topic, sub, subsub, level) {
   return d.text||"";
 }
 
+// overview: 5-level explanation of an ENTIRE subject (topic or subtopic), same length/style as a leaf-unit explanation
+async function genOverviewLevels(subjectLabel) {
+  const levels=[];
+  for(const m of LEVELS){
+    const d=await callClaude(`Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) at level "${m.label}" (${m.hint}), 45-70 words — same length and style as a normal single-concept explanation, just covering the whole subject at this level of abstraction. Write in the SAME language as the subject text above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
+    levels.push({level:m.level,text:d.text||""});
+  }
+  return levels;
+}
+
+async function genSubtopicNames(prompt, learningProfile, levelHint) {
+  const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
+  const levelPart = levelHint ? `\nThe learner chose to approach this topic at the "${levelHint.label}" level (${levelHint.hint}) — shape the subtopic breakdown and complexity to match this depth.` : "";
+  const d = await callClaude(
+    `Design a self-study curriculum for: "${prompt}".${profileHint}${levelPart}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly). Never use " inside.\nReturn: {"names":["..."]}`,
+    500
+  );
+  return d.names||[];
+}
+
+async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` The learner chose to approach this at the "${levelHint.label}" level (${levelHint.hint}) — shape complexity accordingly.` : "";
+  const s = await callClaude(
+    `Topic: "${prompt}" > "${subtopicName}". List 3-4 sub-subtopics, under 6 words each.${levelPart} Write them in the SAME language as the topic above (match exactly). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
+    400
+  );
+  return s.subsubtopics||[];
+}
+
 async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
   const solidUnits=[],confused=[],improveUnits=[],ignoredUnits=[];
   let lowLevelSum=0, lowLevelCount=0;
@@ -273,7 +302,32 @@ function Spinner({label}){return <div className="flex items-center gap-2 text-st
 function ErrorNote({message,onRetry}){return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3"><span className="break-all">{message}</span>{onRetry&&<button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}</div>;}
 function TuneButton({tuned,onClick}){return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
 
-/* ── Main App ────────────────────────────────────────────────────────── */
+function OverviewPicker({title,levels,loading,error,onPick,picking,onBack}){
+  return <div className="space-y-4">
+    {onBack && <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal"><ChevronLeft size={16}/> назад</button>}
+    <h2 className="font-display text-xl font-bold text-stone-100">{title}</h2>
+    <p className="font-read text-stone-400 text-sm">Избери нивото на обяснение, което ти допада — оттам ще изградим темите.</p>
+    {loading && <Spinner label="генерирам 5 нива на обяснение…"/>}
+    {error && <ErrorNote message={error}/>}
+    {!loading && levels.length>0 && (
+      <div className="space-y-3">
+        {levels.map(lv=>{
+          const meta=LEVELS.find(l=>l.level===lv.level);
+          return <div key={lv.level} className="rounded border border-stone-800 p-4">
+            <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {lv.level} · {meta?.label}</div>
+            <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
+            <button onClick={()=>onPick(lv.level)} disabled={picking}
+              className="mt-2 font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-stone-950 font-medium px-3 py-1.5 rounded transition-colors">
+              {picking?"…":"Избери това ниво"}
+            </button>
+          </div>;
+        })}
+      </div>
+    )}
+  </div>;
+}
+
+
 function Aperture() {
   const [booting,setBooting]           = useState(true);
   const [storageMode,setStorageMode]   = useState(()=>{try{return localStorage.getItem("aperture:_mode")==="local"?"local":"supabase";}catch{return"local";}});
@@ -299,6 +353,8 @@ function Aperture() {
   const [dbTest,setDbTest]             = useState(null);
   const [dbTesting,setDbTesting]       = useState(false);
   const [showTrash,setShowTrash]       = useState(false);
+  const [topicOverview,setTopicOverview]       = useState(null); // {loading,levels,prompt,name,id,newTopic,learningProfile}
+  const [subtopicOverview,setSubtopicOverview] = useState(null); // {subIdx,loading,levels,error,confirming}
 
   const canBlend = Object.keys(prefs.abstraction||{}).length>0;
   const topLevel = topPreferred(prefs.abstraction,null);
@@ -348,6 +404,9 @@ function Aperture() {
     setHomeError(null);setHierarchy(null);
     setSubtopicIdx(null);setSubsubIdx(null);
     setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");
+    setCurrentTopic(null);setSubtopicOverview(null);
+
+    setTopicOverview({loading:true, levels:[], prompt:trimmed});
 
     // build learning profile for better curriculum
     let learningProfile=null;
@@ -358,20 +417,37 @@ function Aperture() {
       learningProfile=await genLearningProfile(topics,nodeMap);
     }catch(e){console.warn("profile gen failed",e);}
 
-    // check if already exists by prompt
-    const id=slugify(trimmed)+"-"+Date.now().toString(36);
+    try{
+      const name=await genTopicName(trimmed);
+      const id=slugify(trimmed)+"-"+Date.now().toString(36);
+      const newTopic={id,name,prompt:trimmed,createdAt:Date.now()};
+      setCurrentTopic(newTopic);
+      const levels=await genOverviewLevels(trimmed);
+      setTopicOverview({loading:false, levels, prompt:trimmed, name, id, newTopic, learningProfile});
+    }catch(e){
+      setTopicOverview(null);
+      setHomeError(`Грешка: ${e.message}`);
+    }
+  }
+
+  async function confirmTopicLevel(level){
+    if(!topicOverview) return;
+    const {prompt,name,id,newTopic,learningProfile} = topicOverview;
+
+    const updPrefs={...prefs, abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+    setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+
+    const next=[newTopic,...topics];
+    setTopics(next); await saveJSON("topics",next);
+
+    setTopicOverview(null);
     setLoadingH(true);
     try{
-      // T.1: generate display name from prompt
-      const name=await genTopicName(trimmed);
-      const newTopic={id,name,prompt:trimmed,createdAt:Date.now()};
-      const next=[newTopic,...topics];
-      setTopics(next);await saveJSON("topics",next);
-      setCurrentTopic(newTopic);
-
-      const subtopics=await genHierarchy(trimmed,learningProfile);
+      const levelMeta = LEVELS.find(l=>l.level===level);
+      const names = await genSubtopicNames(prompt, learningProfile, levelMeta);
+      const subtopics = names.map(n=>({name:n, subsubtopics:null}));
       setHierarchy(subtopics);
-      await saveJSON(`hierarchy:${id}`,{name,prompt:trimmed,subtopics});
+      await saveJSON(`hierarchy:${id}`,{name,prompt,subtopics,chosenLevel:level});
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
     finally{setLoadingH(false);}
   }
@@ -405,6 +481,44 @@ function Aperture() {
   async function restoreTopic(topicId){
     const next=topics.map(t=>t.id===topicId?{...t,deletedAt:undefined}:t);
     setTopics(next);await saveJSON("topics",next);
+  }
+
+  async function pickSubtopic(i){
+    setLevelCheck(null);
+    setSubtopicIdx(i);
+    const sub = hierarchy[i];
+    if(sub.subsubtopics && sub.subsubtopics.length){
+      setSubtopicOverview(null);
+      return; // already generated (cached) — go straight to SubsubList
+    }
+    setSubtopicOverview({subIdx:i, loading:true, levels:[], error:null, confirming:false});
+    try{
+      const levels = await genOverviewLevels(`${currentTopic.prompt||currentTopic.name} — ${sub.name}`);
+      setSubtopicOverview({subIdx:i, loading:false, levels, error:null, confirming:false});
+    }catch(e){
+      setSubtopicOverview({subIdx:i, loading:false, levels:[], error:`Грешка: ${e.message}`, confirming:false});
+    }
+  }
+
+  async function confirmSubtopicLevel(level){
+    if(!subtopicOverview) return;
+    const {subIdx} = subtopicOverview;
+    const sub = hierarchy[subIdx];
+
+    const updPrefs={...prefs, abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+    setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+
+    setSubtopicOverview(prev=>({...prev, confirming:true, error:null}));
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===level);
+      const subsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? {...s, subsubtopics} : s);
+      setHierarchy(updatedHierarchy);
+      await saveJSON(`hierarchy:${currentTopic.id}`, {name:currentTopic.name, prompt:currentTopic.prompt, subtopics:updatedHierarchy});
+      setSubtopicOverview(null);
+    }catch(e){
+      setSubtopicOverview(prev=>({...prev, confirming:false, error:`Грешка: ${e.message}`}));
+    }
   }
 
   async function openNode(subIdx,ssIdx){
@@ -568,7 +682,12 @@ function Aperture() {
       </header>
       <main className="max-w-2xl mx-auto px-4 py-8">
         {booting?<Spinner label="зареждам…"/>
-          :!currentTopic?(
+          :topicOverview?(
+            <OverviewPicker title={topicOverview.name||topicOverview.prompt}
+              levels={topicOverview.levels} loading={topicOverview.loading}
+              error={homeError} onPick={confirmTopicLevel} picking={loadingH}
+              onBack={()=>{setTopicOverview(null);setCurrentTopic(null);}}/>
+          ):!currentTopic?(
             <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
               onStart={()=>startTopic(topicInput)} topics={activeTopics} deletedTopics={deletedTopics}
               onResume={resumeTopic} error={homeError}
@@ -578,16 +697,21 @@ function Aperture() {
           :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>resumeTopic(currentTopic)}/>
           :subtopicIdx===null?(
             <SubtopicList topic={currentTopic} hierarchy={hierarchy}
-              onPick={i=>{setLevelCheck(null);setSubtopicIdx(i);}}
+              onPick={pickSubtopic}
               onLevelCheck={runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
               onDelete={()=>softDeleteTopic(currentTopic.id)}
               onGenerateAdapted={generateAdaptedTopic} generatingAdapted={generatingAdapted}
               allTopics={topics}
               onNavigateTopic={t=>{resumeTopic(t);}}/>
+          ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
+            <OverviewPicker title={hierarchy[subtopicIdx].name}
+              levels={subtopicOverview.levels} loading={subtopicOverview.loading}
+              error={subtopicOverview.error} onPick={confirmSubtopicLevel} picking={subtopicOverview.confirming}
+              onBack={()=>{setSubtopicOverview(null);setSubtopicIdx(null);}}/>
           ):subsubIdx===null?(
             <SubsubList topic={currentTopic} subtopic={hierarchy[subtopicIdx]}
-              onBack={()=>{setSubtopicIdx(null);setNodeId(null);setNodeData(null);}}
+              onBack={()=>{setSubtopicIdx(null);setSubtopicOverview(null);setNodeId(null);setNodeData(null);}}
               onPick={i=>openNode(subtopicIdx,i)}/>
           ):(
             <NodeView
