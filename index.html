@@ -216,7 +216,7 @@ Five sections, with section labels also translated into that same language:
 2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and state plainly that only surface-level analogy/example understanding exists, then explain what deeper understanding (mechanics, formal definition, or expert nuance) is still missing for each; if empty, say there's nothing at this shallow tier
 3 third section (100-140 words) — what's missing entirely, including confused units and missing foundational knowledge
 4 fourth section (50-90 words) — about the never-engaged units listed above: note plainly these appear low-interest rather than a knowledge gap, and future plans will deprioritize similar content; if empty, say everything has been engaged with
-5 fifth section (40-60 words) — one concrete next thing to study
+5 fifth section (40-70 words) — ONE concrete next step focused on making unclear material actually click and reinforcing what's already understood. Prioritize in this order: (a) if there are confused units, suggest revisiting one of them with a genuinely different explanation approach (a different angle, simpler language, or filling a likely missing prerequisite concept) — do NOT suggest simply moving to new/harder material; (b) if no confused units but shallow-understanding units exist, suggest deepening ONE of those at a similar or only slightly higher level, not a big jump; (c) only if everything so far is solid, suggest a genuinely new next topic. The goal is comprehension and consolidation, never difficulty escalation for its own sake.
 Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"...","ignored":"...","next":"..."}`,
     1300
   );
@@ -513,15 +513,22 @@ function Aperture() {
     setGA(true);
     try{
       const adaptedName=await genAdaptedTopicName(currentTopic.name||currentTopic.prompt,levelCheck);
-      const targetLevel = levelCheck._avgLowLevel ? Math.min(5, levelCheck._avgLowLevel+2) : null;
-      const targetLvlLabel = targetLevel ? LEVELS.find(l=>l.level===targetLevel)?.label : null;
+
+      // No difficulty escalation: keep target at the SAME level the learner already showed comfort with
+      // (never higher) — the goal is to clarify what confused them and reinforce what's shaky, not push harder.
+      const currentTopLevel = topPreferred(prefs.abstraction, null);
+      const currentTopLvlLabel = currentTopLevel ? LEVELS.find(l=>l.level===Number(currentTopLevel))?.label : null;
+
+      const confusedHint = (levelCheck.missing)
+        ? ` Prioritize re-explaining, from a genuinely different angle (different analogy, filling a likely missing prerequisite, or simpler language), the specific things the learner found confusing or unclear: ${levelCheck.missing}.`
+        : "";
       const improveHint = (levelCheck.improve && levelCheck._improveUnits?.length)
-        ? ` Also deepen understanding of these shallowly-understood topics: ${levelCheck.improve}${targetLvlLabel?` — aim to bring the learner up to a "${targetLvlLabel}" level of understanding on these.`:""}`
+        ? ` Also reinforce and solidify these topics the learner only understood shallowly, using the SAME depth level they're already comfortable with (${currentTopLvlLabel||"their usual level"}) — do not jump to a harder level, focus on making the existing depth truly click: ${levelCheck.improve}.`
         : "";
       const ignoredHint = (levelCheck._ignoredUnits?.length)
         ? ` Minimize or deprioritize content similar to these topics the learner showed no interest in: ${levelCheck._ignoredUnits.join(", ")}.`
         : "";
-      const adaptedPrompt=`${currentTopic.prompt||currentTopic.name} — фокус върху: ${levelCheck.missing}. ${levelCheck.next}${improveHint}${ignoredHint}`;
+      const adaptedPrompt=`${currentTopic.prompt||currentTopic.name} — цел: помогни на ученика да разбере по-добре (не по-трудно) вече засегнатия материал.${confusedHint}${improveHint}${ignoredHint}`;
       const id=slugify(adaptedName)+"-"+Date.now().toString(36);
 
       // T.6: link parent<->child
