@@ -117,11 +117,12 @@ async function callClaude(user, maxTokens=600, attempt=0) {
 
 // T.1: generate short display name from prompt
 async function genTopicName(prompt) {
-  const d = await callClaude(
-    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Write the name in the SAME language as the prompt above (detect it and match exactly). Never use " inside.\nReturn: {"name":"..."}`,
+  const raw = await callClaudeRaw(
+    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Write the name in the SAME language as the prompt above (detect it and match exactly). Output ONLY the name, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
     200
   );
-  return d.name || prompt.slice(0,40);
+  const name = extractField(raw,"NAME");
+  return name || prompt.slice(0,40);
 }
 
 async function genHierarchy(prompt, learningProfile) {
@@ -145,8 +146,8 @@ async function genHierarchy(prompt, learningProfile) {
 async function genAbstraction(topic, sub, subsub) {
   const levels=[];
   for(const m of LEVELS){
-    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
-    levels.push({level:m.level,text:d.text||""});
+    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
+    levels.push({level:m.level,text:extractField(raw,"TEXT")});
   }
   return levels;
 }
@@ -154,8 +155,8 @@ async function genAbstraction(topic, sub, subsub) {
 async function genAllPersonalities(topic, sub, subsub) {
   const results=[];
   for(const p of PERSONALITIES){
-    const d=await callClaude(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
-    results.push({code:p.code,text:d.text||""});
+    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
+    results.push({code:p.code,text:extractField(raw,"TEXT")});
   }
   return results;
 }
@@ -163,19 +164,19 @@ async function genAllPersonalities(topic, sub, subsub) {
 // T.4: blend only uses abstraction (levels) ratings
 async function genBlend(topic, sub, subsub, level) {
   const lvl = LEVELS.find(l=>l.level===level);
-  const d = await callClaude(
-    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,
+  const raw = await callClaudeRaw(
+    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,
     800
   );
-  return d.text||"";
+  return extractField(raw,"TEXT");
 }
 
 // overview: 5-level explanation of an ENTIRE subject (topic or subtopic), same length/style as a leaf-unit explanation
 async function genOverviewLevels(subjectLabel) {
   const levels=[];
   for(const m of LEVELS){
-    const d=await callClaude(`Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) at level "${m.label}" (${m.hint}), 45-70 words — same length and style as a normal single-concept explanation, just covering the whole subject at this level of abstraction. Write in the SAME language as the subject text above (detect it and match exactly). Never use " inside.\nReturn: {"text":"..."}`,600);
-    levels.push({level:m.level,text:d.text||""});
+    const raw=await callClaudeRaw(`Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) at level "${m.label}" (${m.hint}), 45-70 words — same length and style as a normal single-concept explanation, just covering the whole subject at this level of abstraction. Write in the SAME language as the subject text above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
+    levels.push({level:m.level,text:extractField(raw,"TEXT")});
   }
   return levels;
 }
@@ -234,7 +235,7 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
 
   const avgLowLevel = lowLevelCount>0 ? Math.round(lowLevelSum/lowLevelCount) : null;
   const topLvl=LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
-  const d=await callClaude(
+  const raw=await callClaudeRaw(
     `Learner studying "${topic}". Subtopics: ${hierarchy.map(s=>s.name).join(", ")}.
 Understood adequately or solidly (level 3+ explanations liked — "Mechanics", "Definition", or "Depth"): ${solidUnits.join(", ")||"none yet"}.
 Marked as completely unclear: ${confused.join(", ")||"none"}.
@@ -242,16 +243,20 @@ Understood only at a shallow level (only liked "Analogy" or "Example" explanatio
 Never engaged with — no level rated, no "did not understand" mark, not opened (likely low interest, not a knowledge gap): ${ignoredUnits.join(", ")||"none"}.
 Preferred explanation level overall: "${topLvl||"unknown"}".
 Write in the SAME language as the topic above (detect it and match exactly). Use an OBJECTIVE, calibrated, non-flattering tone throughout — this is a factual assessment, not encouragement. Do not use inflated praise language (avoid phrases like "solid foundation", "great grasp", "well done") for anything below level 3. Be precise about what each level of understanding actually means: level 1-2 (analogy/example only) = superficial, not yet real understanding; level 3 (mechanics) = adequate, functional understanding; level 4-5 (definition/depth) = solid, strong command.
-Five sections, with section labels also translated into that same language:
-1 first section (80-120 words) — objectively state what is adequately or solidly understood (from the level 3+ list only); if that list is empty, say plainly that nothing has reached an adequate depth yet, without softening it
-2 second section (60-100 words) — ONLY about the shallow-understanding units listed above: name them and state plainly that only surface-level analogy/example understanding exists, then explain what deeper understanding (mechanics, formal definition, or expert nuance) is still missing for each; if empty, say there's nothing at this shallow tier
-3 third section (100-140 words) — what's missing entirely, including confused units and missing foundational knowledge
-4 fourth section (50-90 words) — about the never-engaged units listed above: note plainly these appear low-interest rather than a knowledge gap, and future plans will deprioritize similar content; if empty, say everything has been engaged with
-5 fifth section (40-70 words) — ONE concrete next step focused on making unclear material actually click and reinforcing what's already understood. Prioritize in this order: (a) if there are confused units, suggest revisiting one of them with a genuinely different explanation approach (a different angle, simpler language, or filling a likely missing prerequisite concept) — do NOT suggest simply moving to new/harder material; (b) if no confused units but shallow-understanding units exist, suggest deepening ONE of those at a similar or only slightly higher level, not a big jump; (c) only if everything so far is solid, suggest a genuinely new next topic. The goal is comprehension and consolidation, never difficulty escalation for its own sake.
-Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"...","ignored":"...","next":"..."}`,
-    1300
+Output EXACTLY five sections using these markers, nothing before the first marker or after the last one, no extra commentary:
+###KNOWS### (80-120 words) — objectively state what is adequately or solidly understood (from the level 3+ list only); if that list is empty, say plainly that nothing has reached an adequate depth yet, without softening it
+###IMPROVE### (60-100 words) — ONLY about the shallow-understanding units listed above: name them and state plainly that only surface-level analogy/example understanding exists, then explain what deeper understanding is still missing for each; if empty, say there's nothing at this shallow tier
+###MISSING### (100-140 words) — what's missing entirely, including confused units and missing foundational knowledge
+###IGNORED### (50-90 words) — about the never-engaged units listed above: note plainly these appear low-interest rather than a knowledge gap, and future plans will deprioritize similar content; if empty, say everything has been engaged with
+###NEXT### (40-70 words) — ONE concrete next step focused on making unclear material actually click and reinforcing what's already understood. Prioritize in this order: (a) if there are confused units, suggest revisiting one of them with a genuinely different explanation approach (a different angle, simpler language, or filling a likely missing prerequisite concept) — do NOT suggest simply moving to new/harder material; (b) if no confused units but shallow-understanding units exist, suggest deepening ONE of those at a similar or only slightly higher level, not a big jump; (c) only if everything so far is solid, suggest a genuinely new next topic. The goal is comprehension and consolidation, never difficulty escalation for its own sake.
+###END###`,
+    1500
   );
-  return {...d, _improveUnits: improveUnits, _avgLowLevel: avgLowLevel, _ignoredUnits: ignoredUnits};
+  const fields = extractSequentialFields(raw, ["KNOWS","IMPROVE","MISSING","IGNORED","NEXT"]);
+  return {
+    knows: fields.KNOWS, improve: fields.IMPROVE, missing: fields.MISSING, ignored: fields.IGNORED, next: fields.NEXT,
+    _improveUnits: improveUnits, _avgLowLevel: avgLowLevel, _ignoredUnits: ignoredUnits
+  };
 }
 
 // raw text call (no JSON) — safer for long prose that may contain quotes/punctuation
@@ -286,6 +291,25 @@ function extractField(raw, name){
   const ei=raw.indexOf(end, from);
   return (ei===-1 ? raw.slice(from) : raw.slice(from,ei)).trim();
 }
+// extract multiple SEQUENTIAL fields (###NAME1### text ###NAME2### text ... ###END###) — no per-field _END markers
+function extractSequentialFields(raw, names){
+  const positions = names.map(n=>({n, pos:raw.indexOf(`###${n}###`)}));
+  const result={};
+  for(let i=0;i<positions.length;i++){
+    const {n,pos}=positions[i];
+    if(pos===-1){ result[n]=""; continue; }
+    const start = pos + `###${n}###`.length;
+    let end = raw.indexOf("###END###", start);
+    for(let j=i+1;j<positions.length;j++){
+      if(positions[j].pos!==-1 && positions[j].pos>start){
+        end = end===-1 ? positions[j].pos : Math.min(end, positions[j].pos);
+        break;
+      }
+    }
+    result[n] = (end===-1 ? raw.slice(start) : raw.slice(start,end)).trim();
+  }
+  return result;
+}
 
 // long-form overview essay for a subtopic — philosophical/narrative style, 2-3 min read (~500-800 words)
 async function genSubtopicEssay(topicLabel, subtopicName, levelHint) {
@@ -303,11 +327,12 @@ Output ONLY the essay, wrapped exactly like this and nothing else before or afte
 
 
 async function genAdaptedTopicName(originalTopic, levelCheck) {
-  const d = await callClaude(
-    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly). Never use " inside.\nReturn: {"name":"..."}`,
+  const raw = await callClaudeRaw(
+    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly). Output ONLY the name, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
     200
   );
-  return d.name || `Адаптирана: ${originalTopic}`;
+  const name = extractField(raw,"NAME");
+  return name || `Адаптирана: ${originalTopic}`;
 }
 
 // T.7 updated: all active topics = interest; high engagement = priority
@@ -328,17 +353,17 @@ async function genLearningProfile(topics, nodeDataMap) {
   const interested = scored.filter(t=>t.likes>0&&t.likes<3).map(t=>t.name);
   const passive    = scored.filter(t=>!t.hasActivity).map(t=>t.name);
 
-  const d = await callClaude(
+  const raw = await callClaudeRaw(
     `A learner uses a study app. Analyze their learning preferences to guide future curriculum generation.
 Priority topics (high engagement, many likes): ${priority.join(", ")||"none"}.
 Interested topics (some activity): ${interested.join(", ")||"none"}.
 Passive topics (saved but not yet studied): ${passive.join(", ")||"none"}.
 Archived/deleted topics (did not find value): ${deleted.join(", ")||"none"}.
 In 2-3 sentences, describe what kind of learning structure, depth, and content areas this person prefers. Be specific and actionable for a curriculum designer.
-Never use " inside.\nReturn: {"profile":"..."}`,
+Output ONLY the profile text, wrapped exactly like this and nothing else: ###PROFILE###the profile text here###PROFILE_END###`,
     400
   );
-  return d.profile||null;
+  return extractField(raw,"PROFILE") || null;
 }
 
 function subName(item){ return typeof item==="string" ? item : (item?.name||""); }
