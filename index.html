@@ -545,7 +545,35 @@ function Aperture() {
   // reopen the topic-level picker to revisit or switch levels, reusing cached overview texts (no regeneration)
   function openTopicLevelPicker(){
     if(!planData) return;
-    setTopicOverview({loading:false, levels:planData.overviewLevels||[], prompt:planData.prompt, name:planData.name, existingPlanData:planData});
+    if(planData.overviewLevels && planData.overviewLevels.length){
+      setTopicOverview({loading:false, levels:planData.overviewLevels, prompt:planData.prompt, name:planData.name, existingPlanData:planData});
+      return;
+    }
+    // legacy plan without cached overview texts — generate them once, then cache
+    setTopicOverview({loading:true, levels:[], prompt:planData.prompt, name:planData.name, existingPlanData:planData});
+    (async()=>{
+      try{
+        const levels = await genOverviewLevels(planData.prompt);
+        const updated = {...planData, overviewLevels:levels};
+        setPlanData(updated);
+        await saveJSON(`plan:${currentTopic.id}`, updated);
+        setTopicOverview({loading:false, levels, prompt:planData.prompt, name:planData.name, existingPlanData:updated});
+      }catch(e){
+        setTopicOverview({loading:false, levels:[], prompt:planData.prompt, name:planData.name, existingPlanData:planData, error:`Грешка: ${e.message}`});
+      }
+    })();
+  }
+
+  // best-effort adapter: turn an old-format `hierarchy:${id}` cache into the new byLevel plan shape,
+  // preserving whatever was already generated instead of throwing it away
+  function migrateLegacyHierarchy(cached){
+    const level = cached.chosenLevel || Number(topPreferred(prefs.abstraction,3)) || 3;
+    const subtopics = (cached.subtopics||[]).map(s=>{
+      const legacyList = s.subsubtopics;
+      const hasList = Array.isArray(legacyList) && legacyList.length>0;
+      return { name:s.name, overviewLevels:null, byLevel: hasList?{[level]:legacyList}:{}, activeLevel: hasList?level:null };
+    });
+    return { name:cached.name, prompt:cached.prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level };
   }
 
   async function resumeTopic(topic){
@@ -553,13 +581,23 @@ function Aperture() {
     setSubtopicIdx(null);setSubsubIdx(null);
     setNodeId(null);setNodeData(null);setLevelCheck(null);setSubtopicOverview(null);
     setCurrentTopic(topic);
-    const cached=await loadJSON(`plan:${topic.id}`,null);
+
+    let cached=await loadJSON(`plan:${topic.id}`,null);
+    if(!cached){
+      // not migrated yet — check the old storage key before assuming this topic has nothing generated
+      const legacy = await loadJSON(`hierarchy:${topic.id}`,null);
+      if(legacy){
+        cached = migrateLegacyHierarchy(legacy);
+        await saveJSON(`plan:${topic.id}`, cached); // persist migrated shape so this only happens once
+      }
+    }
     if(cached){
       setPlanData(cached);
       setHierarchy(cached.byLevel[cached.activeLevel]);
       return;
     }
-    // no plan yet for this topic — go through the overview/level-choice flow (same as a new topic)
+
+    // truly nothing cached anywhere — go through the overview/level-choice flow (same as a new topic)
     setLoadingH(true);
     try{
       const levels=await genOverviewLevels(topic.prompt||topic.name);
@@ -613,9 +651,26 @@ function Aperture() {
   // reopen the subtopic-level picker to revisit or switch levels for this subtopic, reusing cached overview texts
   function openSubtopicLevelPicker(i){
     const sub = hierarchy[i];
-    if(!sub?.overviewLevels) return;
     setSubtopicIdx(i);
-    setSubtopicOverview({subIdx:i, loading:false, levels:sub.overviewLevels, error:null, confirming:false});
+    if(sub?.overviewLevels && sub.overviewLevels.length){
+      setSubtopicOverview({subIdx:i, loading:false, levels:sub.overviewLevels, error:null, confirming:false});
+      return;
+    }
+    // legacy subtopic without cached overview texts — generate once, then cache
+    setSubtopicOverview({subIdx:i, loading:true, levels:[], error:null, confirming:false});
+    (async()=>{
+      try{
+        const levels = await genOverviewLevels(`${currentTopic.prompt||currentTopic.name} — ${sub.name}`);
+        const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? {...s, overviewLevels:levels} : s);
+        setHierarchy(updatedHierarchy);
+        const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+        setPlanData(updatedPlan);
+        await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
+        setSubtopicOverview({subIdx:i, loading:false, levels, error:null, confirming:false});
+      }catch(e){
+        setSubtopicOverview({subIdx:i, loading:false, levels:[], error:`Грешка: ${e.message}`, confirming:false});
+      }
+    })();
   }
 
   async function confirmSubtopicLevel(level){
@@ -865,7 +920,7 @@ function Aperture() {
           :topicOverview?(
             <OverviewPicker title={topicOverview.name||topicOverview.prompt}
               levels={topicOverview.levels} loading={topicOverview.loading}
-              error={homeError} onPick={confirmTopicLevel} picking={loadingH}
+              error={topicOverview.error||homeError} onPick={confirmTopicLevel} picking={loadingH}
               existingLevels={topicOverview.existingPlanData?Object.keys(topicOverview.existingPlanData.byLevel||{}).map(Number):[]}
               onBack={()=>{setTopicOverview(null); if(!topicOverview.existingPlanData) setCurrentTopic(null);}}/>
           ):!currentTopic?(
