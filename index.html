@@ -252,7 +252,54 @@ Never use " inside text.\nReturn: {"knows":"...","improve":"...","missing":"..."
   return {...d, _improveUnits: improveUnits, _avgLowLevel: avgLowLevel, _ignoredUnits: ignoredUnits};
 }
 
-// T.5: generate adapted topic as full new plan
+// raw text call (no JSON) — safer for long prose that may contain quotes/punctuation
+async function callClaudeRaw(user, maxTokens=1500, attempt=0) {
+  let res;
+  try {
+    res = await fetch(CLAUDE_PROXY,{method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`},
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:user}]})});
+  } catch(e) {
+    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
+    throw new Error(`[fetch] ${e.message}`);
+  }
+  if(res.status===429&&attempt<3){await sleep(1500*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
+  let data;
+  try{data=await res.json();}catch(e){
+    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
+    throw new Error(`[parse] ${e.message}`);
+  }
+  if(!res.ok) throw new Error(`[http] ${res.status}: ${JSON.stringify(data).slice(0,150)}`);
+  if(!data?.content) throw new Error(`[shape] ${JSON.stringify(data).slice(0,100)}`);
+  if(data.stop_reason==="max_tokens" && attempt<3 && maxTokens<4000){
+    return callClaudeRaw(user, Math.min(4000, maxTokens*2), attempt+1);
+  }
+  return data.content.map(b=>b.text||"").join("\n").trim();
+}
+function extractField(raw, name){
+  const start=`###${name}###`, end=`###${name}_END###`;
+  const si=raw.indexOf(start);
+  if(si===-1) return raw.trim();
+  const from=si+start.length;
+  const ei=raw.indexOf(end, from);
+  return (ei===-1 ? raw.slice(from) : raw.slice(from,ei)).trim();
+}
+
+// long-form overview essay for a subtopic — philosophical/narrative style, 4-5 min read (~900-1300 words)
+async function genSubtopicEssay(topicLabel, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Write a long-form OVERVIEW ESSAY (900-1300 words, readable in about 4-5 minutes) about "${subtopicName}", within the context of the broader topic "${topicLabel}".
+Style: engaging, narrative, slightly philosophical/reflective — like a well-written tech/science essay that gives the big picture, the "why it matters" and the underlying ideas, not a dry technical walkthrough or a bullet-point summary. Use natural prose paragraphs (blank line between paragraphs), a few illustrative analogies or historical/conceptual framing where it fits, and an occasional short memorable phrase. It's fine to use a few short section-like breaks (a short bolded-feeling phrase followed by a colon is NOT needed — just flowing prose divided into paragraphs).${levelPart}
+Write in the SAME language as the topic/subtopic above (detect it and match exactly).
+Never use the " character inside the text.
+Output ONLY the essay, wrapped exactly like this and nothing else before or after: ###TEXT###the essay here###TEXT_END###`,
+    2800
+  );
+  return extractField(raw, "TEXT");
+}
+
+
 async function genAdaptedTopicName(originalTopic, levelCheck) {
   const d = await callClaude(
     `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly). Never use " inside.\nReturn: {"name":"..."}`,
@@ -291,6 +338,9 @@ Never use " inside.\nReturn: {"profile":"..."}`,
   );
   return d.profile||null;
 }
+
+function subName(item){ return typeof item==="string" ? item : (item?.name||""); }
+function isOverviewItem(item){ return typeof item==="object" && item!==null && !!item.isOverview; }
 
 function topicLabel(t){
   if(!t) return "(без заглавие)";
@@ -511,7 +561,9 @@ function Aperture() {
     setSubtopicOverview(prev=>({...prev, confirming:true, error:null}));
     try{
       const levelMeta = LEVELS.find(l=>l.level===level);
-      const subsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const overviewItem = { name:"Общ преглед", isOverview:true };
+      const subsubtopics = [overviewItem, ...rawSubsubtopics];
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? {...s, subsubtopics} : s);
       setHierarchy(updatedHierarchy);
       await saveJSON(`hierarchy:${currentTopic.id}`, {name:currentTopic.name, prompt:currentTopic.prompt, subtopics:updatedHierarchy});
@@ -525,9 +577,21 @@ function Aperture() {
     setSubtopicIdx(subIdx);setSubsubIdx(ssIdx);
     setTab("levels");setNodeError(null);
     const sub=hierarchy[subIdx].name;
-    const subsub=hierarchy[subIdx].subsubtopics[ssIdx];
+    const subsubItem=hierarchy[subIdx].subsubtopics[ssIdx];
+    const subsub=subName(subsubItem);
     const id=`${currentTopic.id}/${slugify(sub)}/${slugify(subsub)}`;
     setNodeId(id);
+
+    if(isOverviewItem(subsubItem)){
+      const EMPTY={essay:"",essayLevel:null,tunedEssay:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.essay) doLoadEssay(id,sub,cached);
+      return;
+    }
+
     const EMPTY={abstraction:[],personality:[],blend:null,tunedAbstraction:[],tunedPersonality:[],tunedBlendKey:null,unitConfused:false};
     const cached=await loadJSON(`node:${id}`,EMPTY);
     setNodeData(cached);
@@ -535,6 +599,32 @@ function Aperture() {
     const allKeys=await loadJSON("allNodeKeys",[]);
     if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
     if(!cached.abstraction?.length)doLoadLevels(id,sub,subsub,cached);
+  }
+
+  async function doLoadEssay(id,sub,base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const level = Number(topPreferred(prefs.abstraction,3));
+      const levelMeta = LEVELS.find(l=>l.level===level);
+      const essay=await genSubtopicEssay(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated={...base, essay, essayLevel:level};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneEssay(){
+    if(!nodeData||nodeData.tunedEssay)return;
+    const level = nodeData.essayLevel;
+    const updNode={...nodeData,tunedEssay:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
   }
 
   async function doLoadLevels(id,sub,subsub,base){
@@ -717,17 +807,20 @@ function Aperture() {
             <NodeView
               topic={topicLabel(currentTopic)}
               subtopic={hierarchy[subtopicIdx].name}
-              subsub={hierarchy[subtopicIdx].subsubtopics[subsubIdx]}
+              subsub={subName(hierarchy[subtopicIdx].subsubtopics[subsubIdx])}
+              isOverview={isOverviewItem(hierarchy[subtopicIdx].subsubtopics[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
-              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].subsubtopics[subsubIdx],nodeData)}
+              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(hierarchy[subtopicIdx].subsubtopics[subsubIdx]),nodeData)}
+              onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,nodeData)}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
+              onTuneEssay={tuneEssay}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
-              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].subsubtopics[subsubIdx])}/>
+              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(hierarchy[subtopicIdx].subsubtopics[subsubIdx]))}/>
           )}
       </main>
     </div>
@@ -862,19 +955,44 @@ function SubsubList({topic,subtopic,onBack,onPick}){
     <h2 className="font-display text-xl font-bold text-stone-100">{subtopic.name}</h2>
     <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Единици</div>
     <div className="space-y-1">
-      {subtopic.subsubtopics.map((s,i)=>(
-        <button key={i} onClick={()=>onPick(i)}
-          className="w-full text-left px-3 py-3 rounded border border-stone-800 hover:border-amber-600/50 flex items-center justify-between group">
-          <span className="font-read text-stone-100">{s}</span>
-          <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
-        </button>
-      ))}
+      {subtopic.subsubtopics.map((s,i)=>{
+        const isOv = isOverviewItem(s);
+        return <button key={i} onClick={()=>onPick(i)}
+          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isOv?"border-sky-800 bg-sky-950/20 hover:border-sky-500":"border-stone-800 hover:border-amber-600/50"}`}>
+          <span className={`font-read flex items-center gap-2 ${isOv?"text-sky-300":"text-stone-100"}`}>
+            {isOv && <Sparkles size={14}/>}
+            {subName(s)}
+          </span>
+          <span className={`${isOv?"text-sky-700 group-hover:text-sky-400":"text-stone-600 group-hover:text-amber-500"}`}><ChevronRight size={16}/></span>
+        </button>;
+      })}
     </div>
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onTuneAbstraction,onTuneBlend,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onTuneAbstraction,onTuneBlend,onTuneEssay,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
+
+  if(isOverview){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-sky-600 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onRetryEssay}/>}
+      <EssayPanel loading={loadingLevels} essay={nodeData?.essay||""} tuned={!!nodeData?.tunedEssay} onTune={onTuneEssay}/>
+    </div>;
+  }
+
   // T.3: channels tab hidden — only "levels" and "blend"
   const TABS=[{id:"levels",label:"Нива"},{id:"blend",label:"Микс"}];
   return <div className="space-y-5">
@@ -902,6 +1020,20 @@ function NodeView({topic,subtopic,subsub,onBack,tab,setTab,nodeData,loadingLevel
     {error&&<ErrorNote message={error} onRetry={tab==="levels"?onRetryLevels:undefined}/>}
     {tab==="levels"&&<LevelsPanel loading={loadingLevels} levels={nodeData?.abstraction||[]} tuned={nodeData?.tunedAbstraction||[]} onTune={onTuneAbstraction} topLevel={topLevel}/>}
     {tab==="blend"&&<BlendPanel canBlend={canBlend} blend={nodeData?.blend} loading={loadingBlend} onGenerate={onGenerateBlend} tuned={!!nodeData?.tunedBlendKey} onTune={onTuneBlend}/>}
+  </div>;
+}
+
+function EssayPanel({loading,essay,tuned,onTune}){
+  if(loading) return <Spinner label="пиша есе (900-1300 думи)…"/>;
+  if(!essay) return null;
+  const paragraphs = essay.split(/\n\s*\n/).filter(p=>p.trim());
+  return <div className="space-y-4">
+    <div className="space-y-4">
+      {paragraphs.map((p,i)=>(
+        <p key={i} className="font-read text-stone-200 leading-relaxed text-lg">{p.trim()}</p>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
 }
 
