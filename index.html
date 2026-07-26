@@ -206,8 +206,10 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
   // build full unit list from hierarchy (SLUGIFIED to match nodeDataMap keys) to detect never-opened units
   const allUnitKeys=[];
   for(const sub of hierarchy){
-    for(const subsub of sub.subsubtopics){
-      allUnitKeys.push({key:`${slugify(sub.name)}/${slugify(subsub)}`, label:`${sub.name} › ${subsub}`});
+    const list = getSubsubList(sub) || [];
+    for(const subsub of list){
+      const name=subName(subsub);
+      allUnitKeys.push({key:`${slugify(sub.name)}/${slugify(name)}`, label:`${sub.name} › ${name}`});
     }
   }
 
@@ -285,16 +287,16 @@ function extractField(raw, name){
   return (ei===-1 ? raw.slice(from) : raw.slice(from,ei)).trim();
 }
 
-// long-form overview essay for a subtopic — philosophical/narrative style, 4-5 min read (~900-1300 words)
+// long-form overview essay for a subtopic — philosophical/narrative style, 2-3 min read (~500-800 words)
 async function genSubtopicEssay(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-    `Write a long-form OVERVIEW ESSAY (900-1300 words, readable in about 4-5 minutes) about "${subtopicName}", within the context of the broader topic "${topicLabel}".
+    `Write a long-form OVERVIEW ESSAY (500-800 words, readable in about 2-3 minutes) about "${subtopicName}", within the context of the broader topic "${topicLabel}".
 Style: engaging, narrative, slightly philosophical/reflective — like a well-written tech/science essay that gives the big picture, the "why it matters" and the underlying ideas, not a dry technical walkthrough or a bullet-point summary. Use natural prose paragraphs (blank line between paragraphs), a few illustrative analogies or historical/conceptual framing where it fits, and an occasional short memorable phrase. It's fine to use a few short section-like breaks (a short bolded-feeling phrase followed by a colon is NOT needed — just flowing prose divided into paragraphs).${levelPart}
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output ONLY the essay, wrapped exactly like this and nothing else before or after: ###TEXT###the essay here###TEXT_END###`,
-    2800
+    1800
   );
   return extractField(raw, "TEXT");
 }
@@ -341,6 +343,7 @@ Never use " inside.\nReturn: {"profile":"..."}`,
 
 function subName(item){ return typeof item==="string" ? item : (item?.name||""); }
 function isOverviewItem(item){ return typeof item==="object" && item!==null && !!item.isOverview; }
+function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
 
 function topicLabel(t){
   if(!t) return "(без заглавие)";
@@ -352,7 +355,7 @@ function Spinner({label}){return <div className="flex items-center gap-2 text-st
 function ErrorNote({message,onRetry}){return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3"><span className="break-all">{message}</span>{onRetry&&<button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}</div>;}
 function TuneButton({tuned,onClick}){return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
 
-function OverviewPicker({title,levels,loading,error,onPick,picking,onBack}){
+function OverviewPicker({title,levels,loading,error,onPick,picking,onBack,existingLevels}){
   return <div className="space-y-4">
     {onBack && <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal"><ChevronLeft size={16}/> назад</button>}
     <h2 className="font-display text-xl font-bold text-stone-100">{title}</h2>
@@ -363,12 +366,16 @@ function OverviewPicker({title,levels,loading,error,onPick,picking,onBack}){
       <div className="space-y-3">
         {levels.map(lv=>{
           const meta=LEVELS.find(l=>l.level===lv.level);
-          return <div key={lv.level} className="rounded border border-stone-800 p-4">
-            <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {lv.level} · {meta?.label}</div>
+          const already = existingLevels && existingLevels.includes(lv.level);
+          return <div key={lv.level} className={`rounded border p-4 ${already?"border-emerald-800 bg-emerald-950/10":"border-stone-800"}`}>
+            <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2 flex items-center gap-2">
+              Ниво {lv.level} · {meta?.label}
+              {already && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/50 text-emerald-500">вече генерирано</span>}
+            </div>
             <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
             <button onClick={()=>onPick(lv.level)} disabled={picking}
               className="mt-2 font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-stone-950 font-medium px-3 py-1.5 rounded transition-colors">
-              {picking?"…":"Избери това ниво"}
+              {picking?"…":already?"Отвори тази версия":"Избери това ниво"}
             </button>
           </div>;
         })}
@@ -403,8 +410,9 @@ function Aperture() {
   const [dbTest,setDbTest]             = useState(null);
   const [dbTesting,setDbTesting]       = useState(false);
   const [showTrash,setShowTrash]       = useState(false);
-  const [topicOverview,setTopicOverview]       = useState(null); // {loading,levels,prompt,name,id,newTopic,learningProfile}
+  const [topicOverview,setTopicOverview]       = useState(null); // {loading,levels,prompt,name,id,newTopic,learningProfile,existingPlanData}
   const [subtopicOverview,setSubtopicOverview] = useState(null); // {subIdx,loading,levels,error,confirming}
+  const [planData,setPlanData]                 = useState(null); // {name,prompt,overviewLevels,byLevel:{level:subtopicsArr},activeLevel}
 
   const canBlend = Object.keys(prefs.abstraction||{}).length>0;
   const topLevel = topPreferred(prefs.abstraction,null);
@@ -451,7 +459,7 @@ function Aperture() {
 
   async function startTopic(prompt) {
     const trimmed=prompt.trim();if(!trimmed)return;
-    setHomeError(null);setHierarchy(null);
+    setHomeError(null);setHierarchy(null);setPlanData(null);
     setSubtopicIdx(null);setSubsubIdx(null);
     setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");
     setCurrentTopic(null);setSubtopicOverview(null);
@@ -480,44 +488,84 @@ function Aperture() {
     }
   }
 
+  // handles BOTH brand-new topics and revisiting/switching level on an existing topic
   async function confirmTopicLevel(level){
     if(!topicOverview) return;
-    const {prompt,name,id,newTopic,learningProfile} = topicOverview;
-
     const updPrefs={...prefs, abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
     setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
 
-    const next=[newTopic,...topics];
-    setTopics(next); await saveJSON("topics",next);
+    // CASE 1: switching/revisiting level on an already-created topic
+    if(topicOverview.existingPlanData){
+      const pd = topicOverview.existingPlanData;
+      const id = currentTopic.id;
+      if(pd.byLevel[level]){
+        // already generated for this level — just switch, no regeneration
+        const updated = {...pd, activeLevel:level};
+        setPlanData(updated); setHierarchy(updated.byLevel[level]);
+        await saveJSON(`plan:${id}`, updated);
+        setTopicOverview(null);
+        setSubtopicIdx(null); setSubsubIdx(null); setSubtopicOverview(null);
+        return;
+      }
+      setTopicOverview(null);
+      setLoadingH(true);
+      try{
+        const levelMeta = LEVELS.find(l=>l.level===level);
+        const names = await genSubtopicNames(pd.prompt, null, levelMeta);
+        const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
+        const updated = {...pd, byLevel:{...pd.byLevel, [level]:subtopics}, activeLevel:level};
+        setPlanData(updated); setHierarchy(subtopics);
+        await saveJSON(`plan:${id}`, updated);
+        setSubtopicIdx(null); setSubsubIdx(null); setSubtopicOverview(null);
+      }catch(e){setHomeError(`Грешка: ${e.message}`);}
+      finally{setLoadingH(false);}
+      return;
+    }
+
+    // CASE 2: brand-new topic OR resuming an existing topic that has no cached plan yet
+    const {prompt,name,id,newTopic,learningProfile,resumingExisting} = topicOverview;
+    if(newTopic && !resumingExisting){
+      const next=[newTopic,...topics];
+      setTopics(next); await saveJSON("topics",next);
+    }
 
     setTopicOverview(null);
     setLoadingH(true);
     try{
       const levelMeta = LEVELS.find(l=>l.level===level);
       const names = await genSubtopicNames(prompt, learningProfile, levelMeta);
-      const subtopics = names.map(n=>({name:n, subsubtopics:null}));
-      setHierarchy(subtopics);
-      await saveJSON(`hierarchy:${id}`,{name,prompt,subtopics,chosenLevel:level});
+      const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
+      const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level};
+      setPlanData(newPlan); setHierarchy(subtopics);
+      await saveJSON(`plan:${id}`, newPlan);
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
     finally{setLoadingH(false);}
   }
 
+  // reopen the topic-level picker to revisit or switch levels, reusing cached overview texts (no regeneration)
+  function openTopicLevelPicker(){
+    if(!planData) return;
+    setTopicOverview({loading:false, levels:planData.overviewLevels||[], prompt:planData.prompt, name:planData.name, existingPlanData:planData});
+  }
+
   async function resumeTopic(topic){
-    setHomeError(null);setHierarchy(null);
+    setHomeError(null);setHierarchy(null);setPlanData(null);
     setSubtopicIdx(null);setSubsubIdx(null);
-    setNodeId(null);setNodeData(null);setLevelCheck(null);
+    setNodeId(null);setNodeData(null);setLevelCheck(null);setSubtopicOverview(null);
     setCurrentTopic(topic);
-    const cached=await loadJSON(`hierarchy:${topic.id}`,null);
-    if(cached){setHierarchy(cached.subtopics);}
-    else{
-      setLoadingH(true);
-      try{
-        const subtopics=await genHierarchy(topic.prompt||topic.name,null);
-        setHierarchy(subtopics);
-        await saveJSON(`hierarchy:${topic.id}`,{name:topic.name,prompt:topic.prompt,subtopics});
-      }catch(e){setHomeError(`Грешка: ${e.message}`);}
-      finally{setLoadingH(false);}
+    const cached=await loadJSON(`plan:${topic.id}`,null);
+    if(cached){
+      setPlanData(cached);
+      setHierarchy(cached.byLevel[cached.activeLevel]);
+      return;
     }
+    // no plan yet for this topic — go through the overview/level-choice flow (same as a new topic)
+    setLoadingH(true);
+    try{
+      const levels=await genOverviewLevels(topic.prompt||topic.name);
+      setLoadingH(false);
+      setTopicOverview({loading:false, levels, prompt:topic.prompt||topic.name, name:topic.name, id:topic.id, newTopic:null, learningProfile:null, resumingExisting:true});
+    }catch(e){setLoadingH(false);setHomeError(`Грешка: ${e.message}`);}
   }
 
   // T.2: soft delete
@@ -537,17 +585,37 @@ function Aperture() {
     setLevelCheck(null);
     setSubtopicIdx(i);
     const sub = hierarchy[i];
-    if(sub.subsubtopics && sub.subsubtopics.length){
+    const existing = getSubsubList(sub);
+    if(existing && existing.length){
       setSubtopicOverview(null);
-      return; // already generated (cached) — go straight to SubsubList
+      return; // already generated for the active level — go straight to SubsubList
+    }
+    if(sub.overviewLevels && sub.overviewLevels.length){
+      // overview texts already cached — just show the picker, no regeneration
+      setSubtopicOverview({subIdx:i, loading:false, levels:sub.overviewLevels, error:null, confirming:false});
+      return;
     }
     setSubtopicOverview({subIdx:i, loading:true, levels:[], error:null, confirming:false});
     try{
       const levels = await genOverviewLevels(`${currentTopic.prompt||currentTopic.name} — ${sub.name}`);
+      // persist overview texts immediately so revisiting never regenerates them
+      const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? {...s, overviewLevels:levels} : s);
+      setHierarchy(updatedHierarchy);
+      const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+      setPlanData(updatedPlan);
+      await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
       setSubtopicOverview({subIdx:i, loading:false, levels, error:null, confirming:false});
     }catch(e){
       setSubtopicOverview({subIdx:i, loading:false, levels:[], error:`Грешка: ${e.message}`, confirming:false});
     }
+  }
+
+  // reopen the subtopic-level picker to revisit or switch levels for this subtopic, reusing cached overview texts
+  function openSubtopicLevelPicker(i){
+    const sub = hierarchy[i];
+    if(!sub?.overviewLevels) return;
+    setSubtopicIdx(i);
+    setSubtopicOverview({subIdx:i, loading:false, levels:sub.overviewLevels, error:null, confirming:false});
   }
 
   async function confirmSubtopicLevel(level){
@@ -558,15 +626,30 @@ function Aperture() {
     const updPrefs={...prefs, abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
     setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
 
+    if(sub.byLevel && sub.byLevel[level] && sub.byLevel[level].length){
+      // already generated for this level — just switch, no regeneration
+      const updatedSub = {...sub, activeLevel:level};
+      const updatedHierarchy = hierarchy.map((s,idx)=>idx===subIdx?updatedSub:s);
+      setHierarchy(updatedHierarchy);
+      const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+      setPlanData(updatedPlan);
+      await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
+      setSubtopicOverview(null);
+      return;
+    }
+
     setSubtopicOverview(prev=>({...prev, confirming:true, error:null}));
     try{
       const levelMeta = LEVELS.find(l=>l.level===level);
       const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const subsubtopics = [overviewItem, ...rawSubsubtopics];
-      const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? {...s, subsubtopics} : s);
+      const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
+      const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
-      await saveJSON(`hierarchy:${currentTopic.id}`, {name:currentTopic.name, prompt:currentTopic.prompt, subtopics:updatedHierarchy});
+      const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+      setPlanData(updatedPlan);
+      await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
       setSubtopicOverview(null);
     }catch(e){
       setSubtopicOverview(prev=>({...prev, confirming:false, error:`Грешка: ${e.message}`}));
@@ -577,7 +660,7 @@ function Aperture() {
     setSubtopicIdx(subIdx);setSubsubIdx(ssIdx);
     setTab("levels");setNodeError(null);
     const sub=hierarchy[subIdx].name;
-    const subsubItem=hierarchy[subIdx].subsubtopics[ssIdx];
+    const subsubItem=getSubsubList(hierarchy[subIdx])[ssIdx];
     const subsub=subName(subsubItem);
     const id=`${currentTopic.id}/${slugify(sub)}/${slugify(subsub)}`;
     setNodeId(id);
@@ -700,8 +783,9 @@ function Aperture() {
     try{
       const nodeMap={};
       for(const sub of hierarchy){
-        for(const subsub of sub.subsubtopics){
-          const id=`${currentTopic.id}/${slugify(sub.name)}/${slugify(subsub)}`;
+        const list = getSubsubList(sub) || [];
+        for(const subsub of list){
+          const id=`${currentTopic.id}/${slugify(sub.name)}/${slugify(subName(subsub))}`;
           const nd=await loadJSON(`node:${id}`,null);
           if(nd)nodeMap[id]=nd;
         }
@@ -742,13 +826,19 @@ function Aperture() {
       setTopics(updatedTopics);
       await saveJSON("topics",updatedTopics);
 
-      // generate hierarchy
+      // generate at the learner's current comfort level (no extra screen — continuity, not escalation)
       setLoadingH(true);
-      const subtopics=await genHierarchy(adaptedPrompt,null);
-      await saveJSON(`hierarchy:${id}`,{name:adaptedName,prompt:adaptedPrompt,subtopics});
+      const level = Number(currentTopLevel) || 3;
+      const levelMeta = LEVELS.find(l=>l.level===level);
+      const overviewLevels = await genOverviewLevels(adaptedPrompt);
+      const names = await genSubtopicNames(adaptedPrompt, null, levelMeta);
+      const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
+      const newPlan = {name:adaptedName, prompt:adaptedPrompt, overviewLevels, byLevel:{[level]:subtopics}, activeLevel:level};
+      await saveJSON(`plan:${id}`, newPlan);
 
       // navigate to new topic
       setCurrentTopic(newTopic);
+      setPlanData(newPlan);
       setHierarchy(subtopics);
       setSubtopicIdx(null);setSubsubIdx(null);
       setNodeId(null);setNodeData(null);setLevelCheck(null);
@@ -776,7 +866,8 @@ function Aperture() {
             <OverviewPicker title={topicOverview.name||topicOverview.prompt}
               levels={topicOverview.levels} loading={topicOverview.loading}
               error={homeError} onPick={confirmTopicLevel} picking={loadingH}
-              onBack={()=>{setTopicOverview(null);setCurrentTopic(null);}}/>
+              existingLevels={topicOverview.existingPlanData?Object.keys(topicOverview.existingPlanData.byLevel||{}).map(Number):[]}
+              onBack={()=>{setTopicOverview(null); if(!topicOverview.existingPlanData) setCurrentTopic(null);}}/>
           ):!currentTopic?(
             <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
               onStart={()=>startTopic(topicInput)} topics={activeTopics} deletedTopics={deletedTopics}
@@ -793,34 +884,39 @@ function Aperture() {
               onDelete={()=>softDeleteTopic(currentTopic.id)}
               onGenerateAdapted={generateAdaptedTopic} generatingAdapted={generatingAdapted}
               allTopics={topics}
-              onNavigateTopic={t=>{resumeTopic(t);}}/>
+              onNavigateTopic={t=>{resumeTopic(t);}}
+              onChangeLevel={openTopicLevelPicker}
+              currentLevel={planData?.activeLevel}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
               error={subtopicOverview.error} onPick={confirmSubtopicLevel} picking={subtopicOverview.confirming}
+              existingLevels={Object.keys(hierarchy[subtopicIdx].byLevel||{}).map(Number)}
               onBack={()=>{setSubtopicOverview(null);setSubtopicIdx(null);}}/>
           ):subsubIdx===null?(
             <SubsubList topic={currentTopic} subtopic={hierarchy[subtopicIdx]}
               onBack={()=>{setSubtopicIdx(null);setSubtopicOverview(null);setNodeId(null);setNodeData(null);}}
-              onPick={i=>openNode(subtopicIdx,i)}/>
+              onPick={i=>openNode(subtopicIdx,i)}
+              onChangeLevel={()=>openSubtopicLevelPicker(subtopicIdx)}
+              currentLevel={hierarchy[subtopicIdx].activeLevel}/>
           ):(
             <NodeView
               topic={topicLabel(currentTopic)}
               subtopic={hierarchy[subtopicIdx].name}
-              subsub={subName(hierarchy[subtopicIdx].subsubtopics[subsubIdx])}
-              isOverview={isOverviewItem(hierarchy[subtopicIdx].subsubtopics[subsubIdx])}
+              subsub={subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
+              isOverview={isOverviewItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
-              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(hierarchy[subtopicIdx].subsubtopics[subsubIdx]),nodeData)}
+              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]),nodeData)}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,nodeData)}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
               onTuneEssay={tuneEssay}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
-              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(hierarchy[subtopicIdx].subsubtopics[subsubIdx]))}/>
+              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]))}/>
           )}
       </main>
     </div>
@@ -880,10 +976,11 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic}){
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
+  const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
 
   return <div className="space-y-4">
     <div className="flex items-start justify-between gap-2">
@@ -895,6 +992,11 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
       </div>
       <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>
     </div>
+
+    {onChangeLevel && <button onClick={onChangeLevel}
+      className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
+      <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
+    </button>}
 
     {/* T.6: related topic links */}
     {(parentTopic||childTopic)&&<div className="space-y-1">
@@ -947,15 +1049,21 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   </div>;
 }
 
-function SubsubList({topic,subtopic,onBack,onPick}){
+function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
+  const list = getSubsubList(subtopic) || [];
+  const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
   return <div className="space-y-4">
     <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
       <ChevronLeft size={16}/> {topicLabel(topic)}
     </button>
     <h2 className="font-display text-xl font-bold text-stone-100">{subtopic.name}</h2>
+    {onChangeLevel && <button onClick={onChangeLevel}
+      className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
+      <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
+    </button>}
     <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Единици</div>
     <div className="space-y-1">
-      {subtopic.subsubtopics.map((s,i)=>{
+      {list.map((s,i)=>{
         const isOv = isOverviewItem(s);
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isOv?"border-sky-800 bg-sky-950/20 hover:border-sky-500":"border-stone-800 hover:border-amber-600/50"}`}>
@@ -1024,7 +1132,7 @@ function NodeView({topic,subtopic,subsub,isOverview,onBack,tab,setTab,nodeData,l
 }
 
 function EssayPanel({loading,essay,tuned,onTune}){
-  if(loading) return <Spinner label="пиша есе (900-1300 думи)…"/>;
+  if(loading) return <Spinner label="пиша есе (500-800 думи)…"/>;
   if(!essay) return null;
   const paragraphs = essay.split(/\n\s*\n/).filter(p=>p.trim());
   return <div className="space-y-4">
