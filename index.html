@@ -146,7 +146,7 @@ async function genHierarchy(prompt, learningProfile) {
 async function genAbstraction(topic, sub, subsub) {
   const levels=[];
   for(const m of LEVELS){
-    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
+    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
     levels.push({level:m.level,text:extractField(raw,"TEXT")});
   }
   return levels;
@@ -165,7 +165,7 @@ async function genAllPersonalities(topic, sub, subsub) {
 async function genBlend(topic, sub, subsub, level) {
   const lvl = LEVELS.find(l=>l.level===level);
   const raw = await callClaudeRaw(
-    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,
+    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,
     800
   );
   return extractField(raw,"TEXT");
@@ -175,7 +175,7 @@ async function genBlend(topic, sub, subsub, level) {
 async function genOverviewLevels(subjectLabel) {
   const levels=[];
   for(const m of LEVELS){
-    const raw=await callClaudeRaw(`Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) at level "${m.label}" (${m.hint}), 45-70 words — same length and style as a normal single-concept explanation, just covering the whole subject at this level of abstraction. Write in the SAME language as the subject text above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
+    const raw=await callClaudeRaw(`Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) at level "${m.label}" (${m.hint}), 45-70 words — same length and style as a normal single-concept explanation, just covering the whole subject at this level of abstraction. Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write in the SAME language as the subject text above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
     levels.push({level:m.level,text:extractField(raw,"TEXT")});
   }
   return levels;
@@ -317,9 +317,25 @@ async function genSubtopicEssay(topicLabel, subtopicName, levelHint) {
   const raw = await callClaudeRaw(
     `Write a long-form OVERVIEW ESSAY (500-800 words, readable in about 2-3 minutes) about "${subtopicName}", within the context of the broader topic "${topicLabel}".
 Style: engaging, narrative, slightly philosophical/reflective — like a well-written tech/science essay that gives the big picture, the "why it matters" and the underlying ideas, not a dry technical walkthrough or a bullet-point summary. Use natural prose paragraphs (blank line between paragraphs), a few illustrative analogies or historical/conceptual framing where it fits, and an occasional short memorable phrase. It's fine to use a few short section-like breaks (a short bolded-feeling phrase followed by a colon is NOT needed — just flowing prose divided into paragraphs).${levelPart}
+CRITICAL: stay strictly within the exact scenario/context of "${topicLabel}" above. Any illustrative example, analogy, or scenario you use must fit THIS specific context — never substitute a different generic scenario (e.g. do not use "an online store" as an example if the actual context is something else entirely, like an educational site, a healthcare system, etc). Ground every example in the ACTUAL subject matter given.
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output ONLY the essay, wrapped exactly like this and nothing else before or after: ###TEXT###the essay here###TEXT_END###`,
+    1800
+  );
+  return extractField(raw, "TEXT");
+}
+
+// final static section per subtopic-level: concrete practical artifacts (YAML/config/templates/text) matching the exact plan context
+async function genSubtopicExamples(topicLabel, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}) — e.g. simpler/shorter artifacts for lower levels, more complete/production-like ones for higher levels.` : "";
+  const raw = await callClaudeRaw(
+    `Give 2-4 CONCRETE, PRACTICAL artifacts illustrating "${subtopicName}", strictly within the exact context of "${topicLabel}" (not a generic or unrelated scenario — every artifact must reflect the actual subject matter given, e.g. real config keys, real file/directory names, real terminology from that exact domain).
+Each artifact should be one of: a YAML/config file snippet, a command, a template, a short illustrative text/copy example, or similar — whatever is most natural for this subject.${levelPart}
+Format: for each artifact, a short title line (plain text, no markdown symbols), then the artifact content on the following lines exactly as it should look (preserve indentation/formatting for code/config — use real newlines and spaces, not escaped ones). Leave a blank line between artifacts.
+Write any prose/titles in the SAME language as the topic/subtopic above; keep code/config keys and syntax in their natural technical form (do not translate code syntax).
+Never use the " character inside the text.
+Output ONLY the artifacts, wrapped exactly like this and nothing else before or after: ###TEXT###the artifacts here###TEXT_END###`,
     1800
   );
   return extractField(raw, "TEXT");
@@ -368,6 +384,7 @@ Output ONLY the profile text, wrapped exactly like this and nothing else: ###PRO
 
 function subName(item){ return typeof item==="string" ? item : (item?.name||""); }
 function isOverviewItem(item){ return typeof item==="object" && item!==null && !!item.isOverview; }
+function isExamplesItem(item){ return typeof item==="object" && item!==null && !!item.isExamples; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
 
 function topicLabel(t){
@@ -723,7 +740,8 @@ function Aperture() {
       const levelMeta = LEVELS.find(l=>l.level===level);
       const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
-      const subsubtopics = [overviewItem, ...rawSubsubtopics];
+      const examplesItem = { name:"Практически примери", isExamples:true };
+      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -739,10 +757,12 @@ function Aperture() {
   async function openNode(subIdx,ssIdx){
     setSubtopicIdx(subIdx);setSubsubIdx(ssIdx);
     setTab("levels");setNodeError(null);
-    const sub=hierarchy[subIdx].name;
-    const subsubItem=getSubsubList(hierarchy[subIdx])[ssIdx];
+    const subItem=hierarchy[subIdx];
+    const sub=subItem.name;
+    const subLevel=subItem.activeLevel;
+    const subsubItem=getSubsubList(subItem)[ssIdx];
     const subsub=subName(subsubItem);
-    const id=`${currentTopic.id}/${slugify(sub)}/${slugify(subsub)}`;
+    const id=`${currentTopic.id}/${slugify(sub)}/L${subLevel}/${slugify(subsub)}`;
     setNodeId(id);
 
     if(isOverviewItem(subsubItem)){
@@ -751,7 +771,17 @@ function Aperture() {
       setNodeData(cached);
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
-      if(!cached.essay) doLoadEssay(id,sub,cached);
+      if(!cached.essay) doLoadEssay(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isExamplesItem(subsubItem)){
+      const EMPTY={examples:"",examplesLevel:null,tunedExamples:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.examples) doLoadExamples(id,sub,subLevel,cached);
       return;
     }
 
@@ -764,18 +794,42 @@ function Aperture() {
     if(!cached.abstraction?.length)doLoadLevels(id,sub,subsub,cached);
   }
 
-  async function doLoadEssay(id,sub,base){
+  async function doLoadEssay(id,sub,subLevel,base){
     setLoadingL(true);setNodeError(null);
     try{
-      const level = Number(topPreferred(prefs.abstraction,3));
-      const levelMeta = LEVELS.find(l=>l.level===level);
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
       const essay=await genSubtopicEssay(currentTopic.prompt||currentTopic.name, sub, levelMeta);
-      const updated={...base, essay, essayLevel:level};
+      const updated={...base, essay, essayLevel:subLevel};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
     }catch(e){setNodeError(`Грешка: ${e.message}`);}
     finally{setLoadingL(false);}
+  }
+
+  async function doLoadExamples(id,sub,subLevel,base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const examples=await genSubtopicExamples(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated={...base, examples, examplesLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneExamples(){
+    if(!nodeData||nodeData.tunedExamples)return;
+    const level = nodeData.examplesLevel;
+    const updNode={...nodeData,tunedExamples:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
   }
 
   async function tuneEssay(){
@@ -793,7 +847,7 @@ function Aperture() {
   async function doLoadLevels(id,sub,subsub,base){
     setLoadingL(true);setNodeError(null);
     try{
-      const abstraction=await genAbstraction(currentTopic.name||currentTopic.title,sub,subsub);
+      const abstraction=await genAbstraction(currentTopic.prompt||currentTopic.name,sub,subsub);
       const updated={...base,abstraction};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
@@ -816,7 +870,7 @@ function Aperture() {
     const level=Number(topPreferred(prefs.abstraction,3));
     setLoadingB(true);setNodeError(null);
     try{
-      const text=await genBlend(currentTopic.name||currentTopic.title,sub,subsub,level);
+      const text=await genBlend(currentTopic.prompt||currentTopic.name,sub,subsub,level);
       setNodeData(prev=>{
         const u={...prev,blend:{text,level},tunedBlendKey:null};
         saveJSON(`node:${id}`,u).then(r=>{if(!r.ok)setNodeError(`Микс не е запазен: ${r.detail}`);});
@@ -870,7 +924,7 @@ function Aperture() {
           if(nd)nodeMap[id]=nd;
         }
       }
-      setLevelCheck(await genLevelCheck(currentTopic.name||currentTopic.prompt,hierarchy,prefs,nodeMap));
+      setLevelCheck(await genLevelCheck(currentTopic.prompt||currentTopic.name,hierarchy,prefs,nodeMap));
     }catch(e){setLcError(`Грешка: ${e.message}`);}
     finally{setLoadingLC(false);}
   }
@@ -880,7 +934,7 @@ function Aperture() {
     if(!levelCheck||!currentTopic)return;
     setGA(true);
     try{
-      const adaptedName=await genAdaptedTopicName(currentTopic.name||currentTopic.prompt,levelCheck);
+      const adaptedName=await genAdaptedTopicName(currentTopic.prompt||currentTopic.name,levelCheck);
 
       // No difficulty escalation: keep target at the SAME level the learner already showed comfort with
       // (never higher) — the goal is to clarify what confused them and reinforce what's shaky, not push harder.
@@ -985,15 +1039,18 @@ function Aperture() {
               subtopic={hierarchy[subtopicIdx].name}
               subsub={subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               isOverview={isOverviewItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
+              isExamples={isExamplesItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
               onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]),nodeData)}
-              onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,nodeData)}
+              onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
               onTuneEssay={tuneEssay}
+              onTuneExamples={tuneExamples}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
               canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]))}/>
@@ -1145,20 +1202,26 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
     <div className="space-y-1">
       {list.map((s,i)=>{
         const isOv = isOverviewItem(s);
+        const isEx = isExamplesItem(s);
+        const colorClass = isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
+                          : isEx ? "border-emerald-800 bg-emerald-950/20 hover:border-emerald-500"
+                          : "border-stone-800 hover:border-amber-600/50";
+        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : "text-stone-100";
+        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
-          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isOv?"border-sky-800 bg-sky-950/20 hover:border-sky-500":"border-stone-800 hover:border-amber-600/50"}`}>
-          <span className={`font-read flex items-center gap-2 ${isOv?"text-sky-300":"text-stone-100"}`}>
-            {isOv && <Sparkles size={14}/>}
+          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
+          <span className={`font-read flex items-center gap-2 ${textClass}`}>
+            {(isOv||isEx) && <Sparkles size={14}/>}
             {subName(s)}
           </span>
-          <span className={`${isOv?"text-sky-700 group-hover:text-sky-400":"text-stone-600 group-hover:text-amber-500"}`}><ChevronRight size={16}/></span>
+          <span className={chevronClass}><ChevronRight size={16}/></span>
         </button>;
       })}
     </div>
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onTuneAbstraction,onTuneBlend,onTuneEssay,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1178,6 +1241,26 @@ function NodeView({topic,subtopic,subsub,isOverview,onBack,tab,setTab,nodeData,l
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryEssay}/>}
       <EssayPanel loading={loadingLevels} essay={nodeData?.essay||""} tuned={!!nodeData?.tunedEssay} onTune={onTuneEssay}/>
+    </div>;
+  }
+
+  if(isExamples){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-emerald-600 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onRetryExamples}/>}
+      <ExamplesPanel loading={loadingLevels} examples={nodeData?.examples||""} tuned={!!nodeData?.tunedExamples} onTune={onTuneExamples}/>
     </div>;
   }
 
@@ -1220,6 +1303,29 @@ function EssayPanel({loading,essay,tuned,onTune}){
       {paragraphs.map((p,i)=>(
         <p key={i} className="font-read text-stone-200 leading-relaxed text-lg">{p.trim()}</p>
       ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function ExamplesPanel({loading,examples,tuned,onTune}){
+  if(loading) return <Spinner label="генерирам практически примери…"/>;
+  if(!examples) return null;
+  // split into blocks by blank lines; each block's first line (if short, no leading whitespace) is treated as a title
+  const blocks = examples.split(/\n\s*\n/).filter(b=>b.trim());
+  return <div className="space-y-4">
+    <div className="space-y-4">
+      {blocks.map((block,i)=>{
+        const lines = block.split("\n");
+        const firstLine = lines[0]||"";
+        const looksLikeTitle = firstLine.trim().length>0 && firstLine.trim().length<60 && !/^\s/.test(firstLine) && lines.length>1;
+        const title = looksLikeTitle ? firstLine.trim() : null;
+        const body = looksLikeTitle ? lines.slice(1).join("\n") : block;
+        return <div key={i} className="rounded border border-stone-800 overflow-hidden">
+          {title && <div className="font-mono-cal text-xs uppercase tracking-wide text-emerald-500 px-3 py-2 bg-emerald-950/20 border-b border-stone-800">{title}</div>}
+          <pre className="font-mono-cal text-sm text-stone-200 p-3 overflow-x-auto whitespace-pre">{body.trim()}</pre>
+        </div>;
+      })}
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
