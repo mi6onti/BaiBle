@@ -342,19 +342,21 @@ Output ONLY the examples, wrapped exactly like this and nothing else before or a
 }
 
 // 5-stage action plan for the WHOLE topic: simplest starting point -> full realization/mastery
-async function genActionPlan(topicLabel, levelHint) {
+async function genActionPlan(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-    `Design a 5-STAGE ACTION PLAN for actually achieving/mastering "${topicLabel}" end to end — something the learner can build, practice, or accomplish, not just read about.
-Stage 1 must be the smallest, simplest possible concrete starting point. Each following stage builds directly on the previous one, adding real capability/scope. Stage 5 must represent the full, complete realization of "${topicLabel}" — the actual end goal, fully accomplished.
-This applies whether the topic is technical (e.g. stage 1 = a single minimal working piece, stage 5 = a complete production-grade result) or a skill/learning topic (e.g. stage 1 = the most basic usable version of the skill, stage 5 = full fluent/complete mastery in real use). Ground every stage in concrete, specific actions or milestones tied to this exact topic — not generic advice.${levelPart}
-Format: exactly 5 blocks separated by a blank line, nothing else before or after. Each block starts with a short stage title on its own line (e.g. "Етап 1: ..." translated into the right language), followed by a description (60-100 words) of exactly what to build/do/practice at this stage and why it's the right next increment.
-Write in the SAME language as the topic above (detect it and match exactly).
+    `Design a 5-STAGE ACTION PLAN for actually achieving/mastering "${subtopicName}" (within the broader context of "${topicLabel}") end to end — something concrete to build, practice, or accomplish, not just read about.
+Stage 1 must be the smallest, simplest possible concrete starting point. Each following stage builds directly on the previous one, adding real capability/scope. Stage 5 must represent the full, complete realization of "${subtopicName}" — the actual end goal, fully accomplished.
+Ground every stage in concrete, specific actions or milestones tied to this exact subject — not generic advice.${levelPart}
+For each stage, give a SHORT descriptive title (3-7 words naming what that specific stage actually is — never a generic label like "Stage 1") and a body of exactly 2 to 5 sentences describing precisely what to build/do/practice at this stage and why it's the right next increment.
+Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
-Output ONLY the 5 stages, wrapped exactly like this and nothing else before or after: ###TEXT###the 5 stages here###TEXT_END###`,
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###S1T### stage 1 title ###S1B### stage 1 body (2-5 sentences) ###S2T### stage 2 title ###S2B### stage 2 body ###S3T### stage 3 title ###S3B### stage 3 body ###S4T### stage 4 title ###S4B### stage 4 body ###S5T### stage 5 title ###S5B### stage 5 body ###END###`,
     2200
   );
-  return extractField(raw, "TEXT");
+  const fields = extractSequentialFields(raw, ["S1T","S1B","S2T","S2B","S3T","S3B","S4T","S4B","S5T","S5B"]);
+  return [1,2,3,4,5].map(n=>({title:fields[`S${n}T`]||`Етап ${n}`, body:fields[`S${n}B`]||""}));
 }
 
 
@@ -572,7 +574,6 @@ function Aperture() {
         const levelMeta = LEVELS.find(l=>l.level===level);
         const names = await genSubtopicNames(pd.prompt, null, levelMeta);
         const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
-        subtopics.push({name:"План за действие", isActionPlan:true});
         const updated = {...pd, byLevel:{...pd.byLevel, [level]:subtopics}, activeLevel:level};
         setPlanData(updated); setHierarchy(subtopics);
         await saveJSON(`plan:${id}`, updated);
@@ -595,7 +596,6 @@ function Aperture() {
       const levelMeta = LEVELS.find(l=>l.level===level);
       const names = await genSubtopicNames(prompt, learningProfile, levelMeta);
       const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
-      subtopics.push({name:"План за действие", isActionPlan:true});
       const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level};
       setPlanData(newPlan); setHierarchy(subtopics);
       await saveJSON(`plan:${id}`, newPlan);
@@ -685,19 +685,6 @@ function Aperture() {
     setSubtopicIdx(i);
     const sub = hierarchy[i];
 
-    if(sub.isActionPlan){
-      setSubtopicOverview(null);
-      setSubsubIdx(null);
-      setNodeError(null);
-      const id=`${currentTopic.id}/actionplan/L${planData.activeLevel}`;
-      setNodeId(id);
-      const EMPTY={plan:"",planLevel:null,tunedPlan:false,unitConfused:false};
-      const cached=await loadJSON(`node:${id}`,EMPTY);
-      setNodeData(cached);
-      if(!cached.plan) doLoadActionPlan(id, planData.activeLevel, cached);
-      return;
-    }
-
     const existing = getSubsubList(sub);
     if(existing && existing.length){
       setSubtopicOverview(null);
@@ -774,7 +761,8 @@ function Aperture() {
       const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
-      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem];
+      const actionPlanItem = { name:"План за действие", isActionPlan:true };
+      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -815,6 +803,16 @@ function Aperture() {
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
       if(!cached.examples) doLoadExamples(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isActionPlanItem(subsubItem)){
+      const EMPTY={stages:[],actionPlanLevel:null,tunedActionPlan:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.stages||!cached.stages.length) doLoadActionPlan(id,sub,subLevel,cached);
       return;
     }
 
@@ -865,12 +863,12 @@ function Aperture() {
     }
   }
 
-  async function doLoadActionPlan(id, level, base){
+  async function doLoadActionPlan(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===level);
-      const plan = await genActionPlan(currentTopic.prompt||currentTopic.name, levelMeta);
-      const updated = {...base, plan, planLevel:level};
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const stages = await genActionPlan(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, stages, actionPlanLevel:subLevel};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
@@ -879,9 +877,9 @@ function Aperture() {
   }
 
   async function tuneActionPlan(){
-    if(!nodeData||nodeData.tunedPlan)return;
-    const level = nodeData.planLevel;
-    const updNode={...nodeData,tunedPlan:true};
+    if(!nodeData||nodeData.tunedActionPlan)return;
+    const level = nodeData.actionPlanLevel;
+    const updNode={...nodeData,tunedActionPlan:true};
     setNodeData(updNode);
     await saveJSON(`node:${nodeId}`,updNode);
     if(level){
@@ -1025,7 +1023,6 @@ function Aperture() {
       const overviewLevels = await genOverviewLevels(adaptedPrompt);
       const names = await genSubtopicNames(adaptedPrompt, null, levelMeta);
       const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
-      subtopics.push({name:"План за действие", isActionPlan:true});
       const newPlan = {name:adaptedName, prompt:adaptedPrompt, overviewLevels, byLevel:{[level]:subtopics}, activeLevel:level};
       await saveJSON(`plan:${id}`, newPlan);
 
@@ -1080,14 +1077,6 @@ function Aperture() {
               onNavigateTopic={t=>{resumeTopic(t);}}
               onChangeLevel={openTopicLevelPicker}
               currentLevel={planData?.activeLevel}/>
-          ):hierarchy[subtopicIdx].isActionPlan?(
-            <ActionPlanView
-              topic={topicLabel(currentTopic)}
-              onBack={()=>{setSubtopicIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
-              loading={loadingL} error={nodeError}
-              plan={nodeData?.plan||""} tuned={!!nodeData?.tunedPlan}
-              onTune={tuneActionPlan}
-              onRetry={()=>doLoadActionPlan(nodeId, planData.activeLevel, nodeData)}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
@@ -1107,6 +1096,7 @@ function Aperture() {
               subsub={subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               isOverview={isOverviewItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               isExamples={isExamplesItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
+              isActionPlan={isActionPlanItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
@@ -1114,10 +1104,12 @@ function Aperture() {
               onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]),nodeData)}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
               onTuneEssay={tuneEssay}
               onTuneExamples={tuneExamples}
+              onTuneActionPlan={tuneActionPlan}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
               canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]))}/>
@@ -1242,17 +1234,13 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     </div>}
 
     <div className="space-y-1">
-      {hierarchy.map((s,i)=>{
-        const isAP = isActionPlanItem(s);
-        return <button key={i} onClick={()=>onPick(i)}
-          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isAP?"border-violet-800 bg-violet-950/20 hover:border-violet-500":"border-stone-800 hover:border-amber-600/50"}`}>
-          <span className={`font-read flex items-center gap-2 ${isAP?"text-violet-300":"text-stone-100"}`}>
-            {isAP && <Sparkles size={14}/>}
-            {s.name}
-          </span>
-          <span className={isAP?"text-violet-700 group-hover:text-violet-400":"text-stone-600 group-hover:text-amber-500"}><ChevronRight size={16}/></span>
-        </button>;
-      })}
+      {hierarchy.map((s,i)=>(
+        <button key={i} onClick={()=>onPick(i)}
+          className="w-full text-left px-3 py-3 rounded border border-stone-800 hover:border-amber-600/50 flex items-center justify-between group">
+          <span className="font-read text-stone-100">{s.name}</span>
+          <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
+        </button>
+      ))}
     </div>
   </div>;
 }
@@ -1292,7 +1280,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1332,6 +1320,26 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,onBack,tab,setTab
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryExamples}/>}
       <ExamplesPanel loading={loadingLevels} examples={nodeData?.examples||""} tuned={!!nodeData?.tunedExamples} onTune={onTuneExamples}/>
+    </div>;
+  }
+
+  if(isActionPlan){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-violet-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onRetryActionPlan}/>}
+      <ActionPlanPanel loading={loadingLevels} stages={nodeData?.stages||[]} tuned={!!nodeData?.tunedActionPlan} onTune={onTuneActionPlan}/>
     </div>;
   }
 
@@ -1418,38 +1426,20 @@ function ExamplesPanel({loading,examples,tuned,onTune}){
   </div>;
 }
 
-function ActionPlanView({topic,onBack,loading,error,plan,tuned,onTune,onRetry}){
-  return <div className="space-y-5">
-    <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
-      <ChevronLeft size={16}/> {topic}
-    </button>
-    <div className="font-mono-cal text-xs text-violet-500 flex items-center gap-1"><Sparkles size={12}/> {topic}</div>
-    <h2 className="font-display text-xl font-bold text-stone-100">План за действие</h2>
-    {error && <ErrorNote message={error} onRetry={onRetry}/>}
-    <ActionPlanPanel loading={loading} plan={plan} tuned={tuned} onTune={onTune}/>
-  </div>;
-}
-
-function ActionPlanPanel({loading,plan,tuned,onTune}){
+function ActionPlanPanel({loading,stages,tuned,onTune}){
   if(loading) return <Spinner label="изграждам 5-етапен план за действие…"/>;
-  if(!plan) return null;
-  const blocks = plan.split(/\n\s*\n/).filter(b=>b.trim());
+  if(!stages||!stages.length) return null;
   return <div className="space-y-4">
     <div className="space-y-3">
-      {blocks.map((block,i)=>{
-        const lines = block.split("\n");
-        const firstLine = (lines[0]||"").trim();
-        const hasTitle = firstLine.length>0 && firstLine.length<80 && lines.length>1;
-        const title = hasTitle ? firstLine : `Етап ${i+1}`;
-        const body = (hasTitle ? lines.slice(1).join("\n") : block).trim();
-        return <div key={i} className="rounded border border-violet-900/50 bg-violet-950/10 p-4">
+      {stages.map((s,i)=>(
+        <div key={i} className="rounded border border-violet-900/50 bg-violet-950/10 p-4">
           <div className="flex items-center gap-2 mb-2">
             <span className="shrink-0 w-6 h-6 rounded-full bg-violet-900/50 text-violet-300 font-mono-cal text-xs flex items-center justify-center">{i+1}</span>
-            <span className="font-mono-cal text-xs uppercase tracking-wide text-violet-400">{title}</span>
+            <span className="font-mono-cal text-xs uppercase tracking-wide text-violet-400">{s.title}</span>
           </div>
-          <p className="font-read text-stone-200 leading-relaxed text-lg">{body}</p>
-        </div>;
-      })}
+          <p className="font-read text-stone-200 leading-relaxed text-lg">{s.body}</p>
+        </div>
+      ))}
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
