@@ -359,6 +359,41 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return [1,2,3,4,5].map(n=>({title:fields[`S${n}T`]||`Етап ${n}`, body:fields[`S${n}B`]||""}));
 }
 
+// Socratic-style dialogue: a sequence of guiding questions (not direct exposition) leading the learner to discover the idea themselves
+async function genSocraticDialogue(topicLabel, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Design a SOCRATIC dialogue teaching "${subtopicName}" (within the broader context of "${topicLabel}") — a sequence of exactly 5 guiding QUESTIONS, in the true Socratic method: each question should provoke the learner to think and arrive at the insight themselves, rather than being told the answer directly. Questions should build on each other, moving from a simple provocation toward the core understanding. Do NOT just ask generic quiz questions — each should genuinely guide reasoning toward the next realization, the way a real Socratic teacher would.
+For each question, also give a short GUIDING NOTE (1-3 sentences) — not the direct answer, but a nudge, a related observation, or a follow-up prompt that helps the learner think it through, IN THE STYLE of a teacher gently redirecting without lecturing. Only the final (5th) guiding note may synthesize/confirm the core insight, since it concludes the dialogue.
+Ground every question in the exact subject matter of "${subtopicName}" — never generic philosophical questions unrelated to the actual content.${levelPart}
+Write in the SAME language as the topic/subtopic above (detect it and match exactly).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###Q1### question 1 ###G1### guiding note 1 ###Q2### question 2 ###G2### guiding note 2 ###Q3### question 3 ###G3### guiding note 3 ###Q4### question 4 ###G4### guiding note 4 ###Q5### question 5 ###G5### guiding note 5 (synthesis) ###END###`,
+    2200
+  );
+  const fields = extractSequentialFields(raw, ["Q1","G1","Q2","G2","Q3","G3","Q4","G4","Q5","G5"]);
+  return [1,2,3,4,5].map(n=>({question:fields[`Q${n}`]||"", guidance:fields[`G${n}`]||""}));
+}
+
+// "Learning by Thinking" (Lombrozo): self-directed prompts across 4 mechanisms — explanation, simulation, analogy, reasoning.
+// The learner does the thinking themselves; we only pose the prompt, never the answer.
+async function genLearningByThinking(topicLabel, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Design 4 "Learning by Thinking" self-directed exercises about "${subtopicName}" (within the broader context of "${topicLabel}"), based on Tania Lombrozo's four mechanisms of learning by thinking: (1) self-explanation, (2) mental simulation, (3) analogical comparison, (4) reasoning/inference.
+These are NOT explanations you give the learner — they are prompts that make THEM do the thinking themselves. Never answer the prompt yourself, only pose it.
+For each of the 4 mechanisms, write: a short mechanism label (2-4 words) IN THE SAME language as the topic (translate "self-explanation"/"mental simulation"/"analogy"/"reasoning" naturally into that language), and a concrete, specific prompt (2-4 sentences) instructing the learner exactly what to try to explain to themselves, simulate mentally, compare via analogy, or reason through — tied precisely to "${subtopicName}", not generic.${levelPart}
+Write in the SAME language as the topic/subtopic above (detect it and match exactly).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###M1### mechanism 1 label ###P1### prompt 1 (self-explanation) ###M2### mechanism 2 label ###P2### prompt 2 (mental simulation) ###M3### mechanism 3 label ###P3### prompt 3 (analogy) ###M4### mechanism 4 label ###P4### prompt 4 (reasoning) ###END###`,
+    1800
+  );
+  const fields = extractSequentialFields(raw, ["M1","P1","M2","P2","M3","P3","M4","P4"]);
+  return [1,2,3,4].map(n=>({mechanism:fields[`M${n}`]||"", prompt:fields[`P${n}`]||""}));
+}
+
 
 async function genAdaptedTopicName(originalTopic, levelCheck) {
   const raw = await callClaudeRaw(
@@ -404,6 +439,8 @@ function subName(item){ return typeof item==="string" ? item : (item?.name||"");
 function isOverviewItem(item){ return typeof item==="object" && item!==null && !!item.isOverview; }
 function isExamplesItem(item){ return typeof item==="object" && item!==null && !!item.isExamples; }
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
+function isSocraticItem(item){ return typeof item==="object" && item!==null && !!item.isSocratic; }
+function isLbtItem(item){ return typeof item==="object" && item!==null && !!item.isLbt; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
 
 function topicLabel(t){
@@ -762,7 +799,9 @@ function Aperture() {
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
       const actionPlanItem = { name:"План за действие", isActionPlan:true };
-      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem];
+      const socraticItem = { name:"Сократически диалог", isSocratic:true };
+      const lbtItem = { name:"Learning by Thinking", isLbt:true };
+      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, lbtItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -813,6 +852,26 @@ function Aperture() {
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
       if(!cached.stages||!cached.stages.length) doLoadActionPlan(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isSocraticItem(subsubItem)){
+      const EMPTY={steps:[],socraticLevel:null,tunedSocratic:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.steps||!cached.steps.length) doLoadSocratic(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isLbtItem(subsubItem)){
+      const EMPTY={lbt:[],lbtLevel:null,tunedLbt:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.lbt||!cached.lbt.length) doLoadLbt(id,sub,subLevel,cached);
       return;
     }
 
@@ -880,6 +939,56 @@ function Aperture() {
     if(!nodeData||nodeData.tunedActionPlan)return;
     const level = nodeData.actionPlanLevel;
     const updNode={...nodeData,tunedActionPlan:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadSocratic(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const steps = await genSocraticDialogue(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, steps, socraticLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneSocratic(){
+    if(!nodeData||nodeData.tunedSocratic)return;
+    const level = nodeData.socraticLevel;
+    const updNode={...nodeData,tunedSocratic:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadLbt(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const lbt = await genLearningByThinking(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, lbt, lbtLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneLbt(){
+    if(!nodeData||nodeData.tunedLbt)return;
+    const level = nodeData.lbtLevel;
+    const updNode={...nodeData,tunedLbt:true};
     setNodeData(updNode);
     await saveJSON(`node:${nodeId}`,updNode);
     if(level){
@@ -1097,6 +1206,8 @@ function Aperture() {
               isOverview={isOverviewItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               isExamples={isExamplesItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               isActionPlan={isActionPlanItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
+              isSocratic={isSocraticItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
+              isLbt={isLbtItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
@@ -1105,11 +1216,15 @@ function Aperture() {
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetrySocratic={()=>doLoadSocratic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryLbt={()=>doLoadLbt(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
               onTuneEssay={tuneEssay}
               onTuneExamples={tuneExamples}
               onTuneActionPlan={tuneActionPlan}
+              onTuneSocratic={tuneSocratic}
+              onTuneLbt={tuneLbt}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
               canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]))}/>
@@ -1262,15 +1377,21 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
       {list.map((s,i)=>{
         const isOv = isOverviewItem(s);
         const isEx = isExamplesItem(s);
+        const isAP = isActionPlanItem(s);
+        const isSo = isSocraticItem(s);
+        const isLb = isLbtItem(s);
         const colorClass = isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
                           : isEx ? "border-emerald-800 bg-emerald-950/20 hover:border-emerald-500"
+                          : isAP ? "border-violet-800 bg-violet-950/20 hover:border-violet-500"
+                          : isSo ? "border-teal-800 bg-teal-950/20 hover:border-teal-500"
+                          : isLb ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : "text-stone-100";
-        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isLb ? "text-rose-300" : "text-stone-100";
+        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isLb ? "text-rose-700 group-hover:text-rose-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isOv||isEx) && <Sparkles size={14}/>}
+            {(isOv||isEx||isAP||isSo||isLb) && <Sparkles size={14}/>}
             {subName(s)}
           </span>
           <span className={chevronClass}><ChevronRight size={16}/></span>
@@ -1280,7 +1401,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1340,6 +1461,47 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,onBa
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryActionPlan}/>}
       <ActionPlanPanel loading={loadingLevels} stages={nodeData?.stages||[]} tuned={!!nodeData?.tunedActionPlan} onTune={onTuneActionPlan}/>
+    </div>;
+  }
+
+  if(isSocratic){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-teal-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onRetrySocratic}/>}
+      <SocraticPanel loading={loadingLevels} steps={nodeData?.steps||[]} tuned={!!nodeData?.tunedSocratic} onTune={onTuneSocratic}/>
+    </div>;
+  }
+
+  if(isLbt){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-rose-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Тези подкани не се отговарят от приложението — ти сам обмисляш и си отговаряш.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryLbt}/>}
+      <LbtPanel loading={loadingLevels} items={nodeData?.lbt||[]} tuned={!!nodeData?.tunedLbt} onTune={onTuneLbt}/>
     </div>;
   }
 
@@ -1438,6 +1600,41 @@ function ActionPlanPanel({loading,stages,tuned,onTune}){
             <span className="font-mono-cal text-xs uppercase tracking-wide text-violet-400">{s.title}</span>
           </div>
           <p className="font-read text-stone-200 leading-relaxed text-lg">{s.body}</p>
+        </div>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function SocraticPanel({loading,steps,tuned,onTune}){
+  if(loading) return <Spinner label="изграждам сократически диалог…"/>;
+  if(!steps||!steps.length) return null;
+  return <div className="space-y-4">
+    <div className="space-y-3">
+      {steps.map((s,i)=>(
+        <div key={i} className="rounded border border-teal-900/50 bg-teal-950/10 p-4">
+          <div className="flex items-start gap-2 mb-2">
+            <span className="shrink-0 w-6 h-6 rounded-full bg-teal-900/50 text-teal-300 font-mono-cal text-xs flex items-center justify-center">?</span>
+            <p className="font-read text-stone-100 leading-relaxed text-lg font-medium">{s.question}</p>
+          </div>
+          {s.guidance && <p className="font-read text-teal-300/80 leading-relaxed text-base italic pl-8">{s.guidance}</p>}
+        </div>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function LbtPanel({loading,items,tuned,onTune}){
+  if(loading) return <Spinner label="генерирам Learning by Thinking подкани…"/>;
+  if(!items||!items.length) return null;
+  return <div className="space-y-4">
+    <div className="space-y-3">
+      {items.map((it,i)=>(
+        <div key={i} className="rounded border border-rose-900/50 bg-rose-950/10 p-4">
+          <div className="font-mono-cal text-xs uppercase tracking-wide text-rose-400 mb-2">{it.mechanism}</div>
+          <p className="font-read text-stone-200 leading-relaxed text-lg">{it.prompt}</p>
         </div>
       ))}
     </div>
