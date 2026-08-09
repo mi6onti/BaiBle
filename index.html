@@ -394,6 +394,20 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return [1,2,3,4].map(n=>({mechanism:fields[`M${n}`]||"", prompt:fields[`P${n}`]||""}));
 }
 
+// answers a specific question the learner asked while reading the Overview essay
+async function genCuriosityAnswer(topicLabel, subtopicName, question, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `The learner is studying "${subtopicName}" (within the broader context of "${topicLabel}") and asked this specific question while reading: "${question}"
+Answer it directly and clearly (60-120 words), staying strictly within the exact context of "${topicLabel}" and "${subtopicName}" — never drift to an unrelated generic example.${levelPart}
+Write in the SAME language as the question above (detect it and match exactly).
+Never use the " character inside the text.
+Output ONLY the answer, wrapped exactly like this and nothing else before or after: ###TEXT###the answer here###TEXT_END###`,
+    900
+  );
+  return extractField(raw, "TEXT");
+}
+
 
 async function genAdaptedTopicName(originalTopic, levelCheck) {
   const raw = await callClaudeRaw(
@@ -441,7 +455,15 @@ function isExamplesItem(item){ return typeof item==="object" && item!==null && !
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
 function isSocraticItem(item){ return typeof item==="object" && item!==null && !!item.isSocratic; }
 function isLbtItem(item){ return typeof item==="object" && item!==null && !!item.isLbt; }
+function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
+function getDisplayList(subItem){
+  const base = getSubsubList(subItem) || [];
+  if(subItem?.curiosityQuestions?.length){
+    return [...base, { name:"Любопитно", isCurious:true }];
+  }
+  return base;
+}
 
 function topicLabel(t){
   if(!t) return "(без заглавие)";
@@ -820,8 +842,18 @@ function Aperture() {
     const subItem=hierarchy[subIdx];
     const sub=subItem.name;
     const subLevel=subItem.activeLevel;
-    const subsubItem=getSubsubList(subItem)[ssIdx];
+    const subsubItem=getDisplayList(subItem)[ssIdx];
     const subsub=subName(subsubItem);
+
+    if(isCuriousItem(subsubItem)){
+      setNodeId(null);
+      const qs = subItem.curiosityQuestions||[];
+      setNodeData({questions:qs});
+      const hasUnanswered = qs.some(q=>!q.answered);
+      if(hasUnanswered) generateCuriosityAnswers(subIdx);
+      return;
+    }
+
     const id=`${currentTopic.id}/${slugify(sub)}/L${subLevel}/${slugify(subsub)}`;
     setNodeId(id);
 
@@ -995,6 +1027,42 @@ function Aperture() {
       const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
       setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
     }
+  }
+
+  async function askCuriosityQuestion(questionText){
+    const q = questionText.trim();
+    if(!q || subtopicIdx==null || !currentTopic || !planData) return;
+    const subItem = hierarchy[subtopicIdx];
+    const newQ = { id: uid(), q, answer:"", answered:false };
+    const updatedQuestions = [...(subItem.curiosityQuestions||[]), newQ];
+    const updatedSub = {...subItem, curiosityQuestions:updatedQuestions};
+    const updatedHierarchy = hierarchy.map((s,idx)=> idx===subtopicIdx ? updatedSub : s);
+    setHierarchy(updatedHierarchy);
+    const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+    setPlanData(updatedPlan);
+    await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
+  }
+
+  async function generateCuriosityAnswers(subIdx){
+    setLoadingL(true); setNodeError(null);
+    try{
+      const subItem = hierarchy[subIdx];
+      const levelMeta = LEVELS.find(l=>l.level===subItem.activeLevel);
+      let qs = [...(subItem.curiosityQuestions||[])];
+      for(let i=0;i<qs.length;i++){
+        if(qs[i].answered) continue;
+        const answer = await genCuriosityAnswer(currentTopic.prompt||currentTopic.name, subItem.name, qs[i].q, levelMeta);
+        qs = qs.map((q,idx)=> idx===i ? {...q, answer, answered:true} : q);
+        const updatedSub = {...hierarchy[subIdx], curiosityQuestions:qs};
+        const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
+        setHierarchy(updatedHierarchy);
+        setNodeData({questions:qs});
+        const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+        setPlanData(updatedPlan);
+        await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
+      }
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
   }
 
   async function tuneEssay(){
@@ -1202,22 +1270,26 @@ function Aperture() {
             <NodeView
               topic={topicLabel(currentTopic)}
               subtopic={hierarchy[subtopicIdx].name}
-              subsub={subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
-              isOverview={isOverviewItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
-              isExamples={isExamplesItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
-              isActionPlan={isActionPlanItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
-              isSocratic={isSocraticItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
-              isLbt={isLbtItem(getSubsubList(hierarchy[subtopicIdx])[subsubIdx])}
+              subsub={subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isOverview={isOverviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isExamples={isExamplesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isActionPlan={isActionPlanItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isSocratic={isSocraticItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isLbt={isLbtItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
-              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]),nodeData)}
+              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]),nodeData)}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetrySocratic={()=>doLoadSocratic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryLbt={()=>doLoadLbt(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
+              onAsk={askCuriosityQuestion}
+              curiosityCount={hierarchy[subtopicIdx].curiosityQuestions?.length||0}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
               onTuneEssay={tuneEssay}
@@ -1227,7 +1299,7 @@ function Aperture() {
               onTuneLbt={tuneLbt}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
-              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getSubsubList(hierarchy[subtopicIdx])[subsubIdx]))}/>
+              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]))}/>
           )}
       </main>
     </div>
@@ -1361,7 +1433,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
 }
 
 function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
-  const list = getSubsubList(subtopic) || [];
+  const list = getDisplayList(subtopic) || [];
   const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
   return <div className="space-y-4">
     <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
@@ -1380,19 +1452,22 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
         const isAP = isActionPlanItem(s);
         const isSo = isSocraticItem(s);
         const isLb = isLbtItem(s);
+        const isCu = isCuriousItem(s);
         const colorClass = isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
                           : isEx ? "border-emerald-800 bg-emerald-950/20 hover:border-emerald-500"
                           : isAP ? "border-violet-800 bg-violet-950/20 hover:border-violet-500"
                           : isSo ? "border-teal-800 bg-teal-950/20 hover:border-teal-500"
                           : isLb ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
+                          : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isLb ? "text-rose-300" : "text-stone-100";
-        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isLb ? "text-rose-700 group-hover:text-rose-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isLb ? "text-rose-300" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isLb ? "text-rose-700 group-hover:text-rose-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isOv||isEx||isAP||isSo||isLb) && <Sparkles size={14}/>}
+            {(isOv||isEx||isAP||isSo||isLb||isCu) && <Sparkles size={14}/>}
             {subName(s)}
+            {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
           <span className={chevronClass}><ChevronRight size={16}/></span>
         </button>;
@@ -1401,7 +1476,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onRetryCurious,onAsk,curiosityCount,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1420,7 +1495,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
         </button>
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryEssay}/>}
-      <EssayPanel loading={loadingLevels} essay={nodeData?.essay||""} tuned={!!nodeData?.tunedEssay} onTune={onTuneEssay}/>
+      <EssayPanel loading={loadingLevels} essay={nodeData?.essay||""} tuned={!!nodeData?.tunedEssay} onTune={onTuneEssay} onAsk={onAsk} curiosityCount={curiosityCount}/>
     </div>;
   }
 
@@ -1505,6 +1580,20 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
     </div>;
   }
 
+  if(isCurious){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div>
+        <div className="font-mono-cal text-xs text-indigo-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+        <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onRetryCurious}/>}
+      <CuriosityPanel loading={loadingLevels} questions={nodeData?.questions||[]}/>
+    </div>;
+  }
+
   // T.3: channels tab hidden — only "levels" and "blend"
   const TABS=[{id:"levels",label:"Нива"},{id:"blend",label:"Микс"}];
   return <div className="space-y-5">
@@ -1535,15 +1624,36 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
   </div>;
 }
 
-function EssayPanel({loading,essay,tuned,onTune}){
+function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityCount}){
+  const [q,setQ]=useState("");
   if(loading) return <Spinner label="пиша есе (500-800 думи)…"/>;
   if(!essay) return null;
   const paragraphs = essay.split(/\n\s*\n/).filter(p=>p.trim());
+  function submit(){
+    const t=q.trim();
+    if(!t) return;
+    onAsk(t);
+    setQ("");
+  }
   return <div className="space-y-4">
     <div className="space-y-4">
       {paragraphs.map((p,i)=>(
         <p key={i} className="font-read text-stone-200 leading-relaxed text-lg">{p.trim()}</p>
       ))}
+    </div>
+    <div className="rounded border border-indigo-900/40 bg-indigo-950/10 p-3 space-y-2">
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-indigo-400">Имаш въпрос?</div>
+      <div className="flex gap-2">
+        <input value={q} onChange={e=>setQ(e.target.value)}
+          onKeyDown={e=>{if(e.key==="Enter")submit();}}
+          placeholder="Задай въпрос за тази тема…"
+          className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read text-sm placeholder:text-stone-500 focus:outline-none focus:border-indigo-600"/>
+        <button onClick={submit}
+          className="font-mono-cal text-xs uppercase tracking-wide bg-indigo-700 hover:bg-indigo-600 text-white font-medium px-3 rounded transition-colors">
+          Задай въпрос
+        </button>
+      </div>
+      {curiosityCount>0 && <p className="font-mono-cal text-[11px] text-stone-500">Зададени въпроси: {curiosityCount} — виж ги в „Любопитно" най-долу.</p>}
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
@@ -1639,6 +1749,24 @@ function LbtPanel({loading,items,tuned,onTune}){
       ))}
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function CuriosityPanel({loading,questions}){
+  if(!questions||!questions.length){
+    return <p className="font-read text-stone-500 text-sm py-6">
+      Все още нямаш зададени въпроси. Отвори „Общ преглед" и задай въпрос — отговорът ще се появи тук.
+    </p>;
+  }
+  return <div className="space-y-3">
+    {questions.map((item,i)=>(
+      <div key={item.id||i} className="rounded border border-indigo-900/50 bg-indigo-950/10 p-4">
+        <p className="font-read text-stone-100 leading-relaxed text-lg font-medium mb-2">{item.q}</p>
+        {item.answered
+          ? <p className="font-read text-stone-300 leading-relaxed text-base">{item.answer}</p>
+          : <div className="flex items-center gap-2 text-stone-500 text-sm"><Loader2 size={14} className="animate-spin"/><span className="font-mono-cal">генерирам отговор…</span></div>}
+      </div>
+    ))}
   </div>;
 }
 
