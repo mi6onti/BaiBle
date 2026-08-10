@@ -409,6 +409,22 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return [1,2,3,4].map(n=>({mechanism:fields[`M${n}`]||"", prompt:fields[`P${n}`]||""}));
 }
 
+// AI's own honest reflection: what it genuinely doesn't understand/can't do about this specific subject,
+// especially things requiring lived, embodied, or subjective human experience
+async function genAiConfession(topicLabel, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Write an honest, first-person reflection (150-250 words) from YOUR OWN perspective as an AI, specifically about "${subtopicName}" (within the broader context of "${topicLabel}").
+Genuinely share what you don't fully understand, can't reliably explain, or cannot actually do regarding this SPECIFIC subject — especially anything that requires lived, embodied, or subjective human experience you lack: physical sensation, practiced intuition built over years of real trial-and-error, subjective taste or judgment, the felt weight of real consequences, cultural lived experience, timing/feel that can't be learned from text alone.
+Be SPECIFIC to this exact subject, not a generic AI disclaimer that could apply to anything. Be calibrated and honest: if there is genuinely little epistemic limitation for this particular subject, say so plainly rather than inventing a forced admission — don't manufacture false humility. Speak about architectural/experiential facts (no embodied practice, no persistent memory of doing this in the real world, learning patterns from text rather than lived trial-and-error) rather than claiming feelings or consciousness you can't verify having.${levelPart}
+Write in the SAME language as the topic/subtopic above (detect it and match exactly), in first person.
+Never use the " character inside the text.
+Output ONLY the reflection, wrapped exactly like this and nothing else before or after: ###TEXT###the reflection here###TEXT_END###`,
+    1200
+  );
+  return extractField(raw, "TEXT");
+}
+
 // answers a specific question the learner asked while reading the Overview essay
 // answers ALL currently-unanswered questions in ONE request (old answered ones untouched) — batched by "session", not per-question
 async function genCuriosityAnswersBatch(topicLabel, subtopicName, questions, levelHint) {
@@ -477,6 +493,7 @@ function isExamplesItem(item){ return typeof item==="object" && item!==null && !
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
 function isSocraticItem(item){ return typeof item==="object" && item!==null && !!item.isSocratic; }
 function isLbtItem(item){ return typeof item==="object" && item!==null && !!item.isLbt; }
+function isConfessionItem(item){ return typeof item==="object" && item!==null && !!item.isConfession; }
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
 function getDisplayList(subItem){
@@ -845,7 +862,8 @@ function Aperture() {
       const actionPlanItem = { name:"Rework", isActionPlan:true };
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const lbtItem = { name:"Learning by Thinking", isLbt:true };
-      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, lbtItem];
+      const confessionItem = { name:"Признание на AI", isConfession:true };
+      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, lbtItem, confessionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -926,6 +944,16 @@ function Aperture() {
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
       if(!cached.lbt||!cached.lbt.length) doLoadLbt(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isConfessionItem(subsubItem)){
+      const EMPTY={confession:"",confessionLevel:null,tunedConfession:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.confession) doLoadConfession(id,sub,subLevel,cached);
       return;
     }
 
@@ -1043,6 +1071,31 @@ function Aperture() {
     if(!nodeData||nodeData.tunedLbt)return;
     const level = nodeData.lbtLevel;
     const updNode={...nodeData,tunedLbt:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadConfession(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const confession = await genAiConfession(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, confession, confessionLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneConfession(){
+    if(!nodeData||nodeData.tunedConfession)return;
+    const level = nodeData.confessionLevel;
+    const updNode={...nodeData,tunedConfession:true};
     setNodeData(updNode);
     await saveJSON(`node:${nodeId}`,updNode);
     if(level){
@@ -1303,6 +1356,7 @@ function Aperture() {
               isActionPlan={isActionPlanItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isSocratic={isSocraticItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isLbt={isLbtItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isConfession={isConfessionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
@@ -1314,6 +1368,7 @@ function Aperture() {
               onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetrySocratic={()=>doLoadSocratic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryLbt={()=>doLoadLbt(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
               curiosityQuestions={hierarchy[subtopicIdx].curiosityQuestions||[]}
@@ -1324,6 +1379,7 @@ function Aperture() {
               onTuneActionPlan={tuneActionPlan}
               onTuneSocratic={tuneSocratic}
               onTuneLbt={tuneLbt}
+              onTuneConfession={tuneConfession}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
               canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]))}/>
@@ -1479,20 +1535,22 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
         const isAP = isActionPlanItem(s);
         const isSo = isSocraticItem(s);
         const isLb = isLbtItem(s);
+        const isCo = isConfessionItem(s);
         const isCu = isCuriousItem(s);
         const colorClass = isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
                           : isEx ? "border-emerald-800 bg-emerald-950/20 hover:border-emerald-500"
                           : isAP ? "border-violet-800 bg-violet-950/20 hover:border-violet-500"
                           : isSo ? "border-teal-800 bg-teal-950/20 hover:border-teal-500"
                           : isLb ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
+                          : isCo ? "border-fuchsia-800 bg-fuchsia-950/20 hover:border-fuchsia-500"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isLb ? "text-rose-300" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isLb ? "text-rose-700 group-hover:text-rose-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isLb ? "text-rose-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isLb ? "text-rose-700 group-hover:text-rose-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isOv||isEx||isAP||isSo||isLb||isCu) && <Sparkles size={14}/>}
+            {(isOv||isEx||isAP||isSo||isLb||isCo||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -1503,7 +1561,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1605,6 +1663,27 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
       <p className="font-read text-stone-500 text-sm italic">Тези подкани не се отговарят от приложението — ти сам обмисляш и си отговаряш.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryLbt}/>}
       <LbtPanel loading={loadingLevels} items={nodeData?.lbt||[]} tuned={!!nodeData?.tunedLbt} onTune={onTuneLbt}/>
+    </div>;
+  }
+
+  if(isConfession){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-fuchsia-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Честно споделяне от AI — какво не разбира или не може по тази тема.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryConfession}/>}
+      <ConfessionPanel loading={loadingLevels} confession={nodeData?.confession||""} tuned={!!nodeData?.tunedConfession} onTune={onTuneConfession}/>
     </div>;
   }
 
@@ -1793,6 +1872,20 @@ function LbtPanel({loading,items,tuned,onTune}){
           <div className="font-mono-cal text-xs uppercase tracking-wide text-rose-400 mb-2">{it.mechanism}</div>
           <p className="font-read text-stone-200 leading-relaxed text-lg">{it.prompt}</p>
         </div>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function ConfessionPanel({loading,confession,tuned,onTune}){
+  if(loading) return <Spinner label="AI мисли честно за собствените си граници…"/>;
+  if(!confession) return null;
+  const paragraphs = confession.split(/\n\s*\n/).filter(p=>p.trim());
+  return <div className="space-y-4">
+    <div className="rounded border border-fuchsia-900/50 bg-fuchsia-950/10 p-4 space-y-3">
+      {paragraphs.map((p,i)=>(
+        <p key={i} className="font-read text-stone-200 leading-relaxed text-lg italic">{p.trim()}</p>
       ))}
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
