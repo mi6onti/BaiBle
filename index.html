@@ -181,12 +181,19 @@ async function genBlend(topic, sub, subsub, level) {
 
 // overview: 5-level explanation of an ENTIRE subject (topic or subtopic), same length/style as a leaf-unit explanation
 async function genOverviewLevels(subjectLabel) {
-  const levels=[];
-  for(const m of LEVELS){
-    const raw=await callClaudeRaw(`Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) at level "${m.label}" (${m.hint}), 45-70 words — same length and style as a normal single-concept explanation, just covering the whole subject at this level of abstraction. Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write in the SAME language as the subject text above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
-    levels.push({level:m.level,text:extractField(raw,"TEXT")});
-  }
-  return levels;
+  const levelDescs = LEVELS.map(m=>`Level ${m.level} ("${m.label}", ${m.hint})`).join("; ");
+  const raw = await callClaudeRaw(
+    `Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) — write 5 versions, one for each level below, EACH 45-70 words, same length/style as a normal single-concept explanation, just covering the whole subject at that level of abstraction:
+${levelDescs}
+Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Each level should be genuinely distinct in register/depth from the others, not a reworded repeat.
+Write all 5 in the SAME language as the subject text above (detect it and match exactly).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###L1### level 1 text ###L2### level 2 text ###L3### level 3 text ###L4### level 4 text ###L5### level 5 text ###END###`,
+    2200
+  );
+  const fields = extractSequentialFields(raw, ["L1","L2","L3","L4","L5"]);
+  return LEVELS.map(m=>({level:m.level, text:fields[`L${m.level}`]||""}));
 }
 
 async function genSubtopicNames(prompt, learningProfile, levelHint) {
