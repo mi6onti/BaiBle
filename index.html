@@ -43,12 +43,17 @@ const JSON_SYS     = "You return ONLY valid JSON. No markdown fences, no preambl
 let USE_LOCAL = (() => { try { return localStorage.getItem("aperture:_mode") === "local"; } catch { return false; } })();
 
 const LEVELS = [
-  {level:1,label:"Аналогия",hint:"everyday comparison"},
-  {level:2,label:"Пример",hint:"concrete scenario"},
-  {level:3,label:"Механика",hint:"how it works"},
-  {level:4,label:"Дефиниция",hint:"formal terms"},
-  {level:5,label:"Дълбочина",hint:"expert nuance"},
+  {level:1,label:"Аналогия",hint:"everyday comparison",minutes:5},
+  {level:2,label:"Пример",hint:"concrete scenario",minutes:11},
+  {level:3,label:"Механика",hint:"how it works",minutes:17},
+  {level:4,label:"Дефиниция",hint:"formal terms",minutes:23},
+  {level:5,label:"Дълбочина",hint:"expert nuance",minutes:30},
 ];
+function levelScale(level){
+  const m={1:0.4,2:0.65,3:1.0,4:1.35,5:1.75};
+  return m[level]||1.0;
+}
+function sw(base,level){ return Math.round(base*levelScale(level)); } // scale a word-count target
 const PERSONALITIES = [
   {code:"O",name:"Любопитни",hint:"Creative, curious — love metaphors and big-picture thinking"},
   {code:"C",name:"Методични",hint:"Organized, disciplined — prefer structure, steps and clear rules"},
@@ -143,18 +148,19 @@ async function genHierarchy(prompt, learningProfile) {
   return subtopics;
 }
 
-async function genAbstraction(topic, sub, subsub) {
+async function genAbstraction(topic, sub, subsub, subLevel) {
+  const lo=sw(45,subLevel||3), hi=sw(70,subLevel||3);
   const levelDescs = LEVELS.map(m=>`Level ${m.level} ("${m.label}", ${m.hint})`).join("; ");
   const raw = await callClaudeRaw(
     `Topic: "${topic}" > "${sub}" > "${subsub}".
-Write 5 explanations of this, one for each level below, EACH 45-70 words:
+Write 5 explanations of this, one for each level below, EACH ${lo}-${hi} words:
 ${levelDescs}
 Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Each level should be genuinely distinct in register/depth from the others, not a reworded repeat.
 Write all 5 in the SAME language as the topic chain above (detect it and match exactly).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ###L1### level 1 text ###L2### level 2 text ###L3### level 3 text ###L4### level 4 text ###L5### level 5 text ###END###`,
-    2200
+    Math.min(3800, 400+hi*5*3)
   );
   const fields = extractSequentialFields(raw, ["L1","L2","L3","L4","L5"]);
   return LEVELS.map(m=>({level:m.level, text:fields[`L${m.level}`]||""}));
@@ -198,18 +204,22 @@ Output EXACTLY in this format, nothing before the first marker or after the last
 
 async function genSubtopicNames(prompt, learningProfile, levelHint) {
   const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
-  const levelPart = levelHint ? `\nThe learner chose to approach this topic at the "${levelHint.label}" level (${levelHint.hint}) — shape the subtopic breakdown and complexity to match this depth.` : "";
+  const lvl = levelHint?.level || 3;
+  const countRange = lvl<=1 ? "3-4" : lvl===2 ? "4-5" : lvl===3 ? "4-6" : lvl===4 ? "5-7" : "6-8";
+  const levelPart = levelHint ? `\nThe learner chose to approach this topic at the "${levelHint.label}" level (${levelHint.hint}), targeting roughly ${levelHint.minutes} minutes total for this topic at this depth — shape the subtopic breakdown, count, and complexity to match this depth and time budget.` : "";
   const d = await callClaude(
-    `Design a self-study curriculum for: "${prompt}".${profileHint}${levelPart}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly). Never use " inside.\nReturn: {"names":["..."]}`,
+    `Design a self-study curriculum for: "${prompt}".${profileHint}${levelPart}\nList ${countRange} subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly). Never use " inside.\nReturn: {"names":["..."]}`,
     500
   );
   return d.names||[];
 }
 
 async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
-  const levelPart = levelHint ? ` The learner chose to approach this at the "${levelHint.label}" level (${levelHint.hint}) — shape complexity accordingly.` : "";
+  const lvl = levelHint?.level || 3;
+  const countRange = lvl<=1 ? "2-3" : lvl===2 ? "3" : lvl===3 ? "3-4" : lvl===4 ? "4-5" : "5-6";
+  const levelPart = levelHint ? ` The learner chose to approach this at the "${levelHint.label}" level (${levelHint.hint}), targeting roughly ${levelHint.minutes} minutes total for this subtopic — shape count and complexity accordingly.` : "";
   const s = await callClaude(
-    `Topic: "${prompt}" > "${subtopicName}". List 3-4 sub-subtopics, under 6 words each.${levelPart} Write them in the SAME language as the topic above (match exactly). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
+    `Topic: "${prompt}" > "${subtopicName}". List ${countRange} sub-subtopics, under 6 words each.${levelPart} Write them in the SAME language as the topic above (match exactly). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
     400
   );
   return s.subsubtopics||[];
@@ -326,49 +336,54 @@ function extractSequentialFields(raw, names){
   return result;
 }
 
-// long-form overview essay for a subtopic — philosophical/narrative style, 2-3 min read (~500-800 words)
+// long-form overview essay for a subtopic — philosophical/narrative style
 async function genSubtopicEssay(topicLabel, subtopicName, levelHint) {
+  const lo=sw(500,levelHint?.level||3), hi=sw(800,levelHint?.level||3);
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-    `Write a long-form OVERVIEW ESSAY (500-800 words, readable in about 2-3 minutes) about "${subtopicName}", within the context of the broader topic "${topicLabel}".
+    `Write a long-form OVERVIEW ESSAY (${lo}-${hi} words) about "${subtopicName}", within the context of the broader topic "${topicLabel}".
 Style: engaging, narrative, slightly philosophical/reflective — like a well-written tech/science essay that gives the big picture, the "why it matters" and the underlying ideas, not a dry technical walkthrough or a bullet-point summary. Use natural prose paragraphs (blank line between paragraphs), a few illustrative analogies or historical/conceptual framing where it fits, and an occasional short memorable phrase. It's fine to use a few short section-like breaks (a short bolded-feeling phrase followed by a colon is NOT needed — just flowing prose divided into paragraphs).${levelPart}
 CRITICAL: stay strictly within the exact scenario/context of "${topicLabel}" above. Any illustrative example, analogy, or scenario you use must fit THIS specific context — never substitute a different generic scenario (e.g. do not use "an online store" as an example if the actual context is something else entirely, like an educational site, a healthcare system, etc). Ground every example in the ACTUAL subject matter given.
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output ONLY the essay, wrapped exactly like this and nothing else before or after: ###TEXT###the essay here###TEXT_END###`,
-    1800
+    Math.min(3800, 400+hi*3)
   );
   return extractField(raw, "TEXT");
 }
 
-// final static section per subtopic-level: concrete practical artifacts (YAML/config/templates/text) matching the exact plan context
+// final static section per subtopic-level: concrete practical artifacts matching the exact plan context
 async function genSubtopicExamples(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const countRange = lvl<=1?"2":lvl===2?"2-3":lvl===3?"2-4":lvl===4?"3-5":"4-6";
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}) — simpler/shorter for lower levels, more complete/advanced for higher levels.` : "";
   const raw = await callClaudeRaw(
-    `Give 2-4 CONCRETE, TANGIBLE examples that make "${subtopicName}" real, strictly within the exact context of "${topicLabel}" (not a generic or unrelated scenario — every example must reflect the actual subject matter given).
+    `Give ${countRange} CONCRETE, TANGIBLE examples that make "${subtopicName}" real, strictly within the exact context of "${topicLabel}" (not a generic or unrelated scenario — every example must reflect the actual subject matter given).
 FIRST, decide what kind of concrete artifact is genuinely the most natural and useful fit for THIS specific subject — it could be a YAML/config snippet, a command, a code sample, a template, a worked calculation, an actual quoted passage/text, a sample dialogue or phrase, a practice exercise, a real-world scenario walkthrough, or anything else that fits. Do NOT default to a technical/code format if the subject is not technical (e.g. for a literary, historical, religious, or language-learning topic, use real quoted text, example sentences, or worked illustrations instead — never force YAML or config syntax onto a non-technical subject).${levelPart}
 Format: for each example, a short title line (plain text, no markdown symbols), then the example content on the following lines exactly as it should look (preserve original formatting/line breaks — use real newlines and spaces, not escaped ones). Leave a blank line between examples.
 Write titles and any prose in the SAME language as the topic/subtopic above; if the example is code/config, keep its syntax in natural technical form (do not translate code syntax).
 Never use the " character inside the text.
 Output ONLY the examples, wrapped exactly like this and nothing else before or after: ###TEXT###the examples here###TEXT_END###`,
-    1800
+    2200
   );
   return extractField(raw, "TEXT");
 }
 
 // 5-stage action plan for the WHOLE topic: simplest starting point -> full realization/mastery
 async function genActionPlan(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const sentRange = lvl<=1?"2-3":lvl===2?"2-4":lvl===3?"2-5":lvl===4?"3-6":"4-7";
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
     `Design a "REWORK" — 5 UNCONVENTIONAL, creative, sometimes experimental approaches to actually getting real results with "${subtopicName}" (within the broader context of "${topicLabel}"), for someone who always looks for a better way, dislikes following the textbook/official docs/standard instructions, and wants more value and efficiency than the conventional path offers.
 Each idea must genuinely challenge or break from the standard/expected way of learning or doing this — a shortcut most people don't know, a contrarian reframing, an unusual technique borrowed from elsewhere, or an experimental method worth trying — never generic "think outside the box" fluff, always something specific and actually usable tied to this exact subject.
 Escalate boldness across the 5: idea 1 is a simple but non-obvious tweak or hack usable right away; idea 5 is a genuinely radical rethink of the standard approach to "${subtopicName}" entirely.${levelPart}
-For each idea, give a SHORT punchy title (3-7 words, provocative or memorable — never a generic label like "Idea 1") and a body of exactly 2 to 5 sentences explaining the idea and specifically why/how it beats the conventional approach.
+For each idea, give a SHORT punchy title (3-7 words, provocative or memorable — never a generic label like "Idea 1") and a body of exactly ${sentRange} sentences explaining the idea and specifically why/how it beats the conventional approach.
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
-###S1T### idea 1 title ###S1B### idea 1 body (2-5 sentences) ###S2T### idea 2 title ###S2B### idea 2 body ###S3T### idea 3 title ###S3B### idea 3 body ###S4T### idea 4 title ###S4B### idea 4 body ###S5T### idea 5 title ###S5B### idea 5 body ###END###`,
-    2200
+###S1T### idea 1 title ###S1B### idea 1 body ###S2T### idea 2 title ###S2B### idea 2 body ###S3T### idea 3 title ###S3B### idea 3 body ###S4T### idea 4 title ###S4B### idea 4 body ###S5T### idea 5 title ###S5B### idea 5 body ###END###`,
+    2600
   );
   const fields = extractSequentialFields(raw, ["S1T","S1B","S2T","S2B","S3T","S3B","S4T","S4B","S5T","S5B"]);
   return [1,2,3,4,5].map(n=>({title:fields[`S${n}T`]||`Идея ${n}`, body:fields[`S${n}B`]||""}));
@@ -376,51 +391,89 @@ Output EXACTLY in this format, nothing before the first marker or after the last
 
 // Socratic-style dialogue: a sequence of guiding questions (not direct exposition) leading the learner to discover the idea themselves
 async function genSocraticDialogue(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const sentRange = lvl<=1?"1":lvl===2?"1-2":lvl===3?"1-3":lvl===4?"2-4":"2-5";
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
     `Design a SOCRATIC dialogue teaching "${subtopicName}" (within the broader context of "${topicLabel}") — a sequence of exactly 5 guiding QUESTIONS, in the true Socratic method: each question should provoke the learner to think and arrive at the insight themselves, rather than being told the answer directly. Questions should build on each other, moving from a simple provocation toward the core understanding. Do NOT just ask generic quiz questions — each should genuinely guide reasoning toward the next realization, the way a real Socratic teacher would.
-For each question, also give a short GUIDING NOTE (1-3 sentences) — not the direct answer, but a nudge, a related observation, or a follow-up prompt that helps the learner think it through, IN THE STYLE of a teacher gently redirecting without lecturing. Only the final (5th) guiding note may synthesize/confirm the core insight, since it concludes the dialogue.
+For each question, also give a short GUIDING NOTE (${sentRange} sentences) — not the direct answer, but a nudge, a related observation, or a follow-up prompt that helps the learner think it through, IN THE STYLE of a teacher gently redirecting without lecturing. Only the final (5th) guiding note may synthesize/confirm the core insight, since it concludes the dialogue.
 Ground every question in the exact subject matter of "${subtopicName}" — never generic philosophical questions unrelated to the actual content.${levelPart}
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ###Q1### question 1 ###G1### guiding note 1 ###Q2### question 2 ###G2### guiding note 2 ###Q3### question 3 ###G3### guiding note 3 ###Q4### question 4 ###G4### guiding note 4 ###Q5### question 5 ###G5### guiding note 5 (synthesis) ###END###`,
-    2200
+    2600
   );
   const fields = extractSequentialFields(raw, ["Q1","G1","Q2","G2","Q3","G3","Q4","G4","Q5","G5"]);
   return [1,2,3,4,5].map(n=>({question:fields[`Q${n}`]||"", guidance:fields[`G${n}`]||""}));
 }
 
-// "Learning by Thinking" (Lombrozo): self-directed prompts across 4 mechanisms — explanation, simulation, analogy, reasoning.
-// The learner does the thinking themselves; we only pose the prompt, never the answer.
-async function genLearningByThinking(topicLabel, subtopicName, levelHint) {
+// Тест: one question of each of 6 types, tied to the exact subtopic content
+async function genTestQuestions(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-    `Design 4 "Learning by Thinking" self-directed exercises about "${subtopicName}" (within the broader context of "${topicLabel}"), based on Tania Lombrozo's four mechanisms of learning by thinking: (1) self-explanation, (2) mental simulation, (3) analogical comparison, (4) reasoning/inference.
-These are NOT explanations you give the learner — they are prompts that make THEM do the thinking themselves. Never answer the prompt yourself, only pose it.
-For each of the 4 mechanisms, write: a short mechanism label (2-4 words) IN THE SAME language as the topic (translate "self-explanation"/"mental simulation"/"analogy"/"reasoning" naturally into that language), and a concrete, specific prompt (2-4 sentences) instructing the learner exactly what to try to explain to themselves, simulate mentally, compare via analogy, or reason through — tied precisely to "${subtopicName}", not generic.${levelPart}
-Write in the SAME language as the topic/subtopic above (detect it and match exactly).
-Never use the " character inside the text.
+    `Design a small TEST about "${subtopicName}" (within the broader context of "${topicLabel}") with exactly 6 questions, one of each type below. Ground every question strictly in the actual content of "${subtopicName}" — never generic trivia unrelated to it.${levelPart}
+Write everything in the SAME language as the topic/subtopic above (detect it and match exactly). Never use the " character inside any text. Use " || " as separator between list items, and " :: " between a matched pair's two sides — never use either separator inside the item text itself.
+
+1. SINGLE-CHOICE: one question, 4 options (only one correct).
+2. MULTI-CHOICE: one question, 4-5 options (2 or more correct).
+3. FILL-IN-THE-BLANK: one sentence with a blank shown as ___ , plus the correct missing word/phrase.
+4. FREE-TEXT/NUMBER: one short-answer question (a fact, a number, a term) plus the expected answer.
+5. ORDERING: one question asking to order 4-5 items correctly (steps, chronology, size, etc) — give the items in their CORRECT order.
+6. MATCHING: one question asking to match 3-4 pairs of related items — give the pairs.
+
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
-###M1### mechanism 1 label ###P1### prompt 1 (self-explanation) ###M2### mechanism 2 label ###P2### prompt 2 (mental simulation) ###M3### mechanism 3 label ###P3### prompt 3 (analogy) ###M4### mechanism 4 label ###P4### prompt 4 (reasoning) ###END###`,
-    1800
+###Q1### single-choice question text ###Q1_END###
+###Q1OPTS### option1 || option2 || option3 || option4 ###Q1OPTS_END###
+###Q1CORRECT### correct option number, 1-4 ###Q1CORRECT_END###
+###Q2### multi-choice question text ###Q2_END###
+###Q2OPTS### option1 || option2 || option3 || option4 || option5 ###Q2OPTS_END###
+###Q2CORRECT### correct option numbers comma-separated e.g. 1,3 ###Q2CORRECT_END###
+###Q3### fill-in-the-blank sentence with ___ as the blank ###Q3_END###
+###Q3ANSWER### correct word or phrase ###Q3ANSWER_END###
+###Q4### free-text or number question ###Q4_END###
+###Q4ANSWER### expected answer ###Q4ANSWER_END###
+###Q5### ordering question instruction ###Q5_END###
+###Q5ITEMS### item1 || item2 || item3 || item4 (in CORRECT order) ###Q5ITEMS_END###
+###Q6### matching question instruction ###Q6_END###
+###Q6PAIRS### left1 :: right1 || left2 :: right2 || left3 :: right3 || left4 :: right4 ###Q6PAIRS_END###`,
+    2600
   );
-  const fields = extractSequentialFields(raw, ["M1","P1","M2","P2","M3","P3","M4","P4"]);
-  return [1,2,3,4].map(n=>({mechanism:fields[`M${n}`]||"", prompt:fields[`P${n}`]||""}));
+  const num=(s,fb)=>{const n=parseInt((s||"").trim(),10);return isNaN(n)?fb:n;};
+  const splitList=s=>(s||"").split("||").map(x=>x.trim()).filter(Boolean);
+
+  const q1opts = splitList(extractField(raw,"Q1OPTS"));
+  const q2opts = splitList(extractField(raw,"Q2OPTS"));
+  const q2correctRaw = extractField(raw,"Q2CORRECT").split(",").map(x=>num(x,1)-1).filter(n=>n>=0);
+  const q5items = splitList(extractField(raw,"Q5ITEMS"));
+  const q6pairs = splitList(extractField(raw,"Q6PAIRS")).map(p=>{
+    const [l,r]=p.split("::").map(x=>(x||"").trim());
+    return {left:l||"", right:r||""};
+  });
+
+  return [
+    { type:"single", question:extractField(raw,"Q1"), options:q1opts, correctIndex:num(extractField(raw,"Q1CORRECT"),1)-1 },
+    { type:"multi", question:extractField(raw,"Q2"), options:q2opts, correctIndices:q2correctRaw },
+    { type:"fill", question:extractField(raw,"Q3"), answer:extractField(raw,"Q3ANSWER") },
+    { type:"free", question:extractField(raw,"Q4"), answer:extractField(raw,"Q4ANSWER") },
+    { type:"order", question:extractField(raw,"Q5"), items:q5items },
+    { type:"match", question:extractField(raw,"Q6"), pairs:q6pairs },
+  ];
 }
 
 // AI's own honest reflection: what it genuinely doesn't understand/can't do about this specific subject,
 // especially things requiring lived, embodied, or subjective human experience
 async function genAiConfession(topicLabel, subtopicName, levelHint) {
+  const lo=sw(150,levelHint?.level||3), hi=sw(250,levelHint?.level||3);
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-    `Write an honest, first-person reflection (150-250 words) from YOUR OWN perspective as an AI, specifically about "${subtopicName}" (within the broader context of "${topicLabel}").
+    `Write an honest, first-person reflection (${lo}-${hi} words) from YOUR OWN perspective as an AI, specifically about "${subtopicName}" (within the broader context of "${topicLabel}").
 Genuinely share what you don't fully understand, can't reliably explain, or cannot actually do regarding this SPECIFIC subject — especially anything that requires lived, embodied, or subjective human experience you lack: physical sensation, practiced intuition built over years of real trial-and-error, subjective taste or judgment, the felt weight of real consequences, cultural lived experience, timing/feel that can't be learned from text alone.
 Be SPECIFIC to this exact subject, not a generic AI disclaimer that could apply to anything. Be calibrated and honest: if there is genuinely little epistemic limitation for this particular subject, say so plainly rather than inventing a forced admission — don't manufacture false humility. Speak about architectural/experiential facts (no embodied practice, no persistent memory of doing this in the real world, learning patterns from text rather than lived trial-and-error) rather than claiming feelings or consciousness you can't verify having.${levelPart}
 Write in the SAME language as the topic/subtopic above (detect it and match exactly), in first person.
 Never use the " character inside the text.
 Output ONLY the reflection, wrapped exactly like this and nothing else before or after: ###TEXT###the reflection here###TEXT_END###`,
-    1200
+    Math.min(2200,400+hi*3)
   );
   return extractField(raw, "TEXT");
 }
@@ -492,7 +545,7 @@ function isOverviewItem(item){ return typeof item==="object" && item!==null && !
 function isExamplesItem(item){ return typeof item==="object" && item!==null && !!item.isExamples; }
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
 function isSocraticItem(item){ return typeof item==="object" && item!==null && !!item.isSocratic; }
-function isLbtItem(item){ return typeof item==="object" && item!==null && !!item.isLbt; }
+function isTestItem(item){ return typeof item==="object" && item!==null && !!item.isTest; }
 function isConfessionItem(item){ return typeof item==="object" && item!==null && !!item.isConfession; }
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
@@ -566,6 +619,8 @@ function Aperture() {
   const [loadingLC,setLoadingLC]       = useState(false);
   const [lcError,setLcError]           = useState(null);
   const [generatingAdapted,setGA]      = useState(false);
+  const [generatingAll,setGenAll]      = useState(false);
+  const [genAllProgress,setGenAllProgress] = useState("");
   const [dbTest,setDbTest]             = useState(null);
   const [dbTesting,setDbTesting]       = useState(false);
   const [showTrash,setShowTrash]       = useState(false);
@@ -861,9 +916,9 @@ function Aperture() {
       const examplesItem = { name:"Практически примери", isExamples:true };
       const actionPlanItem = { name:"Rework", isActionPlan:true };
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
-      const lbtItem = { name:"Learning by Thinking", isLbt:true };
+      const testItem = { name:"Тест", isTest:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
-      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, lbtItem, confessionItem];
+      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, testItem, confessionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -937,13 +992,13 @@ function Aperture() {
       return;
     }
 
-    if(isLbtItem(subsubItem)){
-      const EMPTY={lbt:[],lbtLevel:null,tunedLbt:false,unitConfused:false};
+    if(isTestItem(subsubItem)){
+      const EMPTY={testQuestions:[],testLevel:null,tunedTest:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
-      if(!cached.lbt||!cached.lbt.length) doLoadLbt(id,sub,subLevel,cached);
+      if(!cached.testQuestions||!cached.testQuestions.length) doLoadTest(id,sub,subLevel,cached);
       return;
     }
 
@@ -963,7 +1018,7 @@ function Aperture() {
     // track all node keys for learning profile
     const allKeys=await loadJSON("allNodeKeys",[]);
     if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
-    if(!cached.abstraction?.length)doLoadLevels(id,sub,subsub,cached);
+    if(!cached.abstraction?.length)doLoadLevels(id,sub,subsub,subLevel,cached);
   }
 
   async function doLoadEssay(id,sub,subLevel,base){
@@ -1054,12 +1109,12 @@ function Aperture() {
     }
   }
 
-  async function doLoadLbt(id, sub, subLevel, base){
+  async function doLoadTest(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
-      const lbt = await genLearningByThinking(currentTopic.prompt||currentTopic.name, sub, levelMeta);
-      const updated = {...base, lbt, lbtLevel:subLevel};
+      const testQuestions = await genTestQuestions(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, testQuestions, testLevel:subLevel};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
@@ -1067,10 +1122,10 @@ function Aperture() {
     finally{setLoadingL(false);}
   }
 
-  async function tuneLbt(){
-    if(!nodeData||nodeData.tunedLbt)return;
-    const level = nodeData.lbtLevel;
-    const updNode={...nodeData,tunedLbt:true};
+  async function tuneTest(){
+    if(!nodeData||nodeData.tunedTest)return;
+    const level = nodeData.testLevel;
+    const updNode={...nodeData,tunedTest:true};
     setNodeData(updNode);
     await saveJSON(`node:${nodeId}`,updNode);
     if(level){
@@ -1157,10 +1212,10 @@ function Aperture() {
     }
   }
 
-  async function doLoadLevels(id,sub,subsub,base){
+  async function doLoadLevels(id,sub,subsub,subLevel,base){
     setLoadingL(true);setNodeError(null);
     try{
-      const abstraction=await genAbstraction(currentTopic.prompt||currentTopic.name,sub,subsub);
+      const abstraction=await genAbstraction(currentTopic.prompt||currentTopic.name,sub,subsub,subLevel);
       const updated={...base,abstraction};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
@@ -1243,6 +1298,94 @@ function Aperture() {
   }
 
   // T.5: generate adapted topic
+  async function generateAllContent(){
+    if(!currentTopic||!planData) return;
+    setGenAll(true); setGenAllProgress("");
+    try{
+      let curHierarchy = hierarchy;
+      let curPlan = planData;
+      const topicPrompt = currentTopic.prompt||currentTopic.name;
+      const topLevel = curPlan.activeLevel;
+      const topLevelMeta = LEVELS.find(l=>l.level===topLevel);
+
+      for(let si=0; si<curHierarchy.length; si++){
+        let subItem = curHierarchy[si];
+        setGenAllProgress(`Тема ${si+1}/${curHierarchy.length}: ${subItem.name}`);
+        let subsubList = getSubsubList(subItem);
+        if(!subsubList || !subsubList.length){
+          const rawSubsubtopics = await genSubsubtopicsFor(topicPrompt, subItem.name, topLevelMeta);
+          const overviewItem = { name:"Общ преглед", isOverview:true };
+          const examplesItem = { name:"Практически примери", isExamples:true };
+          const actionPlanItem = { name:"Rework", isActionPlan:true };
+          const socraticItem = { name:"Сократически диалог", isSocratic:true };
+          const testItem = { name:"Тест", isTest:true };
+          const confessionItem = { name:"Признание на AI", isConfession:true };
+          subsubList = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, testItem, confessionItem];
+          subItem = {...subItem, byLevel:{...subItem.byLevel, [topLevel]:subsubList}, activeLevel:topLevel};
+          curHierarchy = curHierarchy.map((s,idx)=>idx===si?subItem:s);
+          curPlan = {...curPlan, byLevel:{...curPlan.byLevel,[topLevel]:curHierarchy}};
+          setHierarchy(curHierarchy); setPlanData(curPlan);
+          await saveJSON(`plan:${currentTopic.id}`, curPlan);
+        }
+
+        const subLevel = subItem.activeLevel;
+        const subLevelMeta = LEVELS.find(l=>l.level===subLevel);
+        const allKeys = await loadJSON("allNodeKeys", []);
+        let keysUpdated = [...allKeys];
+
+        for(let ui=0; ui<subsubList.length; ui++){
+          const item = subsubList[ui];
+          if(isCuriousItem(item)) continue; // dynamic, only appears from user questions
+          const uName = subName(item);
+          setGenAllProgress(`${subItem.name} — ${uName}`);
+          const id = `${currentTopic.id}/${slugify(subItem.name)}/L${subLevel}/${slugify(uName)}`;
+          const existing = await loadJSON(`node:${id}`, null);
+
+          if(isOverviewItem(item)){
+            if(!existing?.essay){
+              const essay = await genSubtopicEssay(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), essay, essayLevel:subLevel, tunedEssay:existing?.tunedEssay||false});
+            }
+          } else if(isExamplesItem(item)){
+            if(!existing?.examples){
+              const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
+            }
+          } else if(isActionPlanItem(item)){
+            if(!existing?.stages?.length){
+              const stages = await genActionPlan(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), stages, actionPlanLevel:subLevel, tunedActionPlan:existing?.tunedActionPlan||false});
+            }
+          } else if(isSocraticItem(item)){
+            if(!existing?.steps?.length){
+              const steps = await genSocraticDialogue(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), steps, socraticLevel:subLevel, tunedSocratic:existing?.tunedSocratic||false});
+            }
+          } else if(isTestItem(item)){
+            if(!existing?.testQuestions?.length){
+              const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
+            }
+          } else if(isConfessionItem(item)){
+            if(!existing?.confession){
+              const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
+            }
+          } else {
+            if(!existing?.abstraction?.length){
+              const abstraction = await genAbstraction(topicPrompt, subItem.name, uName, subLevel);
+              await saveJSON(`node:${id}`, {...(existing||{personality:[],blend:null,tunedPersonality:[],tunedBlendKey:null,unitConfused:false}), abstraction, tunedAbstraction:existing?.tunedAbstraction||[]});
+            }
+          }
+          if(!keysUpdated.includes(id)){ keysUpdated=[...keysUpdated,id]; await saveJSON("allNodeKeys", keysUpdated); }
+        }
+      }
+      setGenAllProgress("");
+    }catch(e){ setHomeError(`Грешка при масово генериране: ${e.message}`); }
+    finally{ setGenAll(false); }
+  }
+
+
   async function generateAdaptedTopic(){
     if(!levelCheck||!currentTopic)return;
     setGA(true);
@@ -1333,7 +1476,8 @@ function Aperture() {
               allTopics={topics}
               onNavigateTopic={t=>{resumeTopic(t);}}
               onChangeLevel={openTopicLevelPicker}
-              currentLevel={planData?.activeLevel}/>
+              currentLevel={planData?.activeLevel}
+              onGenerateAll={generateAllContent} generatingAll={generatingAll} genAllProgress={genAllProgress}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
@@ -1355,19 +1499,19 @@ function Aperture() {
               isExamples={isExamplesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isActionPlan={isActionPlanItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isSocratic={isSocraticItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isLbt={isLbtItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isTest={isTestItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isConfession={isConfessionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
-              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]),nodeData)}
+              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]),hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetrySocratic={()=>doLoadSocratic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
-              onRetryLbt={()=>doLoadLbt(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryTest={()=>doLoadTest(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
@@ -1378,7 +1522,7 @@ function Aperture() {
               onTuneExamples={tuneExamples}
               onTuneActionPlan={tuneActionPlan}
               onTuneSocratic={tuneSocratic}
-              onTuneLbt={tuneLbt}
+              onTuneTest={tuneTest}
               onTuneConfession={tuneConfession}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
@@ -1442,7 +1586,7 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel}){
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -1459,10 +1603,18 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
       <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>
     </div>
 
-    {onChangeLevel && <button onClick={onChangeLevel}
-      className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
-      <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
-    </button>}
+    <div className="flex flex-wrap gap-2">
+      {onChangeLevel && <button onClick={onChangeLevel}
+        className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
+        <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
+      </button>}
+      {onGenerateAll && <button onClick={onGenerateAll} disabled={generatingAll}
+        className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-500 hover:border-amber-500 disabled:opacity-60 w-fit">
+        {generatingAll?<Loader2 size={12} className="animate-spin"/>:<Sparkles size={12}/>}
+        Генерирай цялото съдържание
+      </button>}
+    </div>
+    {generatingAll && genAllProgress && <p className="font-mono-cal text-[11px] text-stone-500">{genAllProgress}</p>}
 
     {/* T.6: related topic links */}
     {(parentTopic||childTopic)&&<div className="space-y-1">
@@ -1534,23 +1686,23 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
         const isEx = isExamplesItem(s);
         const isAP = isActionPlanItem(s);
         const isSo = isSocraticItem(s);
-        const isLb = isLbtItem(s);
+        const isTe = isTestItem(s);
         const isCo = isConfessionItem(s);
         const isCu = isCuriousItem(s);
         const colorClass = isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
                           : isEx ? "border-emerald-800 bg-emerald-950/20 hover:border-emerald-500"
                           : isAP ? "border-violet-800 bg-violet-950/20 hover:border-violet-500"
                           : isSo ? "border-teal-800 bg-teal-950/20 hover:border-teal-500"
-                          : isLb ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
+                          : isTe ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
                           : isCo ? "border-fuchsia-800 bg-fuchsia-950/20 hover:border-fuchsia-500"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isLb ? "text-rose-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isLb ? "text-rose-700 group-hover:text-rose-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isOv||isEx||isAP||isSo||isLb||isCo||isCu) && <Sparkles size={14}/>}
+            {(isOv||isEx||isAP||isSo||isTe||isCo||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -1561,7 +1713,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isTest,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1645,7 +1797,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
     </div>;
   }
 
-  if(isLbt){
+  if(isTest){
     return <div className="space-y-5">
       <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
         <ChevronLeft size={16}/> {subtopic}
@@ -1660,9 +1812,9 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
           {unitConfused?"Неясно ✓":"Не разбирам"}
         </button>
       </div>
-      <p className="font-read text-stone-500 text-sm italic">Тези подкани не се отговарят от приложението — ти сам обмисляш и си отговаряш.</p>
-      {error&&<ErrorNote message={error} onRetry={onRetryLbt}/>}
-      <LbtPanel loading={loadingLevels} items={nodeData?.lbt||[]} tuned={!!nodeData?.tunedLbt} onTune={onTuneLbt}/>
+      <p className="font-read text-stone-500 text-sm italic">Провери се — 6 въпроса от различен тип по тази тема.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryTest}/>}
+      <TestPanel loading={loadingLevels} questions={nodeData?.testQuestions||[]} tuned={!!nodeData?.tunedTest} onTune={onTuneTest}/>
     </div>;
   }
 
@@ -1862,20 +2014,152 @@ function SocraticPanel({loading,steps,tuned,onTune}){
   </div>;
 }
 
-function LbtPanel({loading,items,tuned,onTune}){
-  if(loading) return <Spinner label="генерирам Learning by Thinking подкани…"/>;
-  if(!items||!items.length) return null;
+function TestPanel({loading,questions,tuned,onTune}){
+  if(loading) return <Spinner label="генерирам тест (6 въпроса)…"/>;
+  if(!questions||!questions.length) return null;
   return <div className="space-y-4">
     <div className="space-y-3">
-      {items.map((it,i)=>(
-        <div key={i} className="rounded border border-rose-900/50 bg-rose-950/10 p-4">
-          <div className="font-mono-cal text-xs uppercase tracking-wide text-rose-400 mb-2">{it.mechanism}</div>
-          <p className="font-read text-stone-200 leading-relaxed text-lg">{it.prompt}</p>
-        </div>
-      ))}
+      {questions.map((q,i)=>{
+        if(q.type==="single") return <SingleChoiceQ key={i} q={q}/>;
+        if(q.type==="multi") return <MultiChoiceQ key={i} q={q}/>;
+        if(q.type==="fill") return <FillBlankQ key={i} q={q}/>;
+        if(q.type==="free") return <FreeTextQ key={i} q={q}/>;
+        if(q.type==="order") return <OrderQ key={i} q={q}/>;
+        if(q.type==="match") return <MatchQ key={i} q={q}/>;
+        return null;
+      })}
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
+}
+
+function QCard({label,question,children}){
+  return <div className="rounded border border-rose-900/50 bg-rose-950/10 p-4 space-y-3">
+    <div className="font-mono-cal text-[10px] uppercase tracking-wide text-rose-500">{label}</div>
+    <p className="font-read text-stone-100 text-lg leading-relaxed">{question}</p>
+    {children}
+  </div>;
+}
+function CheckBtn({onClick,children}){
+  return <button onClick={onClick} className="font-mono-cal text-xs uppercase tracking-wide bg-rose-700 hover:bg-rose-600 text-white font-medium px-3 py-1.5 rounded transition-colors">{children||"Провери"}</button>;
+}
+function Result({ok,text}){
+  return <p className={`font-mono-cal text-xs ${ok?"text-emerald-400":"text-red-400"}`}>{ok?"✓ Вярно":`✗ ${text}`}</p>;
+}
+
+function SingleChoiceQ({q}){
+  const [sel,setSel]=useState(null);
+  const [checked,setChecked]=useState(false);
+  return <QCard label="Избор на един отговор" question={q.question}>
+    <div className="space-y-1">
+      {(q.options||[]).map((opt,i)=>(
+        <button key={i} onClick={()=>{setSel(i);setChecked(false);}}
+          className={`w-full text-left px-3 py-2 rounded border text-sm font-read ${sel===i?"border-rose-500 bg-rose-900/30 text-stone-100":"border-stone-700 text-stone-300 hover:border-stone-500"}`}>
+          {opt}
+        </button>
+      ))}
+    </div>
+    {!checked ? <CheckBtn onClick={()=>setChecked(true)}/> : <Result ok={sel===q.correctIndex} text={`Верен отговор: ${q.options?.[q.correctIndex]}`}/>}
+  </QCard>;
+}
+
+function MultiChoiceQ({q}){
+  const [sel,setSel]=useState([]);
+  const [checked,setChecked]=useState(false);
+  function toggle(i){ setChecked(false); setSel(s=>s.includes(i)?s.filter(x=>x!==i):[...s,i]); }
+  const correctSet = new Set(q.correctIndices||[]);
+  const selSet = new Set(sel);
+  const ok = correctSet.size===selSet.size && [...correctSet].every(i=>selSet.has(i));
+  return <QCard label="Избор на няколко отговора" question={q.question}>
+    <div className="space-y-1">
+      {(q.options||[]).map((opt,i)=>(
+        <button key={i} onClick={()=>toggle(i)}
+          className={`w-full text-left px-3 py-2 rounded border text-sm font-read flex items-center gap-2 ${sel.includes(i)?"border-rose-500 bg-rose-900/30 text-stone-100":"border-stone-700 text-stone-300 hover:border-stone-500"}`}>
+          <span className={`w-3.5 h-3.5 rounded-sm border shrink-0 ${sel.includes(i)?"bg-rose-500 border-rose-500":"border-stone-500"}`}/>
+          {opt}
+        </button>
+      ))}
+    </div>
+    {!checked ? <CheckBtn onClick={()=>setChecked(true)}/> : <Result ok={ok} text={`Верни отговори: ${(q.correctIndices||[]).map(i=>q.options?.[i]).join(", ")}`}/>}
+  </QCard>;
+}
+
+function FillBlankQ({q}){
+  const [val,setVal]=useState("");
+  const [checked,setChecked]=useState(false);
+  const ok = val.trim().toLowerCase()===((q.answer||"").trim().toLowerCase());
+  return <QCard label="Попълни липсващото" question={q.question}>
+    <input value={val} onChange={e=>{setVal(e.target.value);setChecked(false);}}
+      placeholder="Твоят отговор…"
+      className="w-full bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read text-sm placeholder:text-stone-500 focus:outline-none focus:border-rose-600"/>
+    {!checked ? <CheckBtn onClick={()=>setChecked(true)}/> : <Result ok={ok} text={`Верен отговор: ${q.answer}`}/>}
+  </QCard>;
+}
+
+function FreeTextQ({q}){
+  const [val,setVal]=useState("");
+  const [revealed,setRevealed]=useState(false);
+  return <QCard label="Свободен отговор" question={q.question}>
+    <input value={val} onChange={e=>setVal(e.target.value)}
+      placeholder="Твоят отговор…"
+      className="w-full bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read text-sm placeholder:text-stone-500 focus:outline-none focus:border-rose-600"/>
+    {!revealed ? <CheckBtn onClick={()=>setRevealed(true)}>Покажи отговор</CheckBtn> : <p className="font-mono-cal text-xs text-stone-400">Очакван отговор: {q.answer}</p>}
+  </QCard>;
+}
+
+function OrderQ({q}){
+  const [order,setOrder]=useState(()=>{
+    const arr=[...(q.items||[])];
+    for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}
+    return arr;
+  });
+  const [checked,setChecked]=useState(false);
+  function move(i,dir){
+    setChecked(false);
+    const arr=[...order]; const j=i+dir;
+    if(j<0||j>=arr.length)return;
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+    setOrder(arr);
+  }
+  const ok = JSON.stringify(order)===JSON.stringify(q.items||[]);
+  return <QCard label="Подредба" question={q.question}>
+    <div className="space-y-1">
+      {order.map((item,i)=>(
+        <div key={item+i} className="flex items-center gap-2 px-3 py-2 rounded border border-stone-700 text-sm font-read text-stone-200">
+          <span className="flex flex-col gap-0.5 shrink-0">
+            <button onClick={()=>move(i,-1)} className="text-stone-500 hover:text-rose-400 leading-none text-xs">▲</button>
+            <button onClick={()=>move(i,1)} className="text-stone-500 hover:text-rose-400 leading-none text-xs">▼</button>
+          </span>
+          {item}
+        </div>
+      ))}
+    </div>
+    {!checked ? <CheckBtn onClick={()=>setChecked(true)}/> : <Result ok={ok} text={`Вярна подредба: ${(q.items||[]).join(" → ")}`}/>}
+  </QCard>;
+}
+
+function MatchQ({q}){
+  const pairs=q.pairs||[];
+  const rightOptions=pairs.map(p=>p.right);
+  const [sel,setSel]=useState(()=>pairs.map(()=>""));
+  const [checked,setChecked]=useState(false);
+  function setOne(i,val){ setChecked(false); setSel(s=>s.map((v,idx)=>idx===i?val:v)); }
+  const ok = pairs.every((p,i)=>sel[i]===p.right);
+  return <QCard label="Свързване на двойки" question={q.question}>
+    <div className="space-y-2">
+      {pairs.map((p,i)=>(
+        <div key={i} className="flex items-center gap-2 text-sm">
+          <span className="font-read text-stone-200 flex-1">{p.left}</span>
+          <select value={sel[i]} onChange={e=>setOne(i,e.target.value)}
+            className="bg-stone-900 border border-stone-700 rounded px-2 py-1.5 text-stone-100 font-read text-sm focus:outline-none focus:border-rose-600">
+            <option value="">— избери —</option>
+            {rightOptions.map((r,j)=><option key={j} value={r}>{r}</option>)}
+          </select>
+        </div>
+      ))}
+    </div>
+    {!checked ? <CheckBtn onClick={()=>setChecked(true)}/> : <Result ok={ok} text={`Верни двойки: ${pairs.map(p=>`${p.left} — ${p.right}`).join("; ")}`}/>}
+  </QCard>;
 }
 
 function ConfessionPanel({loading,confession,tuned,onTune}){
