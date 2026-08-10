@@ -413,7 +413,7 @@ async function genTestQuestions(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
     `Design a small TEST about "${subtopicName}" (within the broader context of "${topicLabel}") with exactly 6 questions, one of each type below. Ground every question strictly in the actual content of "${subtopicName}" — never generic trivia unrelated to it.${levelPart}
-Write everything in the SAME language as the topic/subtopic above (detect it and match exactly). Never use the " character inside any text. Use " || " as separator between list items, and " :: " between a matched pair's two sides — never use either separator inside the item text itself.
+Write everything in the SAME language as the topic/subtopic above (detect it and match exactly). Never use the " character inside any text. Use " || " as separator between list items, and " :: " between a matched pair's two sides — never use either separator inside the item text itself, and never use the literal string "###" inside any answer text.
 
 1. SINGLE-CHOICE: one question, 4 options (only one correct).
 2. MULTI-CHOICE: one question, 4-5 options (2 or more correct).
@@ -422,42 +422,46 @@ Write everything in the SAME language as the topic/subtopic above (detect it and
 5. ORDERING: one question asking to order 4-5 items correctly (steps, chronology, size, etc) — give the items in their CORRECT order.
 6. MATCHING: one question asking to match 3-4 pairs of related items — give the pairs.
 
-Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
-###Q1### single-choice question text ###Q1_END###
-###Q1OPTS### option1 || option2 || option3 || option4 ###Q1OPTS_END###
-###Q1CORRECT### correct option number, 1-4 ###Q1CORRECT_END###
-###Q2### multi-choice question text ###Q2_END###
-###Q2OPTS### option1 || option2 || option3 || option4 || option5 ###Q2OPTS_END###
-###Q2CORRECT### correct option numbers comma-separated e.g. 1,3 ###Q2CORRECT_END###
-###Q3### fill-in-the-blank sentence with ___ as the blank ###Q3_END###
-###Q3ANSWER### correct word or phrase ###Q3ANSWER_END###
-###Q4### free-text or number question ###Q4_END###
-###Q4ANSWER### expected answer ###Q4ANSWER_END###
-###Q5### ordering question instruction ###Q5_END###
-###Q5ITEMS### item1 || item2 || item3 || item4 (in CORRECT order) ###Q5ITEMS_END###
-###Q6### matching question instruction ###Q6_END###
-###Q6PAIRS### left1 :: right1 || left2 :: right2 || left3 :: right3 || left4 :: right4 ###Q6PAIRS_END###`,
-    2600
+Output the 14 fields below IN THIS EXACT ORDER, each starting with its marker, nothing before the first marker or after the final ###END###:
+###Q1### (single-choice question text)
+###Q1OPTS### (4 options separated by " || ")
+###Q1CORRECT### (correct option number, 1-4)
+###Q2### (multi-choice question text)
+###Q2OPTS### (4-5 options separated by " || ")
+###Q2CORRECT### (correct option numbers comma-separated, e.g. 1,3)
+###Q3### (fill-in-the-blank sentence with ___ as the blank)
+###Q3ANSWER### (correct word or phrase)
+###Q4### (free-text or number question)
+###Q4ANSWER### (expected answer)
+###Q5### (ordering question instruction)
+###Q5ITEMS### (4-5 items separated by " || ", in CORRECT order)
+###Q6### (matching question instruction)
+###Q6PAIRS### (3-4 pairs as "left :: right" separated by " || ")
+###END###`,
+    2800
   );
+  const fieldNames = ["Q1","Q1OPTS","Q1CORRECT","Q2","Q2OPTS","Q2CORRECT","Q3","Q3ANSWER","Q4","Q4ANSWER","Q5","Q5ITEMS","Q6","Q6PAIRS"];
+  const f = extractSequentialFields(raw, fieldNames);
+
   const num=(s,fb)=>{const n=parseInt((s||"").trim(),10);return isNaN(n)?fb:n;};
   const splitList=s=>(s||"").split("||").map(x=>x.trim()).filter(Boolean);
 
-  const q1opts = splitList(extractField(raw,"Q1OPTS"));
-  const q2opts = splitList(extractField(raw,"Q2OPTS"));
-  const q2correctRaw = extractField(raw,"Q2CORRECT").split(",").map(x=>num(x,1)-1).filter(n=>n>=0);
-  const q5items = splitList(extractField(raw,"Q5ITEMS"));
-  const q6pairs = splitList(extractField(raw,"Q6PAIRS")).map(p=>{
+  const q1opts = splitList(f.Q1OPTS);
+  const q2opts = splitList(f.Q2OPTS);
+  const q2correctRaw = (f.Q2CORRECT||"").split(",").map(x=>num(x,1)-1).filter(n=>n>=0);
+  const q5items = splitList(f.Q5ITEMS);
+  const q6pairs = splitList(f.Q6PAIRS).map(p=>{
     const [l,r]=p.split("::").map(x=>(x||"").trim());
     return {left:l||"", right:r||""};
   });
 
   return [
-    { type:"single", question:extractField(raw,"Q1"), options:q1opts, correctIndex:num(extractField(raw,"Q1CORRECT"),1)-1 },
-    { type:"multi", question:extractField(raw,"Q2"), options:q2opts, correctIndices:q2correctRaw },
-    { type:"fill", question:extractField(raw,"Q3"), answer:extractField(raw,"Q3ANSWER") },
-    { type:"free", question:extractField(raw,"Q4"), answer:extractField(raw,"Q4ANSWER") },
-    { type:"order", question:extractField(raw,"Q5"), items:q5items },
-    { type:"match", question:extractField(raw,"Q6"), pairs:q6pairs },
+    { type:"single", question:f.Q1, options:q1opts, correctIndex:num(f.Q1CORRECT,1)-1 },
+    { type:"multi", question:f.Q2, options:q2opts, correctIndices:q2correctRaw },
+    { type:"fill", question:f.Q3, answer:f.Q3ANSWER },
+    { type:"free", question:f.Q4, answer:f.Q4ANSWER },
+    { type:"order", question:f.Q5, items:q5items },
+    { type:"match", question:f.Q6, pairs:q6pairs },
   ];
 }
 
@@ -1298,90 +1302,72 @@ function Aperture() {
   }
 
   // T.5: generate adapted topic
-  async function generateAllContent(){
+  async function generateAllContentForSubtopic(subIdx){
     if(!currentTopic||!planData) return;
     setGenAll(true); setGenAllProgress("");
     try{
       let curHierarchy = hierarchy;
       let curPlan = planData;
       const topicPrompt = currentTopic.prompt||currentTopic.name;
-      const topLevel = curPlan.activeLevel;
-      const topLevelMeta = LEVELS.find(l=>l.level===topLevel);
+      let subItem = curHierarchy[subIdx];
+      let subsubList = getSubsubList(subItem);
+      const subLevel = subItem.activeLevel;
+      const subLevelMeta = LEVELS.find(l=>l.level===subLevel);
 
-      for(let si=0; si<curHierarchy.length; si++){
-        let subItem = curHierarchy[si];
-        setGenAllProgress(`Тема ${si+1}/${curHierarchy.length}: ${subItem.name}`);
-        let subsubList = getSubsubList(subItem);
-        if(!subsubList || !subsubList.length){
-          const rawSubsubtopics = await genSubsubtopicsFor(topicPrompt, subItem.name, topLevelMeta);
-          const overviewItem = { name:"Общ преглед", isOverview:true };
-          const examplesItem = { name:"Практически примери", isExamples:true };
-          const actionPlanItem = { name:"Rework", isActionPlan:true };
-          const socraticItem = { name:"Сократически диалог", isSocratic:true };
-          const testItem = { name:"Тест", isTest:true };
-          const confessionItem = { name:"Признание на AI", isConfession:true };
-          subsubList = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, testItem, confessionItem];
-          subItem = {...subItem, byLevel:{...subItem.byLevel, [topLevel]:subsubList}, activeLevel:topLevel};
-          curHierarchy = curHierarchy.map((s,idx)=>idx===si?subItem:s);
-          curPlan = {...curPlan, byLevel:{...curPlan.byLevel,[topLevel]:curHierarchy}};
-          setHierarchy(curHierarchy); setPlanData(curPlan);
-          await saveJSON(`plan:${currentTopic.id}`, curPlan);
-        }
+      if(!subsubList || !subsubList.length) return; // subtopic must already have a chosen level/units
 
-        const subLevel = subItem.activeLevel;
-        const subLevelMeta = LEVELS.find(l=>l.level===subLevel);
-        const allKeys = await loadJSON("allNodeKeys", []);
-        let keysUpdated = [...allKeys];
+      setGenAllProgress(`${subItem.name}…`);
+      const allKeys = await loadJSON("allNodeKeys", []);
+      let keysUpdated = [...allKeys];
 
-        for(let ui=0; ui<subsubList.length; ui++){
-          const item = subsubList[ui];
-          if(isCuriousItem(item)) continue; // dynamic, only appears from user questions
-          const uName = subName(item);
-          setGenAllProgress(`${subItem.name} — ${uName}`);
-          const id = `${currentTopic.id}/${slugify(subItem.name)}/L${subLevel}/${slugify(uName)}`;
-          const existing = await loadJSON(`node:${id}`, null);
+      for(let ui=0; ui<subsubList.length; ui++){
+        const item = subsubList[ui];
+        if(isCuriousItem(item)) continue; // dynamic, only appears from user questions
+        const uName = subName(item);
+        setGenAllProgress(`${subItem.name} — ${uName}`);
+        const id = `${currentTopic.id}/${slugify(subItem.name)}/L${subLevel}/${slugify(uName)}`;
+        const existing = await loadJSON(`node:${id}`, null);
 
-          if(isOverviewItem(item)){
-            if(!existing?.essay){
-              const essay = await genSubtopicEssay(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), essay, essayLevel:subLevel, tunedEssay:existing?.tunedEssay||false});
-            }
-          } else if(isExamplesItem(item)){
-            if(!existing?.examples){
-              const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
-            }
-          } else if(isActionPlanItem(item)){
-            if(!existing?.stages?.length){
-              const stages = await genActionPlan(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), stages, actionPlanLevel:subLevel, tunedActionPlan:existing?.tunedActionPlan||false});
-            }
-          } else if(isSocraticItem(item)){
-            if(!existing?.steps?.length){
-              const steps = await genSocraticDialogue(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), steps, socraticLevel:subLevel, tunedSocratic:existing?.tunedSocratic||false});
-            }
-          } else if(isTestItem(item)){
-            if(!existing?.testQuestions?.length){
-              const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
-            }
-          } else if(isConfessionItem(item)){
-            if(!existing?.confession){
-              const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
-            }
-          } else {
-            if(!existing?.abstraction?.length){
-              const abstraction = await genAbstraction(topicPrompt, subItem.name, uName, subLevel);
-              await saveJSON(`node:${id}`, {...(existing||{personality:[],blend:null,tunedPersonality:[],tunedBlendKey:null,unitConfused:false}), abstraction, tunedAbstraction:existing?.tunedAbstraction||[]});
-            }
+        if(isOverviewItem(item)){
+          if(!existing?.essay){
+            const essay = await genSubtopicEssay(topicPrompt, subItem.name, subLevelMeta);
+            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), essay, essayLevel:subLevel, tunedEssay:existing?.tunedEssay||false});
           }
-          if(!keysUpdated.includes(id)){ keysUpdated=[...keysUpdated,id]; await saveJSON("allNodeKeys", keysUpdated); }
+        } else if(isExamplesItem(item)){
+          if(!existing?.examples){
+            const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
+            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
+          }
+        } else if(isActionPlanItem(item)){
+          if(!existing?.stages?.length){
+            const stages = await genActionPlan(topicPrompt, subItem.name, subLevelMeta);
+            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), stages, actionPlanLevel:subLevel, tunedActionPlan:existing?.tunedActionPlan||false});
+          }
+        } else if(isSocraticItem(item)){
+          if(!existing?.steps?.length){
+            const steps = await genSocraticDialogue(topicPrompt, subItem.name, subLevelMeta);
+            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), steps, socraticLevel:subLevel, tunedSocratic:existing?.tunedSocratic||false});
+          }
+        } else if(isTestItem(item)){
+          if(!existing?.testQuestions?.length){
+            const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
+            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
+          }
+        } else if(isConfessionItem(item)){
+          if(!existing?.confession){
+            const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
+            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
+          }
+        } else {
+          if(!existing?.abstraction?.length){
+            const abstraction = await genAbstraction(topicPrompt, subItem.name, uName, subLevel);
+            await saveJSON(`node:${id}`, {...(existing||{personality:[],blend:null,tunedPersonality:[],tunedBlendKey:null,unitConfused:false}), abstraction, tunedAbstraction:existing?.tunedAbstraction||[]});
+          }
         }
+        if(!keysUpdated.includes(id)){ keysUpdated=[...keysUpdated,id]; await saveJSON("allNodeKeys", keysUpdated); }
       }
       setGenAllProgress("");
-    }catch(e){ setHomeError(`Грешка при масово генериране: ${e.message}`); }
+    }catch(e){ setNodeError(`Грешка при масово генериране: ${e.message}`); }
     finally{ setGenAll(false); }
   }
 
@@ -1476,8 +1462,7 @@ function Aperture() {
               allTopics={topics}
               onNavigateTopic={t=>{resumeTopic(t);}}
               onChangeLevel={openTopicLevelPicker}
-              currentLevel={planData?.activeLevel}
-              onGenerateAll={generateAllContent} generatingAll={generatingAll} genAllProgress={genAllProgress}/>
+              currentLevel={planData?.activeLevel}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
@@ -1489,7 +1474,8 @@ function Aperture() {
               onBack={()=>{setSubtopicIdx(null);setSubtopicOverview(null);setNodeId(null);setNodeData(null);}}
               onPick={i=>openNode(subtopicIdx,i)}
               onChangeLevel={()=>openSubtopicLevelPicker(subtopicIdx)}
-              currentLevel={hierarchy[subtopicIdx].activeLevel}/>
+              currentLevel={hierarchy[subtopicIdx].activeLevel}
+              onGenerateAll={()=>generateAllContentForSubtopic(subtopicIdx)} generatingAll={generatingAll} genAllProgress={genAllProgress}/>
           ):(
             <NodeView
               topic={topicLabel(currentTopic)}
@@ -1586,7 +1572,7 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress}){
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -1608,13 +1594,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
         <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
       </button>}
-      {onGenerateAll && <button onClick={onGenerateAll} disabled={generatingAll}
-        className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-500 hover:border-amber-500 disabled:opacity-60 w-fit">
-        {generatingAll?<Loader2 size={12} className="animate-spin"/>:<Sparkles size={12}/>}
-        Генерирай цялото съдържание
-      </button>}
     </div>
-    {generatingAll && genAllProgress && <p className="font-mono-cal text-[11px] text-stone-500">{genAllProgress}</p>}
 
     {/* T.6: related topic links */}
     {(parentTopic||childTopic)&&<div className="space-y-1">
@@ -1667,7 +1647,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   </div>;
 }
 
-function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
+function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress}){
   const list = getDisplayList(subtopic) || [];
   const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
   return <div className="space-y-4">
@@ -1675,10 +1655,18 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
       <ChevronLeft size={16}/> {topicLabel(topic)}
     </button>
     <h2 className="font-display text-xl font-bold text-stone-100">{subtopic.name}</h2>
-    {onChangeLevel && <button onClick={onChangeLevel}
-      className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
-      <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
-    </button>}
+    <div className="flex flex-wrap gap-2">
+      {onChangeLevel && <button onClick={onChangeLevel}
+        className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
+        <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
+      </button>}
+      {onGenerateAll && <button onClick={onGenerateAll} disabled={generatingAll}
+        className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-500 hover:border-amber-500 disabled:opacity-60 w-fit">
+        {generatingAll?<Loader2 size={12} className="animate-spin"/>:<Sparkles size={12}/>}
+        Генерирай цялото съдържание
+      </button>}
+    </div>
+    {generatingAll && genAllProgress && <p className="font-mono-cal text-[11px] text-stone-500">{genAllProgress}</p>}
     <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Единици</div>
     <div className="space-y-1">
       {list.map((s,i)=>{
