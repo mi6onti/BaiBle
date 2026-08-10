@@ -625,6 +625,7 @@ function Aperture() {
   const [generatingAdapted,setGA]      = useState(false);
   const [generatingAll,setGenAll]      = useState(false);
   const [genAllProgress,setGenAllProgress] = useState("");
+  const [genAllError,setGenAllError] = useState(null);
   const [dbTest,setDbTest]             = useState(null);
   const [dbTesting,setDbTesting]       = useState(false);
   const [showTrash,setShowTrash]       = useState(false);
@@ -1304,7 +1305,8 @@ function Aperture() {
   // T.5: generate adapted topic
   async function generateAllContentForSubtopic(subIdx){
     if(!currentTopic||!planData) return;
-    setGenAll(true); setGenAllProgress("");
+    setGenAll(true); setGenAllProgress(""); setGenAllError(null);
+    const failures=[];
     try{
       let curHierarchy = hierarchy;
       let curPlan = planData;
@@ -1326,48 +1328,58 @@ function Aperture() {
         const uName = subName(item);
         setGenAllProgress(`${subItem.name} — ${uName}`);
         const id = `${currentTopic.id}/${slugify(subItem.name)}/L${subLevel}/${slugify(uName)}`;
-        const existing = await loadJSON(`node:${id}`, null);
 
-        if(isOverviewItem(item)){
-          if(!existing?.essay){
-            const essay = await genSubtopicEssay(topicPrompt, subItem.name, subLevelMeta);
-            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), essay, essayLevel:subLevel, tunedEssay:existing?.tunedEssay||false});
+        // each unit gets its own try/catch — one failure must not abort the rest of the batch
+        try{
+          const existing = await loadJSON(`node:${id}`, null);
+
+          if(isOverviewItem(item)){
+            if(!existing?.essay){
+              const essay = await genSubtopicEssay(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), essay, essayLevel:subLevel, tunedEssay:existing?.tunedEssay||false});
+            }
+          } else if(isExamplesItem(item)){
+            if(!existing?.examples){
+              const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
+            }
+          } else if(isActionPlanItem(item)){
+            if(!existing?.stages?.length){
+              const stages = await genActionPlan(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), stages, actionPlanLevel:subLevel, tunedActionPlan:existing?.tunedActionPlan||false});
+            }
+          } else if(isSocraticItem(item)){
+            if(!existing?.steps?.length){
+              const steps = await genSocraticDialogue(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), steps, socraticLevel:subLevel, tunedSocratic:existing?.tunedSocratic||false});
+            }
+          } else if(isTestItem(item)){
+            if(!existing?.testQuestions?.length){
+              const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
+            }
+          } else if(isConfessionItem(item)){
+            if(!existing?.confession){
+              const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
+            }
+          } else {
+            if(!existing?.abstraction?.length){
+              const abstraction = await genAbstraction(topicPrompt, subItem.name, uName, subLevel);
+              await saveJSON(`node:${id}`, {...(existing||{personality:[],blend:null,tunedPersonality:[],tunedBlendKey:null,unitConfused:false}), abstraction, tunedAbstraction:existing?.tunedAbstraction||[]});
+            }
           }
-        } else if(isExamplesItem(item)){
-          if(!existing?.examples){
-            const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
-            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
-          }
-        } else if(isActionPlanItem(item)){
-          if(!existing?.stages?.length){
-            const stages = await genActionPlan(topicPrompt, subItem.name, subLevelMeta);
-            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), stages, actionPlanLevel:subLevel, tunedActionPlan:existing?.tunedActionPlan||false});
-          }
-        } else if(isSocraticItem(item)){
-          if(!existing?.steps?.length){
-            const steps = await genSocraticDialogue(topicPrompt, subItem.name, subLevelMeta);
-            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), steps, socraticLevel:subLevel, tunedSocratic:existing?.tunedSocratic||false});
-          }
-        } else if(isTestItem(item)){
-          if(!existing?.testQuestions?.length){
-            const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
-            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
-          }
-        } else if(isConfessionItem(item)){
-          if(!existing?.confession){
-            const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
-            await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
-          }
-        } else {
-          if(!existing?.abstraction?.length){
-            const abstraction = await genAbstraction(topicPrompt, subItem.name, uName, subLevel);
-            await saveJSON(`node:${id}`, {...(existing||{personality:[],blend:null,tunedPersonality:[],tunedBlendKey:null,unitConfused:false}), abstraction, tunedAbstraction:existing?.tunedAbstraction||[]});
-          }
+          if(!keysUpdated.includes(id)){ keysUpdated=[...keysUpdated,id]; await saveJSON("allNodeKeys", keysUpdated); }
+        }catch(itemErr){
+          failures.push(uName);
+          console.error(`generateAll failed for "${uName}":`, itemErr);
+          // brief pause before moving on, in case it was a transient rate-limit
+          await sleep(800);
         }
-        if(!keysUpdated.includes(id)){ keysUpdated=[...keysUpdated,id]; await saveJSON("allNodeKeys", keysUpdated); }
       }
       setGenAllProgress("");
-    }catch(e){ setNodeError(`Грешка при масово генериране: ${e.message}`); }
+      if(failures.length) setGenAllError(`Генерирано с изключение на: ${failures.join(", ")}. Можеш да отвориш всяка от тях поотделно за да я генерираш.`);
+    }catch(e){ setGenAllError(`Грешка при масово генериране: ${e.message}`); }
     finally{ setGenAll(false); }
   }
 
@@ -1475,7 +1487,7 @@ function Aperture() {
               onPick={i=>openNode(subtopicIdx,i)}
               onChangeLevel={()=>openSubtopicLevelPicker(subtopicIdx)}
               currentLevel={hierarchy[subtopicIdx].activeLevel}
-              onGenerateAll={()=>generateAllContentForSubtopic(subtopicIdx)} generatingAll={generatingAll} genAllProgress={genAllProgress}/>
+              onGenerateAll={()=>generateAllContentForSubtopic(subtopicIdx)} generatingAll={generatingAll} genAllProgress={genAllProgress} genAllError={genAllError}/>
           ):(
             <NodeView
               topic={topicLabel(currentTopic)}
@@ -1647,7 +1659,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   </div>;
 }
 
-function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress}){
+function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress,genAllError}){
   const list = getDisplayList(subtopic) || [];
   const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
   return <div className="space-y-4">
@@ -1667,6 +1679,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
       </button>}
     </div>
     {generatingAll && genAllProgress && <p className="font-mono-cal text-[11px] text-stone-500">{genAllProgress}</p>}
+    {genAllError && <ErrorNote message={genAllError}/>}
     <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Единици</div>
     <div className="space-y-1">
       {list.map((s,i)=>{
