@@ -144,12 +144,20 @@ async function genHierarchy(prompt, learningProfile) {
 }
 
 async function genAbstraction(topic, sub, subsub) {
-  const levels=[];
-  for(const m of LEVELS){
-    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) at level "${m.label}" (${m.hint}). Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
-    levels.push({level:m.level,text:extractField(raw,"TEXT")});
-  }
-  return levels;
+  const levelDescs = LEVELS.map(m=>`Level ${m.level} ("${m.label}", ${m.hint})`).join("; ");
+  const raw = await callClaudeRaw(
+    `Topic: "${topic}" > "${sub}" > "${subsub}".
+Write 5 explanations of this, one for each level below, EACH 45-70 words:
+${levelDescs}
+Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Each level should be genuinely distinct in register/depth from the others, not a reworded repeat.
+Write all 5 in the SAME language as the topic chain above (detect it and match exactly).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###L1### level 1 text ###L2### level 2 text ###L3### level 3 text ###L4### level 4 text ###L5### level 5 text ###END###`,
+    2200
+  );
+  const fields = extractSequentialFields(raw, ["L1","L2","L3","L4","L5"]);
+  return LEVELS.map(m=>({level:m.level, text:fields[`L${m.level}`]||""}));
 }
 
 async function genAllPersonalities(topic, sub, subsub) {
@@ -1289,7 +1297,7 @@ function Aperture() {
               onRetryLbt={()=>doLoadLbt(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
-              curiosityCount={hierarchy[subtopicIdx].curiosityQuestions?.length||0}
+              curiosityQuestions={hierarchy[subtopicIdx].curiosityQuestions||[]}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
               onTuneEssay={tuneEssay}
@@ -1476,7 +1484,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel}){
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onRetryCurious,onAsk,curiosityCount,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isLbt,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryLbt,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneLbt,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1495,7 +1503,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
         </button>
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryEssay}/>}
-      <EssayPanel loading={loadingLevels} essay={nodeData?.essay||""} tuned={!!nodeData?.tunedEssay} onTune={onTuneEssay} onAsk={onAsk} curiosityCount={curiosityCount}/>
+      <EssayPanel loading={loadingLevels} essay={nodeData?.essay||""} tuned={!!nodeData?.tunedEssay} onTune={onTuneEssay} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
     </div>;
   }
 
@@ -1624,11 +1632,13 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
   </div>;
 }
 
-function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityCount}){
+function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityQuestions}){
   const [q,setQ]=useState("");
+  const [open,setOpen]=useState(false);
   if(loading) return <Spinner label="пиша есе (500-800 думи)…"/>;
   if(!essay) return null;
   const paragraphs = essay.split(/\n\s*\n/).filter(p=>p.trim());
+  const questions = curiosityQuestions||[];
   function submit(){
     const t=q.trim();
     if(!t) return;
@@ -1636,26 +1646,43 @@ function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityCount}){
     setQ("");
   }
   return <div className="space-y-4">
+    <div className="sticky top-2 z-10">
+      <div className="rounded border border-indigo-800 bg-stone-950/95 backdrop-blur p-2 shadow-lg shadow-black/40">
+        <button onClick={()=>setOpen(o=>!o)}
+          className="w-full flex items-center justify-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide bg-indigo-700 hover:bg-indigo-600 text-white font-medium py-2 rounded transition-colors">
+          <Sparkles size={12}/> Задай въпрос
+        </button>
+        {open && <div className="flex gap-2 mt-2">
+          <input value={q} onChange={e=>setQ(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter")submit();}}
+            autoFocus
+            placeholder="Какъв е въпросът ти…"
+            className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read text-sm placeholder:text-stone-500 focus:outline-none focus:border-indigo-600"/>
+          <button onClick={submit}
+            className="font-mono-cal text-xs uppercase tracking-wide bg-indigo-700 hover:bg-indigo-600 text-white font-medium px-3 rounded transition-colors">
+            Изпрати
+          </button>
+        </div>}
+      </div>
+    </div>
     <div className="space-y-4">
       {paragraphs.map((p,i)=>(
         <p key={i} className="font-read text-stone-200 leading-relaxed text-lg">{p.trim()}</p>
       ))}
     </div>
-    <div className="rounded border border-indigo-900/40 bg-indigo-950/10 p-3 space-y-2">
-      <div className="font-mono-cal text-xs uppercase tracking-wide text-indigo-400">Имаш въпрос?</div>
-      <div className="flex gap-2">
-        <input value={q} onChange={e=>setQ(e.target.value)}
-          onKeyDown={e=>{if(e.key==="Enter")submit();}}
-          placeholder="Задай въпрос за тази тема…"
-          className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read text-sm placeholder:text-stone-500 focus:outline-none focus:border-indigo-600"/>
-        <button onClick={submit}
-          className="font-mono-cal text-xs uppercase tracking-wide bg-indigo-700 hover:bg-indigo-600 text-white font-medium px-3 rounded transition-colors">
-          Задай въпрос
-        </button>
-      </div>
-      {curiosityCount>0 && <p className="font-mono-cal text-[11px] text-stone-500">Зададени въпроси: {curiosityCount} — виж ги в „Любопитно" най-долу.</p>}
-    </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+    {questions.length>0 && <div className="rounded border border-indigo-900/40 bg-indigo-950/10 p-3 space-y-2">
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-indigo-400">Твоите въпроси ({questions.length})</div>
+      <div className="space-y-1.5">
+        {questions.map((item,i)=>(
+          <div key={item.id||i} className="flex items-center gap-2 text-sm">
+            <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${item.answered?"bg-emerald-500":"bg-stone-600"}`}/>
+            <span className="font-read text-stone-300">{item.q}</span>
+          </div>
+        ))}
+      </div>
+      <p className="font-mono-cal text-[11px] text-stone-500">Отговорите се появяват в „Любопитно" най-долу.</p>
+    </div>}
   </div>;
 }
 
