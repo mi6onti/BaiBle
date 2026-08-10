@@ -353,18 +353,18 @@ Output ONLY the examples, wrapped exactly like this and nothing else before or a
 async function genActionPlan(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-    `Design a 5-STAGE ACTION PLAN for actually achieving/mastering "${subtopicName}" (within the broader context of "${topicLabel}") end to end — something concrete to build, practice, or accomplish, not just read about.
-Stage 1 must be the smallest, simplest possible concrete starting point. Each following stage builds directly on the previous one, adding real capability/scope. Stage 5 must represent the full, complete realization of "${subtopicName}" — the actual end goal, fully accomplished.
-Ground every stage in concrete, specific actions or milestones tied to this exact subject — not generic advice.${levelPart}
-For each stage, give a SHORT descriptive title (3-7 words naming what that specific stage actually is — never a generic label like "Stage 1") and a body of exactly 2 to 5 sentences describing precisely what to build/do/practice at this stage and why it's the right next increment.
+    `Design a "REWORK" — 5 UNCONVENTIONAL, creative, sometimes experimental approaches to actually getting real results with "${subtopicName}" (within the broader context of "${topicLabel}"), for someone who always looks for a better way, dislikes following the textbook/official docs/standard instructions, and wants more value and efficiency than the conventional path offers.
+Each idea must genuinely challenge or break from the standard/expected way of learning or doing this — a shortcut most people don't know, a contrarian reframing, an unusual technique borrowed from elsewhere, or an experimental method worth trying — never generic "think outside the box" fluff, always something specific and actually usable tied to this exact subject.
+Escalate boldness across the 5: idea 1 is a simple but non-obvious tweak or hack usable right away; idea 5 is a genuinely radical rethink of the standard approach to "${subtopicName}" entirely.${levelPart}
+For each idea, give a SHORT punchy title (3-7 words, provocative or memorable — never a generic label like "Idea 1") and a body of exactly 2 to 5 sentences explaining the idea and specifically why/how it beats the conventional approach.
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
-###S1T### stage 1 title ###S1B### stage 1 body (2-5 sentences) ###S2T### stage 2 title ###S2B### stage 2 body ###S3T### stage 3 title ###S3B### stage 3 body ###S4T### stage 4 title ###S4B### stage 4 body ###S5T### stage 5 title ###S5B### stage 5 body ###END###`,
+###S1T### idea 1 title ###S1B### idea 1 body (2-5 sentences) ###S2T### idea 2 title ###S2B### idea 2 body ###S3T### idea 3 title ###S3B### idea 3 body ###S4T### idea 4 title ###S4B### idea 4 body ###S5T### idea 5 title ###S5B### idea 5 body ###END###`,
     2200
   );
   const fields = extractSequentialFields(raw, ["S1T","S1B","S2T","S2B","S3T","S3B","S4T","S4B","S5T","S5B"]);
-  return [1,2,3,4,5].map(n=>({title:fields[`S${n}T`]||`Етап ${n}`, body:fields[`S${n}B`]||""}));
+  return [1,2,3,4,5].map(n=>({title:fields[`S${n}T`]||`Идея ${n}`, body:fields[`S${n}B`]||""}));
 }
 
 // Socratic-style dialogue: a sequence of guiding questions (not direct exposition) leading the learner to discover the idea themselves
@@ -403,17 +403,24 @@ Output EXACTLY in this format, nothing before the first marker or after the last
 }
 
 // answers a specific question the learner asked while reading the Overview essay
-async function genCuriosityAnswer(topicLabel, subtopicName, question, levelHint) {
+// answers ALL currently-unanswered questions in ONE request (old answered ones untouched) — batched by "session", not per-question
+async function genCuriosityAnswersBatch(topicLabel, subtopicName, questions, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const questionsList = questions.map((q,i)=>`${i+1}. ${q}`).join("\n");
+  const markerNames = questions.map((_,i)=>`A${i+1}`);
+  const markerInstructions = markerNames.map((m,i)=>`###${m}### answer to question ${i+1}`).join(" ");
   const raw = await callClaudeRaw(
-    `The learner is studying "${subtopicName}" (within the broader context of "${topicLabel}") and asked this specific question while reading: "${question}"
-Answer it directly and clearly (60-120 words), staying strictly within the exact context of "${topicLabel}" and "${subtopicName}" — never drift to an unrelated generic example.${levelPart}
-Write in the SAME language as the question above (detect it and match exactly).
+    `The learner is studying "${subtopicName}" (within the broader context of "${topicLabel}") and asked these ${questions.length} question(s) while reading:
+${questionsList}
+Answer EACH question directly and clearly (60-120 words each), staying strictly within the exact context of "${topicLabel}" and "${subtopicName}" — never drift to unrelated generic examples.${levelPart}
+Write in the SAME language as the questions above (detect it and match exactly).
 Never use the " character inside the text.
-Output ONLY the answer, wrapped exactly like this and nothing else before or after: ###TEXT###the answer here###TEXT_END###`,
-    900
+Output EXACTLY in this format, one marker pair per question in the same order, nothing before the first marker or after the last one, no extra commentary:
+${markerInstructions} ###END###`,
+    Math.min(3800, 500 + questions.length*450)
   );
-  return extractField(raw, "TEXT");
+  const fields = extractSequentialFields(raw, markerNames);
+  return questions.map((q,i)=>fields[`A${i+1}`]||"");
 }
 
 
@@ -828,7 +835,7 @@ function Aperture() {
       const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
-      const actionPlanItem = { name:"План за действие", isActionPlan:true };
+      const actionPlanItem = { name:"Rework", isActionPlan:true };
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const lbtItem = { name:"Learning by Thinking", isLbt:true };
       const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, lbtItem];
@@ -1052,23 +1059,28 @@ function Aperture() {
   }
 
   async function generateCuriosityAnswers(subIdx){
+    const subItem = hierarchy[subIdx];
+    const qs = subItem.curiosityQuestions||[];
+    const unansweredIdx = qs.map((q,i)=>q.answered?-1:i).filter(i=>i!==-1);
+    if(!unansweredIdx.length) return;
+
     setLoadingL(true); setNodeError(null);
     try{
-      const subItem = hierarchy[subIdx];
       const levelMeta = LEVELS.find(l=>l.level===subItem.activeLevel);
-      let qs = [...(subItem.curiosityQuestions||[])];
-      for(let i=0;i<qs.length;i++){
-        if(qs[i].answered) continue;
-        const answer = await genCuriosityAnswer(currentTopic.prompt||currentTopic.name, subItem.name, qs[i].q, levelMeta);
-        qs = qs.map((q,idx)=> idx===i ? {...q, answer, answered:true} : q);
-        const updatedSub = {...hierarchy[subIdx], curiosityQuestions:qs};
-        const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
-        setHierarchy(updatedHierarchy);
-        setNodeData({questions:qs});
-        const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
-        setPlanData(updatedPlan);
-        await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
-      }
+      const unansweredTexts = unansweredIdx.map(i=>qs[i].q);
+      const answers = await genCuriosityAnswersBatch(currentTopic.prompt||currentTopic.name, subItem.name, unansweredTexts, levelMeta);
+
+      const updatedQs = qs.map((q,i)=>{
+        const pos = unansweredIdx.indexOf(i);
+        return pos===-1 ? q : {...q, answer:answers[pos]||"", answered:true};
+      });
+      const updatedSub = {...subItem, curiosityQuestions:updatedQs};
+      const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
+      setHierarchy(updatedHierarchy);
+      setNodeData({questions:updatedQs});
+      const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+      setPlanData(updatedPlan);
+      await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
     }catch(e){setNodeError(`Грешка: ${e.message}`);}
     finally{setLoadingL(false);}
   }
@@ -1542,6 +1554,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
           {unitConfused?"Неясно ✓":"Не разбирам"}
         </button>
       </div>
+      <p className="font-read text-stone-500 text-sm italic">Нестандартни, предизвикателни подходи — не по учебник.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryActionPlan}/>}
       <ActionPlanPanel loading={loadingLevels} stages={nodeData?.stages||[]} tuned={!!nodeData?.tunedActionPlan} onTune={onTuneActionPlan}/>
     </div>;
@@ -1726,7 +1739,7 @@ function ExamplesPanel({loading,examples,tuned,onTune}){
 }
 
 function ActionPlanPanel({loading,stages,tuned,onTune}){
-  if(loading) return <Spinner label="изграждам 5-етапен план за действие…"/>;
+  if(loading) return <Spinner label="измислям нестандартни подходи…"/>;
   if(!stages||!stages.length) return null;
   return <div className="space-y-4">
     <div className="space-y-3">
