@@ -466,13 +466,15 @@ Pick whatever interaction style is most natural and illuminating for this SPECIF
 Requirements:
 - Output ONE complete, self-contained HTML document: <!DOCTYPE html><html><head><style>...</style></head><body>...<script>...<${""}/script></body></html>
 - No external resources whatsoever (no CDN links, no external images/fonts, no network calls) — pure inline HTML/CSS/JS only, so it works fully offline inside a sandboxed iframe.
+- CRITICAL — event handling: NEVER use inline HTML event attributes like onclick="..." or onchange="...". ALWAYS attach event listeners from JavaScript using addEventListener, after querying the elements (e.g. document.getElementById(...).addEventListener('click', fn)). Put all JavaScript in one <script> block at the end of <body>, after the elements it references already exist in the HTML above it — this guarantees the handlers actually work inside a sandboxed iframe.
+- CRITICAL — no scrolling: the widget must fit entirely within the viewport with NO scrollbars. Set html, body { margin:0; padding:0; height:100%; overflow:hidden; box-sizing:border-box } and apply box-sizing:border-box to all elements. Design the layout (font sizes, spacing, number of visible rows/controls) so everything fits within roughly 460px of height without needing to scroll — favor a compact, single-screen layout over a tall one.
 - Dark-friendly styling that looks clean and modern (the surrounding app is dark-themed) — use a dark or neutral background, readable light text, decent spacing and rounded corners; feel free to use inline SVG or <canvas> for any chart/graph/visual.
 - Must be genuinely interactive (respond to clicks/input/sliders in real time via JavaScript) and directly illustrate the specific relationships/parameters of "${subtopicName}" — never a generic unrelated demo.
 - Keep it compact and focused: prioritize the 2-4 most illuminating variables/interactions for this subject rather than trying to cover everything.
 - All visible text/labels in the widget in the SAME language as the topic/subtopic above.
 Never use the exact sequence "###" anywhere in the code.
 Output ONLY the HTML document, wrapped exactly like this and nothing else before or after: ###HTML###the complete html document here###HTML_END###`,
-    3200
+    3400
   );
   return extractField(raw, "HTML");
 }
@@ -2314,8 +2316,8 @@ function SimulationPanel({loading,html,tuned,onTune}){
   if(!html) return null;
   return <div className="space-y-4">
     <div className="rounded border border-cyan-900/50 overflow-hidden" style={{height:"480px"}}>
-      <iframe srcDoc={html} sandbox="allow-scripts allow-forms" title="simulation"
-        style={{width:"100%",height:"100%",border:"none",background:"#0c0a09"}}/>
+      <iframe srcDoc={html} sandbox="allow-scripts allow-forms" title="simulation" scrolling="no"
+        style={{width:"100%",height:"100%",border:"none",background:"#0c0a09",overflow:"hidden"}}/>
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
