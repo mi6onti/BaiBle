@@ -255,8 +255,8 @@ async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
   const lvl = levelHint?.level||3;
   const meta = LEVELS.find(l=>l.level===lvl) || LEVELS[2];
   const totalBudget = wb(lvl, 0.32);
-  const perTerm = Math.max(25, Math.round(totalBudget/(termNames.length||3)));
-  const lo=Math.round(perTerm*0.75), hi=Math.round(perTerm*1.25);
+  const perTerm = Math.max(20, Math.round((totalBudget/(termNames.length||3))/3));
+  const lo=perTerm, hi=Math.round(perTerm*1.4);
   const fieldNames = termNames.map((_,i)=>`T${i+1}`);
   const markerLines = termNames.map((t,i)=>`###T${i+1}### explanation of "${t}"`).join(" ");
   const raw = await callClaudeRaw(
