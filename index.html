@@ -1443,6 +1443,7 @@ function Aperture() {
       for(let ui=0; ui<subsubList.length; ui++){
         const item = subsubList[ui];
         if(isCuriousItem(item)) continue; // dynamic, only appears from user questions
+        if(isSimulationItem(item)) continue; // skip in bulk gen — expensive, generate on-demand only for now
         const uName = subName(item);
         setGenAllProgress(`${subItem.name} — ${uName}`);
         const id = `${currentTopic.id}/${slugify(subItem.name)}/L${subLevel}/${slugify(uName)}`;
