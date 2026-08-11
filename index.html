@@ -54,6 +54,11 @@ function levelScale(level){
   return m[level]||1.0;
 }
 function sw(base,level){ return Math.round(base*levelScale(level)); } // scale a word-count target
+// CONFIG: Речник shows ONE explanation per term, at the subtopic's chosen abstraction level, instead of
+// making the learner browse all 5. The old "show all 5, let them pick" mechanism (genAbstraction, per-unit
+// Levels/Blend tabs) is kept fully intact in the code — this flag is the switch-point for reviving it later.
+const AUTO_SELECT_LEVEL = true;
+
 // budget a section's word count as a share of the level's total reading-time budget (~180 wpm)
 function wb(level, share){
   const meta = LEVELS.find(l=>l.level===level) || LEVELS[2];
@@ -242,6 +247,29 @@ async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
     400
   );
   return s.subsubtopics||[];
+}
+
+// Речник: ONE explanation per term, all in a single request, at the subtopic's chosen abstraction level
+// (see AUTO_SELECT_LEVEL config) — replaces browsing all 5 abstraction levels per term.
+async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
+  const lvl = levelHint?.level||3;
+  const meta = LEVELS.find(l=>l.level===lvl) || LEVELS[2];
+  const totalBudget = wb(lvl, 0.32);
+  const perTerm = Math.max(25, Math.round(totalBudget/(termNames.length||3)));
+  const lo=Math.round(perTerm*0.75), hi=Math.round(perTerm*1.25);
+  const fieldNames = termNames.map((_,i)=>`T${i+1}`);
+  const markerLines = termNames.map((t,i)=>`###T${i+1}### explanation of "${t}"`).join(" ");
+  const raw = await callClaudeRaw(
+    `Topic: "${topicLabel}" > "${subtopicName}". Write ONE explanation for EACH of these ${termNames.length} terms, each ${lo}-${hi} words, all at level "${meta.label}" (${meta.hint}) — this is the depth/register the learner already chose for this subtopic.
+Terms, in order: ${termNames.map((t,i)=>`${i+1}. ${t}`).join("; ")}.
+Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write all explanations in the SAME language as the topic/subtopic above (detect it and match exactly).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+${markerLines} ###END###`,
+    Math.min(3800, 400+hi*termNames.length*2)
+  );
+  const fields = extractSequentialFields(raw, fieldNames);
+  return termNames.map((t,i)=>({name:t, text:fields[`T${i+1}`]||""}));
 }
 
 async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
@@ -626,6 +654,7 @@ function isActionPlanItem(item){ return typeof item==="object" && item!==null &&
 function isSocraticItem(item){ return typeof item==="object" && item!==null && !!item.isSocratic; }
 function isTestItem(item){ return typeof item==="object" && item!==null && !!item.isTest; }
 function isSimulationItem(item){ return typeof item==="object" && item!==null && !!item.isSimulation; }
+function isGlossaryItem(item){ return typeof item==="object" && item!==null && !!item.isGlossary; }
 function isConfessionItem(item){ return typeof item==="object" && item!==null && !!item.isConfession; }
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
@@ -1006,7 +1035,8 @@ function Aperture() {
       const testItem = { name:"Тест", isTest:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
-      const subsubtopics = [...rawSubsubtopics, overviewItem, examplesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
+      const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
+      const subsubtopics = [glossaryItem, overviewItem, examplesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1039,6 +1069,16 @@ function Aperture() {
 
     const id=`${currentTopic.id}/${slugify(sub)}/L${subLevel}/${slugify(subsub)}`;
     setNodeId(id);
+
+    if(isGlossaryItem(subsubItem)){
+      const EMPTY={terms:[],glossaryLevel:null,tunedGlossary:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.terms||!cached.terms.length) doLoadGlossary(id,sub,subLevel,cached,subsubItem.terms||[]);
+      return;
+    }
 
     if(isOverviewItem(subsubItem)){
       const EMPTY={essay:"",essayLevel:null,tunedEssay:false,unitConfused:false};
@@ -1117,6 +1157,31 @@ function Aperture() {
     const allKeys=await loadJSON("allNodeKeys",[]);
     if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
     if(!cached.abstraction?.length)doLoadLevels(id,sub,subsub,subLevel,regularUnitCount(getDisplayList(subItem)),cached);
+  }
+
+  async function doLoadGlossary(id, sub, subLevel, base, termNames){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const terms = await genGlossary(currentTopic.prompt||currentTopic.name, sub, termNames, levelMeta);
+      const updated = {...base, terms, glossaryLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneGlossary(){
+    if(!nodeData||nodeData.tunedGlossary)return;
+    const level = nodeData.glossaryLevel;
+    const updNode={...nodeData,tunedGlossary:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
   }
 
   async function doLoadEssay(id,sub,subLevel,base){
@@ -1482,6 +1547,11 @@ function Aperture() {
               const simHtml = await genSimulation(topicPrompt, subItem.name, subLevelMeta);
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), simHtml, simLevel:subLevel, tunedSim:existing?.tunedSim||false});
             }
+          } else if(isGlossaryItem(item)){
+            if(!existing?.terms?.length){
+              const terms = await genGlossary(topicPrompt, subItem.name, item.terms||[], subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), terms, glossaryLevel:subLevel, tunedGlossary:existing?.tunedGlossary||false});
+            }
           } else if(isConfessionItem(item)){
             if(!existing?.confession){
               const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
@@ -1618,6 +1688,7 @@ function Aperture() {
               subtopic={hierarchy[subtopicIdx].name}
               subsub={subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isOverview={isOverviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isGlossary={isGlossaryItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isExamples={isExamplesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isActionPlan={isActionPlanItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isSocratic={isSocraticItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
@@ -1630,6 +1701,7 @@ function Aperture() {
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
               onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]),hierarchy[subtopicIdx].activeLevel,regularUnitCount(getDisplayList(hierarchy[subtopicIdx])),nodeData)}
+              onRetryGlossary={()=>doLoadGlossary(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData,getDisplayList(hierarchy[subtopicIdx])[subsubIdx]?.terms||[])}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
@@ -1642,6 +1714,7 @@ function Aperture() {
               curiosityQuestions={hierarchy[subtopicIdx].curiosityQuestions||[]}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
+              onTuneGlossary={tuneGlossary}
               onTuneEssay={tuneEssay}
               onTuneExamples={tuneExamples}
               onTuneActionPlan={tuneActionPlan}
@@ -1810,6 +1883,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
     <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Единици</div>
     <div className="space-y-1">
       {list.map((s,i)=>{
+        const isGl = isGlossaryItem(s);
         const isOv = isOverviewItem(s);
         const isEx = isExamplesItem(s);
         const isAP = isActionPlanItem(s);
@@ -1818,7 +1892,8 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
         const isSi = isSimulationItem(s);
         const isCo = isConfessionItem(s);
         const isCu = isCuriousItem(s);
-        const colorClass = isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
+        const colorClass = isGl ? "border-lime-800 bg-lime-950/20 hover:border-lime-500"
+                          : isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
                           : isEx ? "border-emerald-800 bg-emerald-950/20 hover:border-emerald-500"
                           : isAP ? "border-violet-800 bg-violet-950/20 hover:border-violet-500"
                           : isSo ? "border-teal-800 bg-teal-950/20 hover:border-teal-500"
@@ -1827,12 +1902,12 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isCo ? "border-fuchsia-800 bg-fuchsia-950/20 hover:border-fuchsia-500"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isOv||isEx||isAP||isSo||isTe||isSi||isCo||isCu) && <Sparkles size={14}/>}
+            {(isGl||isOv||isEx||isAP||isSo||isTe||isSi||isCo||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -1843,8 +1918,28 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
+
+  if(isGlossary){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-lime-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onRetryGlossary}/>}
+      <GlossaryPanel loading={loadingLevels} terms={nodeData?.terms||[]} tuned={!!nodeData?.tunedGlossary} onTune={onTuneGlossary}/>
+    </div>;
+  }
 
   if(isOverview){
     return <div className="space-y-5">
@@ -2031,6 +2126,22 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
     {error&&<ErrorNote message={error} onRetry={tab==="levels"?onRetryLevels:undefined}/>}
     {tab==="levels"&&<LevelsPanel loading={loadingLevels} levels={nodeData?.abstraction||[]} tuned={nodeData?.tunedAbstraction||[]} onTune={onTuneAbstraction} topLevel={topLevel}/>}
     {tab==="blend"&&<BlendPanel canBlend={canBlend} blend={nodeData?.blend} loading={loadingBlend} onGenerate={onGenerateBlend} tuned={!!nodeData?.tunedBlendKey} onTune={onTuneBlend}/>}
+  </div>;
+}
+
+function GlossaryPanel({loading,terms,tuned,onTune}){
+  if(loading) return <Spinner label="генерирам речник…"/>;
+  if(!terms||!terms.length) return null;
+  return <div className="space-y-4">
+    <div className="space-y-2">
+      {terms.map((t,i)=>(
+        <div key={i} className="rounded border border-lime-900/50 bg-lime-950/10 p-4">
+          <div className="font-mono-cal text-xs uppercase tracking-wide text-lime-400 mb-1">{t.name}</div>
+          <p className="font-read text-stone-200 leading-relaxed text-lg">{t.text}</p>
+        </div>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
 }
 
