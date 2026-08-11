@@ -304,26 +304,26 @@ Output EXACTLY five sections using these markers, nothing before the first marke
 }
 
 // raw text call (no JSON) — safer for long prose that may contain quotes/punctuation
-async function callClaudeRaw(user, maxTokens=1500, attempt=0) {
+async function callClaudeRaw(user, maxTokens=1500, attempt=0, cap=4000) {
   let res;
   try {
     res = await fetch(CLAUDE_PROXY,{method:"POST",
       headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`},
       body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:user}]})});
   } catch(e) {
-    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
+    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1,cap);}
     throw new Error(`[fetch] ${e.message}`);
   }
-  if(res.status===429&&attempt<3){await sleep(1500*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
+  if(res.status===429&&attempt<3){await sleep(1500*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1,cap);}
   let data;
   try{data=await res.json();}catch(e){
-    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1);}
+    if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1,cap);}
     throw new Error(`[parse] ${e.message}`);
   }
   if(!res.ok) throw new Error(`[http] ${res.status}: ${JSON.stringify(data).slice(0,150)}`);
   if(!data?.content) throw new Error(`[shape] ${JSON.stringify(data).slice(0,100)}`);
-  if(data.stop_reason==="max_tokens" && attempt<3 && maxTokens<4000){
-    return callClaudeRaw(user, Math.min(4000, maxTokens*2), attempt+1);
+  if(data.stop_reason==="max_tokens" && attempt<3 && maxTokens<cap){
+    return callClaudeRaw(user, Math.min(cap, maxTokens*2), attempt+1, cap);
   }
   return data.content.map(b=>b.text||"").join("\n").trim();
 }
@@ -470,11 +470,11 @@ Requirements:
 - CRITICAL — no scrolling: the widget must fit entirely within the viewport with NO scrollbars. Set html, body { margin:0; padding:0; height:100%; overflow:hidden; box-sizing:border-box } and apply box-sizing:border-box to all elements. Design the layout (font sizes, spacing, number of visible rows/controls) so everything fits within roughly 460px of height without needing to scroll — favor a compact, single-screen layout over a tall one.
 - Dark-friendly styling that looks clean and modern (the surrounding app is dark-themed) — use a dark or neutral background, readable light text, decent spacing and rounded corners; feel free to use inline SVG or <canvas> for any chart/graph/visual.
 - Must be genuinely interactive (respond to clicks/input/sliders in real time via JavaScript) and directly illustrate the specific relationships/parameters of "${subtopicName}" — never a generic unrelated demo.
-- Keep it compact and focused: prioritize the 2-4 most illuminating variables/interactions for this subject rather than trying to cover everything.
+- STRICT SCOPE LIMIT: at most 3 interactive controls total (sliders/toggles/buttons combined) and ONE visualization area (a chart, a mock chat log, an animated graphic, or a small table) — do not add extra stat cards, extra panels, or decorative elements beyond what's needed. This is a hard limit to keep the code short enough to generate completely and reliably.
 - All visible text/labels in the widget in the SAME language as the topic/subtopic above.
 Never use the exact sequence "###" anywhere in the code.
 Output ONLY the HTML document, wrapped exactly like this and nothing else before or after: ###HTML###the complete html document here###HTML_END###`,
-    3400
+    3200, 0, 7000
   );
   return extractField(raw, "HTML");
 }
