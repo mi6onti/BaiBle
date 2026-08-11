@@ -167,7 +167,8 @@ async function genHierarchy(prompt, learningProfile) {
 async function genAbstraction(topic, sub, subsub, subLevel, unitCount) {
   const totalBudget = wb(subLevel||3, 0.32);
   const perUnit = Math.max(60, Math.round(totalBudget/(unitCount||3)));
-  const lo=Math.max(20,Math.round(perUnit*0.75)), hi=Math.round(perUnit*1.25);
+  const perExplanation = Math.max(18, Math.round(perUnit/4)); // budget the unit across its 5 shown explanations, not per-explanation
+  const lo=perExplanation, hi=Math.round(perExplanation*1.4);
   const levelDescs = LEVELS.map(m=>`Level ${m.level} ("${m.label}", ${m.hint})`).join("; ");
   const raw = await callClaudeRaw(
     `Topic: "${topic}" > "${sub}" > "${subsub}".
@@ -392,47 +393,67 @@ Output ONLY the examples, wrapped exactly like this and nothing else before or a
   return extractField(raw, "TEXT");
 }
 
-// 5-stage action plan for the WHOLE topic: simplest starting point -> full realization/mastery
+function itemCountForLevel(level){
+  return {1:3,2:4,3:5,4:5,5:5}[level]||5;
+}
+
+// Rework: N unconventional approaches (N scales with level) — simplest starting point -> full realization/mastery
 async function genActionPlan(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level||3;
+  const n = itemCountForLevel(lvl);
   const totalWords = Math.max(75, wb(lvl,0.15));
-  const perIdea = Math.round(totalWords/5);
+  const perIdea = Math.round(totalWords/n);
   const lo=Math.max(10,Math.round(perIdea*0.75)), hi=Math.round(perIdea*1.25);
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const fieldNames=[]; const markerLines=[];
+  for(let i=1;i<=n;i++){
+    fieldNames.push(`S${i}T`,`S${i}B`);
+    markerLines.push(`###S${i}T### idea ${i} title ###S${i}B### idea ${i} body`);
+  }
   const raw = await callClaudeRaw(
-    `Design a "REWORK" — 5 UNCONVENTIONAL, creative, sometimes experimental approaches to actually getting real results with "${subtopicName}" (within the broader context of "${topicLabel}"), for someone who always looks for a better way, dislikes following the textbook/official docs/standard instructions, and wants more value and efficiency than the conventional path offers.
+    `Design a "REWORK" — ${n} UNCONVENTIONAL, creative, sometimes experimental approaches to actually getting real results with "${subtopicName}" (within the broader context of "${topicLabel}"), for someone who always looks for a better way, dislikes following the textbook/official docs/standard instructions, and wants more value and efficiency than the conventional path offers.
 Each idea must genuinely challenge or break from the standard/expected way of learning or doing this — a shortcut most people don't know, a contrarian reframing, an unusual technique borrowed from elsewhere, or an experimental method worth trying — never generic "think outside the box" fluff, always something specific and actually usable tied to this exact subject.
-Escalate boldness across the 5: idea 1 is a simple but non-obvious tweak or hack usable right away; idea 5 is a genuinely radical rethink of the standard approach to "${subtopicName}" entirely.${levelPart}
+Escalate boldness across the ${n}: idea 1 is a simple but non-obvious tweak or hack usable right away; the last idea is a genuinely radical rethink of the standard approach to "${subtopicName}" entirely.${levelPart}
 For each idea, give a SHORT punchy title (3-7 words, provocative or memorable — never a generic label like "Idea 1") and a body of ${lo}-${hi} words explaining the idea and specifically why/how it beats the conventional approach.
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
-###S1T### idea 1 title ###S1B### idea 1 body ###S2T### idea 2 title ###S2B### idea 2 body ###S3T### idea 3 title ###S3B### idea 3 body ###S4T### idea 4 title ###S4B### idea 4 body ###S5T### idea 5 title ###S5B### idea 5 body ###END###`,
-    2600
+${markerLines.join(" ")} ###END###`,
+    600+n*500
   );
-  const fields = extractSequentialFields(raw, ["S1T","S1B","S2T","S2B","S3T","S3B","S4T","S4B","S5T","S5B"]);
-  return [1,2,3,4,5].map(n=>({title:fields[`S${n}T`]||`Идея ${n}`, body:fields[`S${n}B`]||""}));
+  const fields = extractSequentialFields(raw, fieldNames);
+  const arr=[];
+  for(let i=1;i<=n;i++) arr.push({title:fields[`S${i}T`]||`Идея ${i}`, body:fields[`S${i}B`]||""});
+  return arr;
 }
 
-// Socratic-style dialogue: a sequence of guiding questions (not direct exposition) leading the learner to discover the idea themselves
+// Socratic-style dialogue: N guiding questions (N scales with level), not direct exposition
 async function genSocraticDialogue(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level||3;
+  const n = itemCountForLevel(lvl);
   const totalWords = Math.max(60, wb(lvl,0.12));
-  const perNote = Math.round(totalWords/5);
+  const perNote = Math.round(totalWords/n);
   const lo=Math.max(6,Math.round(perNote*0.7)), hi=Math.round(perNote*1.3);
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const fieldNames=[]; const markerLines=[];
+  for(let i=1;i<=n;i++){
+    fieldNames.push(`Q${i}`,`G${i}`);
+    markerLines.push(`###Q${i}### question ${i} ###G${i}### guiding note ${i}${i===n?" (synthesis)":""}`);
+  }
   const raw = await callClaudeRaw(
-    `Design a SOCRATIC dialogue teaching "${subtopicName}" (within the broader context of "${topicLabel}") — a sequence of exactly 5 guiding QUESTIONS, in the true Socratic method: each question should provoke the learner to think and arrive at the insight themselves, rather than being told the answer directly. Questions should build on each other, moving from a simple provocation toward the core understanding. Do NOT just ask generic quiz questions — each should genuinely guide reasoning toward the next realization, the way a real Socratic teacher would. Keep each question itself short (one sentence).
-For each question, also give a short GUIDING NOTE (${lo}-${hi} words) — not the direct answer, but a nudge, a related observation, or a follow-up prompt that helps the learner think it through, IN THE STYLE of a teacher gently redirecting without lecturing. Only the final (5th) guiding note may synthesize/confirm the core insight, since it concludes the dialogue.
+    `Design a SOCRATIC dialogue teaching "${subtopicName}" (within the broader context of "${topicLabel}") — a sequence of exactly ${n} guiding QUESTIONS, in the true Socratic method: each question should provoke the learner to think and arrive at the insight themselves, rather than being told the answer directly. Questions should build on each other, moving from a simple provocation toward the core understanding. Do NOT just ask generic quiz questions — each should genuinely guide reasoning toward the next realization, the way a real Socratic teacher would. Keep each question itself short (one sentence).
+For each question, also give a short GUIDING NOTE (${lo}-${hi} words) — not the direct answer, but a nudge, a related observation, or a follow-up prompt that helps the learner think it through, IN THE STYLE of a teacher gently redirecting without lecturing. Only the FINAL guiding note may synthesize/confirm the core insight, since it concludes the dialogue.
 Ground every question in the exact subject matter of "${subtopicName}" — never generic philosophical questions unrelated to the actual content.${levelPart}
 Write in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
-###Q1### question 1 ###G1### guiding note 1 ###Q2### question 2 ###G2### guiding note 2 ###Q3### question 3 ###G3### guiding note 3 ###Q4### question 4 ###G4### guiding note 4 ###Q5### question 5 ###G5### guiding note 5 (synthesis) ###END###`,
-    2600
+${markerLines.join(" ")} ###END###`,
+    600+n*500
   );
-  const fields = extractSequentialFields(raw, ["Q1","G1","Q2","G2","Q3","G3","Q4","G4","Q5","G5"]);
-  return [1,2,3,4,5].map(n=>({question:fields[`Q${n}`]||"", guidance:fields[`G${n}`]||""}));
+  const fields = extractSequentialFields(raw, fieldNames);
+  const arr=[];
+  for(let i=1;i<=n;i++) arr.push({question:fields[`Q${i}`]||"", guidance:fields[`G${i}`]||""});
+  return arr;
 }
 
 // Тест: one question of each of 6 types, tied to the exact subtopic content
@@ -960,7 +981,7 @@ function Aperture() {
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
-      const subsubtopics = [overviewItem, ...rawSubsubtopics, examplesItem, actionPlanItem, socraticItem, testItem, confessionItem];
+      const subsubtopics = [...rawSubsubtopics, overviewItem, examplesItem, socraticItem, confessionItem, actionPlanItem, testItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
