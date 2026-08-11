@@ -457,6 +457,26 @@ ${markerLines.join(" ")} ###END###`,
 }
 
 // Тест: one question of each of 6 types, tied to the exact subtopic content
+// self-contained interactive HTML/CSS/JS widget illustrating the key relationships/parameters of the subtopic
+async function genSimulation(topicLabel, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}) — simpler interaction with fewer variables for lower levels, richer/more nuanced for higher levels.` : "";
+  const raw = await callClaudeRaw(
+    `Design a SELF-CONTAINED, fully interactive HTML simulation/widget that helps understand "${subtopicName}" (within the broader context of "${topicLabel}") by letting the learner manipulate key variables/parameters and immediately SEE the effect — teaching through direct interaction, not reading.
+Pick whatever interaction style is most natural and illuminating for this SPECIFIC subject: e.g. a mock chat interface with pre-scripted canned responses that change based on a toggled parameter (like a simulated rate limiter, a missing token, a malformed prompt); a calculator with sliders/buttons for the relevant variables plus a live-updating chart/graph/table showing how they interact; an animated analogy (a car whose speed changes a visual, a TV changing channels) whose state responds to controls. The core idea: reveal the RELATIONSHIPS between the actual parameters/concepts of "${subtopicName}", using entirely pre-scripted/simulated logic — NOT a real working backend, NOT real API calls, just JavaScript that mimics plausible behavior for teaching purposes.${levelPart}
+Requirements:
+- Output ONE complete, self-contained HTML document: <!DOCTYPE html><html><head><style>...</style></head><body>...<script>...<${""}/script></body></html>
+- No external resources whatsoever (no CDN links, no external images/fonts, no network calls) — pure inline HTML/CSS/JS only, so it works fully offline inside a sandboxed iframe.
+- Dark-friendly styling that looks clean and modern (the surrounding app is dark-themed) — use a dark or neutral background, readable light text, decent spacing and rounded corners; feel free to use inline SVG or <canvas> for any chart/graph/visual.
+- Must be genuinely interactive (respond to clicks/input/sliders in real time via JavaScript) and directly illustrate the specific relationships/parameters of "${subtopicName}" — never a generic unrelated demo.
+- Keep it compact and focused: prioritize the 2-4 most illuminating variables/interactions for this subject rather than trying to cover everything.
+- All visible text/labels in the widget in the SAME language as the topic/subtopic above.
+Never use the exact sequence "###" anywhere in the code.
+Output ONLY the HTML document, wrapped exactly like this and nothing else before or after: ###HTML###the complete html document here###HTML_END###`,
+    3200
+  );
+  return extractField(raw, "HTML");
+}
+
 async function genTestQuestions(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level||3;
   const tc = testCounts(lvl);
@@ -602,6 +622,7 @@ function isExamplesItem(item){ return typeof item==="object" && item!==null && !
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
 function isSocraticItem(item){ return typeof item==="object" && item!==null && !!item.isSocratic; }
 function isTestItem(item){ return typeof item==="object" && item!==null && !!item.isTest; }
+function isSimulationItem(item){ return typeof item==="object" && item!==null && !!item.isSimulation; }
 function isConfessionItem(item){ return typeof item==="object" && item!==null && !!item.isConfession; }
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
@@ -981,7 +1002,8 @@ function Aperture() {
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
-      const subsubtopics = [...rawSubsubtopics, overviewItem, examplesItem, socraticItem, confessionItem, actionPlanItem, testItem];
+      const simulationItem = { name:"Симулация", isSimulation:true };
+      const subsubtopics = [...rawSubsubtopics, overviewItem, examplesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1062,6 +1084,16 @@ function Aperture() {
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
       if(!cached.testQuestions||!cached.testQuestions.length) doLoadTest(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isSimulationItem(subsubItem)){
+      const EMPTY={simHtml:"",simLevel:null,tunedSim:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.simHtml) doLoadSimulation(id,sub,subLevel,cached);
       return;
     }
 
@@ -1189,6 +1221,31 @@ function Aperture() {
     if(!nodeData||nodeData.tunedTest)return;
     const level = nodeData.testLevel;
     const updNode={...nodeData,tunedTest:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadSimulation(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const simHtml = await genSimulation(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, simHtml, simLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneSimulation(){
+    if(!nodeData||nodeData.tunedSim)return;
+    const level = nodeData.simLevel;
+    const updNode={...nodeData,tunedSim:true};
     setNodeData(updNode);
     await saveJSON(`node:${nodeId}`,updNode);
     if(level){
@@ -1416,6 +1473,11 @@ function Aperture() {
               const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
             }
+          } else if(isSimulationItem(item)){
+            if(!existing?.simHtml){
+              const simHtml = await genSimulation(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), simHtml, simLevel:subLevel, tunedSim:existing?.tunedSim||false});
+            }
           } else if(isConfessionItem(item)){
             if(!existing?.confession){
               const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
@@ -1556,6 +1618,7 @@ function Aperture() {
               isActionPlan={isActionPlanItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isSocratic={isSocraticItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isTest={isTestItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isSimulation={isSimulationItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isConfession={isConfessionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
@@ -1568,6 +1631,7 @@ function Aperture() {
               onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetrySocratic={()=>doLoadSocratic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryTest={()=>doLoadTest(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetrySimulation={()=>doLoadSimulation(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
@@ -1579,6 +1643,7 @@ function Aperture() {
               onTuneActionPlan={tuneActionPlan}
               onTuneSocratic={tuneSocratic}
               onTuneTest={tuneTest}
+              onTuneSimulation={tuneSimulation}
               onTuneConfession={tuneConfession}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
@@ -1746,6 +1811,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
         const isAP = isActionPlanItem(s);
         const isSo = isSocraticItem(s);
         const isTe = isTestItem(s);
+        const isSi = isSimulationItem(s);
         const isCo = isConfessionItem(s);
         const isCu = isCuriousItem(s);
         const colorClass = isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
@@ -1753,15 +1819,16 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isAP ? "border-violet-800 bg-violet-950/20 hover:border-violet-500"
                           : isSo ? "border-teal-800 bg-teal-950/20 hover:border-teal-500"
                           : isTe ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
+                          : isSi ? "border-cyan-800 bg-cyan-950/20 hover:border-cyan-500"
                           : isCo ? "border-fuchsia-800 bg-fuchsia-950/20 hover:border-fuchsia-500"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isOv||isEx||isAP||isSo||isTe||isCo||isCu) && <Sparkles size={14}/>}
+            {(isOv||isEx||isAP||isSo||isTe||isSi||isCo||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -1772,7 +1839,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isTest,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryEssay,onRetryExamples,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneEssay,onTuneExamples,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isOverview){
@@ -1874,6 +1941,27 @@ function NodeView({topic,subtopic,subsub,isOverview,isExamples,isActionPlan,isSo
       <p className="font-read text-stone-500 text-sm italic">Провери се — 6 въпроса от различен тип по тази тема.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryTest}/>}
       <TestPanel loading={loadingLevels} questions={nodeData?.testQuestions||[]} tuned={!!nodeData?.tunedTest} onTune={onTuneTest}/>
+    </div>;
+  }
+
+  if(isSimulation){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-cyan-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Интерактивна демонстрация — предварително скриптирано поведение, не истинска система.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetrySimulation}/>}
+      <SimulationPanel loading={loadingLevels} html={nodeData?.simHtml||""} tuned={!!nodeData?.tunedSim} onTune={onTuneSimulation}/>
     </div>;
   }
 
@@ -2219,6 +2307,18 @@ function MatchQ({q}){
     </div>
     {!checked ? <CheckBtn onClick={()=>setChecked(true)}/> : <Result ok={ok} text={`Верни двойки: ${pairs.map(p=>`${p.left} — ${p.right}`).join("; ")}`}/>}
   </QCard>;
+}
+
+function SimulationPanel({loading,html,tuned,onTune}){
+  if(loading) return <Spinner label="изграждам интерактивна симулация…"/>;
+  if(!html) return null;
+  return <div className="space-y-4">
+    <div className="rounded border border-cyan-900/50 overflow-hidden" style={{height:"480px"}}>
+      <iframe srcDoc={html} sandbox="allow-scripts allow-forms" title="simulation"
+        style={{width:"100%",height:"100%",border:"none",background:"#0c0a09"}}/>
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
 }
 
 function ConfessionPanel({loading,confession,tuned,onTune}){
