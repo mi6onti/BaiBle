@@ -254,14 +254,13 @@ async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
 async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
   const lvl = levelHint?.level||3;
   const meta = LEVELS.find(l=>l.level===lvl) || LEVELS[2];
-  const glossaryMinutes = lvl; // Речникът само за себе си цели 1-5 минути четене, право пропорционално на нивото
-  const totalWords = Math.max(60, glossaryMinutes*180);
-  const perTerm = Math.max(15, Math.round(totalWords/(termNames.length||3)));
-  const lo=Math.round(perTerm*0.8), hi=Math.round(perTerm*1.2);
+  // fixed per-level targets: level1 = 2-3 sentences just to orient; level3 = ~10-15 sec read (~40-55 words)
+  const ranges = {1:[15,25], 2:[25,40], 3:[40,55], 4:[55,75], 5:[75,100]};
+  const [lo,hi] = ranges[lvl]||ranges[3];
   const fieldNames = termNames.map((_,i)=>`T${i+1}`);
   const markerLines = termNames.map((t,i)=>`###T${i+1}### explanation of "${t}"`).join(" ");
   const raw = await callClaudeRaw(
-    `Topic: "${topicLabel}" > "${subtopicName}". Write ONE SHORT explanation for EACH of these ${termNames.length} terms, each STRICTLY ${lo}-${hi} words (this is a hard limit, count your words), all at level "${meta.label}" (${meta.hint}) — this is the depth/register the learner already chose for this subtopic.
+    `Topic: "${topicLabel}" > "${subtopicName}". Write ONE VERY SHORT explanation for EACH of these ${termNames.length} terms, each STRICTLY ${lo}-${hi} words (this is a hard limit — count your words, this must be brief, just enough to orient, not a full explanation), all at level "${meta.label}" (${meta.hint}) — this is the depth/register the learner already chose for this subtopic.
 Terms, in order: ${termNames.map((t,i)=>`${i+1}. ${t}`).join("; ")}.
 Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write all explanations in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
