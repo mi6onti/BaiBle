@@ -254,19 +254,20 @@ async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
 async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
   const lvl = levelHint?.level||3;
   const meta = LEVELS.find(l=>l.level===lvl) || LEVELS[2];
-  const totalBudget = wb(lvl, 0.32);
-  const perTerm = Math.max(20, Math.round((totalBudget/(termNames.length||3))/3));
-  const lo=perTerm, hi=Math.round(perTerm*1.4);
+  const glossaryMinutes = lvl; // Речникът само за себе си цели 1-5 минути четене, право пропорционално на нивото
+  const totalWords = Math.max(60, glossaryMinutes*180);
+  const perTerm = Math.max(15, Math.round(totalWords/(termNames.length||3)));
+  const lo=Math.round(perTerm*0.8), hi=Math.round(perTerm*1.2);
   const fieldNames = termNames.map((_,i)=>`T${i+1}`);
   const markerLines = termNames.map((t,i)=>`###T${i+1}### explanation of "${t}"`).join(" ");
   const raw = await callClaudeRaw(
-    `Topic: "${topicLabel}" > "${subtopicName}". Write ONE explanation for EACH of these ${termNames.length} terms, each ${lo}-${hi} words, all at level "${meta.label}" (${meta.hint}) — this is the depth/register the learner already chose for this subtopic.
+    `Topic: "${topicLabel}" > "${subtopicName}". Write ONE SHORT explanation for EACH of these ${termNames.length} terms, each STRICTLY ${lo}-${hi} words (this is a hard limit, count your words), all at level "${meta.label}" (${meta.hint}) — this is the depth/register the learner already chose for this subtopic.
 Terms, in order: ${termNames.map((t,i)=>`${i+1}. ${t}`).join("; ")}.
 Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write all explanations in the SAME language as the topic/subtopic above (detect it and match exactly).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ${markerLines} ###END###`,
-    Math.min(3800, 400+hi*termNames.length*2)
+    Math.min(3800, 300+hi*termNames.length*2)
   );
   const fields = extractSequentialFields(raw, fieldNames);
   return termNames.map((t,i)=>({name:t, text:fields[`T${i+1}`]||""}));
