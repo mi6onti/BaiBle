@@ -43,11 +43,11 @@ const JSON_SYS     = "You return ONLY valid JSON. No markdown fences, no preambl
 let USE_LOCAL = (() => { try { return localStorage.getItem("aperture:_mode") === "local"; } catch { return false; } })();
 
 const LEVELS = [
-  {level:1,label:"Аналогия",hint:"everyday comparison",minutes:5},
-  {level:2,label:"Пример",hint:"concrete scenario",minutes:11},
-  {level:3,label:"Механика",hint:"how it works",minutes:17},
-  {level:4,label:"Дефиниция",hint:"formal terms",minutes:23},
-  {level:5,label:"Дълбочина",hint:"expert nuance",minutes:30},
+  {level:1,label:"Аналогия",hint:"everyday comparison",minutes:2},
+  {level:2,label:"Пример",hint:"concrete scenario",minutes:5},
+  {level:3,label:"Механика",hint:"how it works",minutes:8},
+  {level:4,label:"Дефиниция",hint:"formal terms",minutes:12},
+  {level:5,label:"Дълбочина",hint:"expert nuance",minutes:15},
 ];
 function levelScale(level){
   const m={1:0.4,2:0.65,3:1.0,4:1.35,5:1.75};
