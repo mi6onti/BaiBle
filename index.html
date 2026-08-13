@@ -144,7 +144,7 @@ async function callClaude(user, maxTokens=600, attempt=0) {
 // T.1: generate short display name from prompt
 async function genTopicName(prompt) {
   const raw = await callClaudeRaw(
-    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Write the name in the SAME language as the prompt above (detect it and match exactly). Output ONLY the name, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
+    `The user wants to learn about: "${prompt}". Generate a short, clear display name (3-6 words max) for this learning plan. Write the name in the SAME language as the prompt above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Output ONLY the name, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
     200
   );
   const name = extractField(raw,"NAME");
@@ -154,14 +154,14 @@ async function genTopicName(prompt) {
 async function genHierarchy(prompt, learningProfile) {
   const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
   const d = await callClaude(
-    `Design a self-study curriculum for: "${prompt}".${profileHint}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly — if the prompt is in Bulgarian, write in Bulgarian; if in English, write in English; etc). Never use " inside.\nReturn: {"names":["..."]}`,
+    `Design a self-study curriculum for: "${prompt}".${profileHint}\nList 4-6 subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.\nReturn: {"names":["..."]}`,
     500
   );
   const names = d.names||[];
   const subtopics = [];
   for(const name of names){
     const s = await callClaude(
-      `Topic: "${prompt}" > "${name}". List 3-4 sub-subtopics, under 6 words each. Write them in the SAME language as the topic above (match exactly). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
+      `Topic: "${prompt}" > "${name}". List 3-4 sub-subtopics, under 6 words each. Write them in the SAME language as the topic above (match exactly — Cyrillic means BULGARIAN specifically, never Russian; Latin means ENGLISH specifically). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
       400
     );
     subtopics.push({name,subsubtopics:s.subsubtopics||[]});
@@ -180,7 +180,7 @@ async function genAbstraction(topic, sub, subsub, subLevel, unitCount) {
 Write 5 explanations of this, one for each level below, EACH ${lo}-${hi} words:
 ${levelDescs}
 Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Each level should be genuinely distinct in register/depth from the others, not a reworded repeat.
-Write all 5 in the SAME language as the topic chain above (detect it and match exactly).
+Write all 5 in the SAME language as the topic chain above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ###L1### level 1 text ###L2### level 2 text ###L3### level 3 text ###L4### level 4 text ###L5### level 5 text ###END###`,
@@ -193,7 +193,7 @@ Output EXACTLY in this format, nothing before the first marker or after the last
 async function genAllPersonalities(topic, sub, subsub) {
   const results=[];
   for(const p of PERSONALITIES){
-    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
+    const raw=await callClaudeRaw(`Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (45-70 words) for a "${p.name}" learner (${p.hint}). Write it in the SAME language as the topic chain above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,600);
     results.push({code:p.code,text:extractField(raw,"TEXT")});
   }
   return results;
@@ -203,7 +203,7 @@ async function genAllPersonalities(topic, sub, subsub) {
 async function genBlend(topic, sub, subsub, level) {
   const lvl = LEVELS.find(l=>l.level===level);
   const raw = await callClaudeRaw(
-    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write it in the SAME language as the topic chain above (detect it and match exactly). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,
+    `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write it in the SAME language as the topic chain above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,
     800
   );
   return extractField(raw,"TEXT");
@@ -216,7 +216,7 @@ async function genOverviewLevels(subjectLabel) {
     `Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) — write 5 versions, one for each level below, EACH 45-70 words, same length/style as a normal single-concept explanation, just covering the whole subject at that level of abstraction:
 ${levelDescs}
 Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Each level should be genuinely distinct in register/depth from the others, not a reworded repeat.
-Write all 5 in the SAME language as the subject text above (detect it and match exactly).
+Write all 5 in the SAME language as the subject text above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ###L1### level 1 text ###L2### level 2 text ###L3### level 3 text ###L4### level 4 text ###L5### level 5 text ###END###`,
@@ -232,7 +232,7 @@ async function genSubtopicNames(prompt, learningProfile, levelHint) {
   const countRange = lvl<=1 ? "3-4" : lvl===2 ? "4-5" : lvl===3 ? "4-6" : lvl===4 ? "5-7" : "6-8";
   const levelPart = levelHint ? `\nThe learner chose to approach this topic at the "${levelHint.label}" level (${levelHint.hint}), targeting roughly ${levelHint.minutes} minutes total for this topic at this depth — shape the subtopic breakdown, count, and complexity to match this depth and time budget.` : "";
   const d = await callClaude(
-    `Design a self-study curriculum for: "${prompt}".${profileHint}${levelPart}\nList ${countRange} subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly). Never use " inside.\nReturn: {"names":["..."]}`,
+    `Design a self-study curriculum for: "${prompt}".${profileHint}${levelPart}\nList ${countRange} subtopics in learning order, under 5 words each, no numbering. Write ALL subtopic names in the SAME language as the prompt above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.\nReturn: {"names":["..."]}`,
     500
   );
   return d.names||[];
@@ -243,7 +243,7 @@ async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
   const countRange = lvl<=1 ? "2-3" : lvl===2 ? "3" : lvl===3 ? "3-4" : lvl===4 ? "4-5" : "5-6";
   const levelPart = levelHint ? ` The learner chose to approach this at the "${levelHint.label}" level (${levelHint.hint}), targeting roughly ${levelHint.minutes} minutes total for this subtopic — shape count and complexity accordingly.` : "";
   const s = await callClaude(
-    `Topic: "${prompt}" > "${subtopicName}". List ${countRange} sub-subtopics, under 6 words each.${levelPart} Write them in the SAME language as the topic above (match exactly). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
+    `Topic: "${prompt}" > "${subtopicName}". List ${countRange} sub-subtopics, under 6 words each.${levelPart} Write them in the SAME language as the topic above (match exactly — Cyrillic means BULGARIAN specifically, never Russian; Latin means ENGLISH specifically). Never use " inside.\nReturn: {"subsubtopics":["..."]}`,
     400
   );
   return s.subsubtopics||[];
@@ -262,7 +262,7 @@ async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
   const raw = await callClaudeRaw(
     `Topic: "${topicLabel}" > "${subtopicName}". Write ONE VERY SHORT explanation for EACH of these ${termNames.length} terms, each STRICTLY ${lo}-${hi} words (this is a hard limit — count your words, this must be brief, just enough to orient, not a full explanation), all at level "${meta.label}" (${meta.hint}) — this is the depth/register the learner already chose for this subtopic.
 Terms, in order: ${termNames.map((t,i)=>`${i+1}. ${t}`).join("; ")}.
-Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write all explanations in the SAME language as the topic/subtopic above (detect it and match exactly).
+Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write all explanations in the SAME language as the topic/subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ${markerLines} ###END###`,
@@ -320,7 +320,7 @@ Marked as completely unclear: ${confused.join(", ")||"none"}.
 Understood only at a shallow level (only liked "Analogy" or "Example" explanations, levels 1-2 — this is INSUFFICIENT depth, not real command of the topic): ${improveUnits.join(", ")||"none"}.
 Never engaged with — no level rated, no "did not understand" mark, not opened (likely low interest, not a knowledge gap): ${ignoredUnits.join(", ")||"none"}.
 Preferred explanation level overall: "${topLvl||"unknown"}".
-Write in the SAME language as the topic above (detect it and match exactly). Use an OBJECTIVE, calibrated, non-flattering tone throughout — this is a factual assessment, not encouragement. Do not use inflated praise language (avoid phrases like "solid foundation", "great grasp", "well done") for anything below level 3. Be precise about what each level of understanding actually means: level 1-2 (analogy/example only) = superficial, not yet real understanding; level 3 (mechanics) = adequate, functional understanding; level 4-5 (definition/depth) = solid, strong command.
+Write in the SAME language as the topic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Use an OBJECTIVE, calibrated, non-flattering tone throughout — this is a factual assessment, not encouragement. Do not use inflated praise language (avoid phrases like "solid foundation", "great grasp", "well done") for anything below level 3. Be precise about what each level of understanding actually means: level 1-2 (analogy/example only) = superficial, not yet real understanding; level 3 (mechanics) = adequate, functional understanding; level 4-5 (definition/depth) = solid, strong command.
 Output EXACTLY five sections using these markers, nothing before the first marker or after the last one, no extra commentary:
 ###KNOWS### (80-120 words) — objectively state what is adequately or solidly understood (from the level 3+ list only); if that list is empty, say plainly that nothing has reached an adequate depth yet, without softening it
 ###IMPROVE### (60-100 words) — ONLY about the shallow-understanding units listed above: name them and state plainly that only surface-level analogy/example understanding exists, then explain what deeper understanding is still missing for each; if empty, say there's nothing at this shallow tier
@@ -399,7 +399,7 @@ async function genSubtopicEssay(topicLabel, subtopicName, levelHint) {
     `Write a long-form OVERVIEW ESSAY (${lo}-${hi} words) about "${subtopicName}", within the context of the broader topic "${topicLabel}".
 Style: engaging, narrative, slightly philosophical/reflective — like a well-written tech/science essay that gives the big picture, the "why it matters" and the underlying ideas, not a dry technical walkthrough or a bullet-point summary. Use natural prose paragraphs (blank line between paragraphs), a few illustrative analogies or historical/conceptual framing where it fits, and an occasional short memorable phrase. It's fine to use a few short section-like breaks (a short bolded-feeling phrase followed by a colon is NOT needed — just flowing prose divided into paragraphs).${levelPart}
 CRITICAL: stay strictly within the exact scenario/context of "${topicLabel}" above. Any illustrative example, analogy, or scenario you use must fit THIS specific context — never substitute a different generic scenario (e.g. do not use "an online store" as an example if the actual context is something else entirely, like an educational site, a healthcare system, etc). Ground every example in the ACTUAL subject matter given.
-Write in the SAME language as the topic/subtopic above (detect it and match exactly).
+Write in the SAME language as the topic/subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output ONLY the essay, wrapped exactly like this and nothing else before or after: ###TEXT###the essay here###TEXT_END###`,
     Math.min(3800, 400+hi*3)
@@ -419,7 +419,7 @@ async function genSubtopicExamples(topicLabel, subtopicName, levelHint) {
     `Give ${countRange} CONCRETE, TANGIBLE examples that make "${subtopicName}" real, strictly within the exact context of "${topicLabel}" (not a generic or unrelated scenario — every example must reflect the actual subject matter given).
 FIRST, decide what kind of concrete artifact is genuinely the most natural and useful fit for THIS specific subject — it could be a YAML/config snippet, a command, a code sample, a template, a worked calculation, an actual quoted passage/text, a sample dialogue or phrase, a practice exercise, a real-world scenario walkthrough, or anything else that fits. Do NOT default to a technical/code format if the subject is not technical (e.g. for a literary, historical, religious, or language-learning topic, use real quoted text, example sentences, or worked illustrations instead — never force YAML or config syntax onto a non-technical subject).${levelPart}
 Format: for each example, a short title line (plain text, no markdown symbols), then the example content on the following lines exactly as it should look (preserve original formatting/line breaks — use real newlines and spaces, not escaped ones). Leave a blank line between examples.
-Write titles and any prose in the SAME language as the topic/subtopic above; if the example is code/config, keep its syntax in natural technical form (do not translate code syntax).
+Write titles and any prose in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically); if the example is code/config, keep its syntax in natural technical form (do not translate code syntax).
 Never use the " character inside the text.
 Output ONLY the examples, wrapped exactly like this and nothing else before or after: ###TEXT###the examples here###TEXT_END###`,
     2200
@@ -449,7 +449,7 @@ async function genActionPlan(topicLabel, subtopicName, levelHint) {
 Each idea must genuinely challenge or break from the standard/expected way of learning or doing this — a shortcut most people don't know, a contrarian reframing, an unusual technique borrowed from elsewhere, or an experimental method worth trying — never generic "think outside the box" fluff, always something specific and actually usable tied to this exact subject.
 Escalate boldness across the ${n}: idea 1 is a simple but non-obvious tweak or hack usable right away; the last idea is a genuinely radical rethink of the standard approach to "${subtopicName}" entirely.${levelPart}
 For each idea, give a SHORT punchy title (3-7 words, provocative or memorable — never a generic label like "Idea 1") and a body of ${lo}-${hi} words explaining the idea and specifically why/how it beats the conventional approach.
-Write in the SAME language as the topic/subtopic above (detect it and match exactly).
+Write in the SAME language as the topic/subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ${markerLines.join(" ")} ###END###`,
@@ -478,7 +478,7 @@ async function genSocraticDialogue(topicLabel, subtopicName, levelHint) {
     `Design a SOCRATIC dialogue teaching "${subtopicName}" (within the broader context of "${topicLabel}") — a sequence of exactly ${n} guiding QUESTIONS, in the true Socratic method: each question should provoke the learner to think and arrive at the insight themselves, rather than being told the answer directly. Questions should build on each other, moving from a simple provocation toward the core understanding. Do NOT just ask generic quiz questions — each should genuinely guide reasoning toward the next realization, the way a real Socratic teacher would. Keep each question itself short (one sentence).
 For each question, also give a short GUIDING NOTE (${lo}-${hi} words) — not the direct answer, but a nudge, a related observation, or a follow-up prompt that helps the learner think it through, IN THE STYLE of a teacher gently redirecting without lecturing. Only the FINAL guiding note may synthesize/confirm the core insight, since it concludes the dialogue.
 Ground every question in the exact subject matter of "${subtopicName}" — never generic philosophical questions unrelated to the actual content.${levelPart}
-Write in the SAME language as the topic/subtopic above (detect it and match exactly).
+Write in the SAME language as the topic/subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
 ${markerLines.join(" ")} ###END###`,
@@ -506,7 +506,7 @@ Requirements:
 - Must be genuinely interactive (respond to clicks/input/sliders in real time via JavaScript) and directly illustrate the specific relationships/parameters of "${subtopicName}" — never a generic unrelated demo.
 - CRITICAL — the relationship must be EXPLAINED, not just shown: the widget's PRIMARY teaching goal is making the learner understand WHY the output changes, not just that it changes. In addition to any chart/visual, include a short text area (1-3 sentences) that updates live with the current control values and states IN PLAIN WORDS what is happening and why — e.g. "При 4 тенанта × 2 workers всеки = 8 pods общо; на 300 jobs в опашката всеки pod обработва ~37 jobs, затова изчакването расте." Reference the actual current numbers from the controls in this sentence every time it updates. If there's a simple underlying formula or rule, show it once, visibly, near the controls (e.g. "Pods = тенанти × workers/тенант") so the cause-effect is explicit, not something the learner has to reverse-engineer from a chart alone.
 - STRICT SCOPE LIMIT: at most 2 interactive controls total (sliders/toggles/buttons combined), ONE visualization area (a chart, a mock chat log, an animated graphic, or a small table), and the one live-updating explanation text described above — nothing else (no extra stat cards, no extra panels). Prioritize making the 2 controls' effect crystal clear over adding more controls. This is a hard limit to keep the code short enough to generate completely and reliably.
-- All visible text/labels in the widget in the SAME language as the topic/subtopic above.
+- All visible text/labels in the widget in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
 Never use the exact sequence "###" anywhere in the code.
 Output ONLY the HTML document, wrapped exactly like this and nothing else before or after: ###HTML###the complete html document here###HTML_END###`,
     3200, 0, 7000
@@ -520,7 +520,7 @@ async function genTestQuestions(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}) — keep question text short and simple at lower levels, more nuanced at higher levels.` : "";
   const raw = await callClaudeRaw(
     `Design a small TEST about "${subtopicName}" (within the broader context of "${topicLabel}") with exactly 6 questions, one of each type below. Ground every question strictly in the actual content of "${subtopicName}" — never generic trivia unrelated to it. Keep each question text itself short (one sentence where possible).${levelPart}
-Write everything in the SAME language as the topic/subtopic above (detect it and match exactly). Never use the " character inside any text. Use " || " as separator between list items, and " :: " between a matched pair's two sides — never use either separator inside the item text itself, and never use the literal string "###" inside any answer text.
+Write everything in the SAME language as the topic/subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use the " character inside any text. Use " || " as separator between list items, and " :: " between a matched pair's two sides — never use either separator inside the item text itself, and never use the literal string "###" inside any answer text.
 
 1. SINGLE-CHOICE: one question, exactly ${tc.singleOpts} options (only one correct).
 2. MULTI-CHOICE: one question, exactly ${tc.multiOpts} options (2 or more correct).
@@ -583,7 +583,7 @@ async function genAiConfession(topicLabel, subtopicName, levelHint) {
     `Write an honest, first-person reflection (${lo}-${hi} words) from YOUR OWN perspective as an AI, specifically about "${subtopicName}" (within the broader context of "${topicLabel}").
 Genuinely share what you don't fully understand, can't reliably explain, or cannot actually do regarding this SPECIFIC subject — especially anything that requires lived, embodied, or subjective human experience you lack: physical sensation, practiced intuition built over years of real trial-and-error, subjective taste or judgment, the felt weight of real consequences, cultural lived experience, timing/feel that can't be learned from text alone.
 Be SPECIFIC to this exact subject, not a generic AI disclaimer that could apply to anything. Be calibrated and honest: if there is genuinely little epistemic limitation for this particular subject, say so plainly rather than inventing a forced admission — don't manufacture false humility. Speak about architectural/experiential facts (no embodied practice, no persistent memory of doing this in the real world, learning patterns from text rather than lived trial-and-error) rather than claiming feelings or consciousness you can't verify having.${levelPart}
-Write in the SAME language as the topic/subtopic above (detect it and match exactly), in first person.
+Write in the SAME language as the topic/subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically), in first person.
 Never use the " character inside the text.
 Output ONLY the reflection, wrapped exactly like this and nothing else before or after: ###TEXT###the reflection here###TEXT_END###`,
     Math.min(2200,400+hi*3)
@@ -602,7 +602,7 @@ async function genCuriosityAnswersBatch(topicLabel, subtopicName, questions, lev
     `The learner is studying "${subtopicName}" (within the broader context of "${topicLabel}") and asked these ${questions.length} question(s) while reading:
 ${questionsList}
 Answer EACH question directly and clearly (60-120 words each), staying strictly within the exact context of "${topicLabel}" and "${subtopicName}" — never drift to unrelated generic examples.${levelPart}
-Write in the SAME language as the questions above (detect it and match exactly).
+Write in the SAME language as the questions above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output EXACTLY in this format, one marker pair per question in the same order, nothing before the first marker or after the last one, no extra commentary:
 ${markerInstructions} ###END###`,
@@ -615,7 +615,7 @@ ${markerInstructions} ###END###`,
 
 async function genAdaptedTopicName(originalTopic, levelCheck) {
   const raw = await callClaudeRaw(
-    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly). Output ONLY the name, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
+    `Original topic: "${originalTopic}". The learner is missing: "${levelCheck.missing}". Next step: "${levelCheck.next}". Generate a short display name (3-6 words) for a new focused learning plan that addresses these gaps. Write it in the SAME language as the original topic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Output ONLY the name, wrapped exactly like this and nothing else: ###NAME###the name here###NAME_END###`,
     200
   );
   const name = extractField(raw,"NAME");
