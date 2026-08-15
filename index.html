@@ -246,7 +246,7 @@ async function genPrefaceTopics(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` The learner is approaching the subtopic at the "${levelHint.label}" level (${levelHint.hint}) — calibrate which prerequisites are worth surfacing accordingly (fewer/more basic at lower levels, more/deeper at higher levels).` : "";
   const d = await callClaude(
     `The learner is about to study "${subtopicName}", within the broader plan "${topicLabel}". Identify the BACKGROUND/PREREQUISITE concepts and terminology that "${subtopicName}" assumes the learner already understands — the foundational building blocks it is built on top of, NOT the subtopic's own content.${levelPart}
-List ${countRange} such prerequisite topics, under 5 words each, no numbering, ordered from most foundational to most specific. Write them in the SAME language as the subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.
+List ${countRange} such prerequisite topics, under 5 words each, no numbering. CRITICAL — order them in genuine chronological/learning sequence: each topic in the list must depend ONLY on topics that come BEFORE it in the list, never on ones that come after. The first item should be the most foundational, self-contained starting point; each following item builds strictly on what precedes it, ending with the item most directly adjacent to "${subtopicName}" itself. Write them in the SAME language as the subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.
 Return: {"names":["..."]}`,
     500
   );
@@ -1398,7 +1398,8 @@ function Aperture() {
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
       const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
-      const subsubtopics = [glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
+      const prefaceItem = { name:"Предговор", isPreface:true };
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
 
       const soleSubtopic = { name:entry.name, overviewLevels:null, byLevel:{[level]:subsubtopics}, activeLevel:level };
       const newPlan = { name, prompt, overviewLevels:null, byLevel:{[level]:[soleSubtopic]}, activeLevel:level };
