@@ -1531,13 +1531,16 @@ function Aperture() {
 
     const subItem = hierarchy[subIdx];
     const level = subItem.activeLevel || planData.activeLevel || 3;
-    const prompt = `${question.q}\n\nКонтекст — вече получен кратък отговор, но искам още обяснения: ${question.answer}`;
+    const broaderContext = currentTopic.prompt || currentTopic.name;
+    // full context chain baked into the prompt itself — every section generator downstream reads this,
+    // so the deep-dive never drifts away from the big picture it came from
+    const deepPrompt = `${broaderContext} > ${subItem.name} — конкретен въпрос за задълбочаване: "${question.q}" (вече получен кратък отговор преди: ${question.answer})`;
 
     setLoadingH(true);
     try{
-      const name = await genTopicName(prompt);
+      const name = await genTopicName(question.q);
       const id = slugify(name)+"-"+Date.now().toString(36);
-      const newTopic = { id, name, prompt, createdAt:Date.now(), originTopicId:currentTopic.id, originQuestion:question.q };
+      const newTopic = { id, name, prompt:deepPrompt, createdAt:Date.now(), originTopicId:currentTopic.id, originQuestion:question.q, isDeepDive:true };
 
       const nextTopics=[newTopic,...topics];
       setTopics(nextTopics); await saveJSON("topics", nextTopics);
@@ -1551,15 +1554,30 @@ function Aperture() {
       setPlanData(updatedPlan);
       await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
 
-      // build the new topic's plan directly at the chosen level — same as any topic, level auto-applied
+      // NOT a whole new plan with multiple subtopics — the question itself IS the single subtopic,
+      // built with the full 10-section set directly, no subtopic-picker screen
       const levelMeta = LEVELS.find(l=>l.level===level);
-      const names = await genSubtopicNames(prompt, null, levelMeta);
-      const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
-      const newPlan = { name, prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level };
+      const rawSubsubtopics = await genSubsubtopicsFor(deepPrompt, question.q, levelMeta);
+      const overviewItem = { name:"Общ преглед", isOverview:true };
+      const examplesItem = { name:"Практически примери", isExamples:true };
+      const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
+      const quotesItem = { name:"Цитати", isQuotes:true };
+      const actionPlanItem = { name:"Rework", isActionPlan:true };
+      const socraticItem = { name:"Сократически диалог", isSocratic:true };
+      const testItem = { name:"Тест", isTest:true };
+      const confessionItem = { name:"Признание на AI", isConfession:true };
+      const simulationItem = { name:"Симулация", isSimulation:true };
+      const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
+      const subsubtopics = [glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
+
+      const soleSubtopic = { name:question.q, overviewLevels:null, byLevel:{[level]:subsubtopics}, activeLevel:level };
+      const newPlan = { name, prompt:deepPrompt, overviewLevels:null, byLevel:{[level]:[soleSubtopic]}, activeLevel:level };
       await saveJSON(`plan:${id}`, newPlan);
 
       setCurrentTopic(newTopic);
       setPlanData(newPlan);
+      setHierarchy([soleSubtopic]);
+      setSubtopicIdx(0); // skip the subtopic-picker — go straight into the sections
       setHierarchy(subtopics);
       setSubtopicIdx(null); setSubsubIdx(null); setNodeId(null); setNodeData(null); setLevelCheck(null);
     }catch(e){
