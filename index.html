@@ -1519,6 +1519,56 @@ function Aperture() {
     await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
   }
 
+  // "Задълбочи" — spins the answered question off into a real topic (same machinery as any other topic),
+  // linked back to where it came from. Re-entering never regenerates.
+  async function deepenQuestion(subIdx, question){
+    if(!question?.answered) return;
+
+    if(question.deepDiveTopicId){
+      const existing = topics.find(t=>t.id===question.deepDiveTopicId);
+      if(existing){ resumeTopic(existing); return; }
+    }
+
+    const subItem = hierarchy[subIdx];
+    const level = subItem.activeLevel || planData.activeLevel || 3;
+    const prompt = `${question.q}\n\nКонтекст — вече получен кратък отговор, но искам още обяснения: ${question.answer}`;
+
+    setLoadingH(true);
+    try{
+      const name = await genTopicName(prompt);
+      const id = slugify(name)+"-"+Date.now().toString(36);
+      const newTopic = { id, name, prompt, createdAt:Date.now(), originTopicId:currentTopic.id, originQuestion:question.q };
+
+      const nextTopics=[newTopic,...topics];
+      setTopics(nextTopics); await saveJSON("topics", nextTopics);
+
+      // link back on the question itself, so revisiting never regenerates
+      const updatedQuestions = (subItem.curiosityQuestions||[]).map(qq=>qq.id===question.id?{...qq, deepDiveTopicId:id}:qq);
+      const updatedSub = {...subItem, curiosityQuestions:updatedQuestions};
+      const updatedHierarchy = hierarchy.map((s,idx)=>idx===subIdx?updatedSub:s);
+      setHierarchy(updatedHierarchy);
+      const updatedPlan = {...planData, byLevel:{...planData.byLevel,[planData.activeLevel]:updatedHierarchy}};
+      setPlanData(updatedPlan);
+      await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
+
+      // build the new topic's plan directly at the chosen level — same as any topic, level auto-applied
+      const levelMeta = LEVELS.find(l=>l.level===level);
+      const names = await genSubtopicNames(prompt, null, levelMeta);
+      const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
+      const newPlan = { name, prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level };
+      await saveJSON(`plan:${id}`, newPlan);
+
+      setCurrentTopic(newTopic);
+      setPlanData(newPlan);
+      setHierarchy(subtopics);
+      setSubtopicIdx(null); setSubsubIdx(null); setNodeId(null); setNodeData(null); setLevelCheck(null);
+    }catch(e){
+      setNodeError(`Грешка: ${e.message}`);
+    }finally{
+      setLoadingH(false);
+    }
+  }
+
   async function generateCuriosityAnswers(subIdx){
     const subItem = hierarchy[subIdx];
     const qs = subItem.curiosityQuestions||[];
@@ -1883,6 +1933,8 @@ function Aperture() {
               onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
+              onDeepen={(q)=>deepenQuestion(subtopicIdx,q)}
+              deepening={loadingH}
               curiosityQuestions={hierarchy[subtopicIdx].curiosityQuestions||[]}
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
@@ -1962,6 +2014,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
+  const originTopic = topic.originTopicId ? allTopics.find(t=>t.id===topic.originTopicId) : null;
   const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
 
   return <div className="space-y-4">
@@ -1983,7 +2036,10 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     </div>
 
     {/* T.6: related topic links */}
-    {(parentTopic||childTopic)&&<div className="space-y-1">
+    {(parentTopic||childTopic||originTopic)&&<div className="space-y-1">
+      {originTopic&&<button onClick={()=>onNavigateTopic(originTopic)} className="flex items-center gap-2 text-sm font-mono-cal text-indigo-500 hover:text-indigo-300">
+        <ChevronLeft size={14}/> От въпрос в: {originTopic.name}
+      </button>}
       {parentTopic&&<button onClick={()=>onNavigateTopic(parentTopic)} className="flex items-center gap-2 text-sm font-mono-cal text-stone-500 hover:text-amber-400">
         <ChevronLeft size={14}/> Базов план: {parentTopic.name}
       </button>}
@@ -2096,7 +2152,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isEncyclopedia,isQuotes,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryEncyclopedia,onRetryQuotes,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneEncyclopedia,onTuneQuotes,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isEncyclopedia,isQuotes,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryEncyclopedia,onRetryQuotes,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,onDeepen,deepening,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneEncyclopedia,onTuneQuotes,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isGlossary){
@@ -2115,7 +2171,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isEncy
         </button>
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryGlossary}/>}
-      <GlossaryPanel loading={loadingLevels} terms={nodeData?.terms||[]} tuned={!!nodeData?.tunedGlossary} onTune={onTuneGlossary}/>
+      <GlossaryPanel loading={loadingLevels} terms={nodeData?.terms||[]} tuned={!!nodeData?.tunedGlossary} onTune={onTuneGlossary} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
     </div>;
   }
 
@@ -2155,7 +2211,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isEncy
         </button>
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryExamples}/>}
-      <ExamplesPanel loading={loadingLevels} examples={nodeData?.examples||""} tuned={!!nodeData?.tunedExamples} onTune={onTuneExamples}/>
+      <ExamplesPanel loading={loadingLevels} examples={nodeData?.examples||""} tuned={!!nodeData?.tunedExamples} onTune={onTuneExamples} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
     </div>;
   }
 
@@ -2237,7 +2293,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isEncy
         </button>
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetrySocratic}/>}
-      <SocraticPanel loading={loadingLevels} steps={nodeData?.steps||[]} tuned={!!nodeData?.tunedSocratic} onTune={onTuneSocratic}/>
+      <SocraticPanel loading={loadingLevels} steps={nodeData?.steps||[]} tuned={!!nodeData?.tunedSocratic} onTune={onTuneSocratic} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
     </div>;
   }
 
@@ -2314,7 +2370,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isEncy
         <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryCurious}/>}
-      <CuriosityPanel loading={loadingLevels} questions={nodeData?.questions||[]}/>
+      <CuriosityPanel loading={loadingLevels} questions={nodeData?.questions||[]} onDeepen={onDeepen} deepening={deepening}/>
     </div>;
   }
 
@@ -2348,10 +2404,11 @@ function NodeView({topic,subtopic,subsub,isOverview,isGlossary,isExamples,isEncy
   </div>;
 }
 
-function GlossaryPanel({loading,terms,tuned,onTune}){
+function GlossaryPanel({loading,terms,tuned,onTune,onAsk,curiosityQuestions}){
   if(loading) return <Spinner label="генерирам речник…"/>;
   if(!terms||!terms.length) return null;
   return <div className="space-y-4">
+    <AskQuestionBlock onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
     <div className="space-y-2">
       {terms.map((t,i)=>(
         <div key={i} className="rounded border border-lime-900/50 bg-lime-950/10 p-4">
@@ -2364,12 +2421,9 @@ function GlossaryPanel({loading,terms,tuned,onTune}){
   </div>;
 }
 
-function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityQuestions}){
+function AskQuestionBlock({onAsk,curiosityQuestions}){
   const [q,setQ]=useState("");
   const [open,setOpen]=useState(false);
-  if(loading) return <Spinner label="пиша есе (500-800 думи)…"/>;
-  if(!essay) return null;
-  const paragraphs = essay.split(/\n\s*\n/).filter(p=>p.trim());
   const questions = curiosityQuestions||[];
   function submit(){
     const t=q.trim();
@@ -2377,7 +2431,7 @@ function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityQuestions}){
     onAsk(t);
     setQ("");
   }
-  return <div className="space-y-4">
+  return <>
     <div className="sticky top-2 z-10">
       <div className="rounded border border-indigo-800 bg-stone-950/95 backdrop-blur p-2 shadow-lg shadow-black/40">
         <button onClick={()=>setOpen(o=>!o)}
@@ -2397,12 +2451,6 @@ function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityQuestions}){
         </div>}
       </div>
     </div>
-    <div className="space-y-4">
-      {paragraphs.map((p,i)=>(
-        <p key={i} className="font-read text-stone-200 leading-relaxed text-lg">{p.trim()}</p>
-      ))}
-    </div>
-    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
     {questions.length>0 && <div className="rounded border border-indigo-900/40 bg-indigo-950/10 p-3 space-y-2">
       <div className="font-mono-cal text-xs uppercase tracking-wide text-indigo-400">Твоите въпроси ({questions.length})</div>
       <div className="space-y-1.5">
@@ -2415,6 +2463,21 @@ function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityQuestions}){
       </div>
       <p className="font-mono-cal text-[11px] text-stone-500">Отговорите се появяват в „Любопитно" най-долу.</p>
     </div>}
+  </>;
+}
+
+function EssayPanel({loading,essay,tuned,onTune,onAsk,curiosityQuestions}){
+  if(loading) return <Spinner label="пиша есе (500-800 думи)…"/>;
+  if(!essay) return null;
+  const paragraphs = essay.split(/\n\s*\n/).filter(p=>p.trim());
+  return <div className="space-y-4">
+    <AskQuestionBlock onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
+    <div className="space-y-4">
+      {paragraphs.map((p,i)=>(
+        <p key={i} className="font-read text-stone-200 leading-relaxed text-lg">{p.trim()}</p>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
 }
 
@@ -2431,12 +2494,13 @@ function looksLikeCode(text){
   return codeIndicators >= Math.max(1, Math.ceil(lines.length*0.3));
 }
 
-function ExamplesPanel({loading,examples,tuned,onTune}){
+function ExamplesPanel({loading,examples,tuned,onTune,onAsk,curiosityQuestions}){
   if(loading) return <Spinner label="генерирам практически примери…"/>;
   if(!examples) return null;
   // split into blocks by blank lines; each block's first line (if short, no leading whitespace) is treated as a title
   const blocks = examples.split(/\n\s*\n/).filter(b=>b.trim());
   return <div className="space-y-4">
+    <AskQuestionBlock onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
     <div className="space-y-4">
       {blocks.map((block,i)=>{
         const lines = block.split("\n");
@@ -2514,10 +2578,11 @@ function ActionPlanPanel({loading,stages,tuned,onTune}){
   </div>;
 }
 
-function SocraticPanel({loading,steps,tuned,onTune}){
+function SocraticPanel({loading,steps,tuned,onTune,onAsk,curiosityQuestions}){
   if(loading) return <Spinner label="изграждам сократически диалог…"/>;
   if(!steps||!steps.length) return null;
   return <div className="space-y-4">
+    <AskQuestionBlock onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
     <div className="space-y-3">
       {steps.map((s,i)=>(
         <div key={i} className="rounded border border-teal-900/50 bg-teal-950/10 p-4">
@@ -2707,7 +2772,7 @@ function ConfessionPanel({loading,confession,tuned,onTune}){
   </div>;
 }
 
-function CuriosityPanel({loading,questions}){
+function CuriosityPanel({loading,questions,onDeepen,deepening}){
   if(!questions||!questions.length){
     return <p className="font-read text-stone-500 text-sm py-6">
       Все още нямаш зададени въпроси. Отвори „Общ преглед" и задай въпрос — отговорът ще се появи тук.
@@ -2718,7 +2783,14 @@ function CuriosityPanel({loading,questions}){
       <div key={item.id||i} className="rounded border border-indigo-900/50 bg-indigo-950/10 p-4">
         <p className="font-read text-stone-100 leading-relaxed text-lg font-medium mb-2">{item.q}</p>
         {item.answered
-          ? <p className="font-read text-stone-300 leading-relaxed text-base">{item.answer}</p>
+          ? <>
+              <p className="font-read text-stone-300 leading-relaxed text-base">{item.answer}</p>
+              <button onClick={()=>onDeepen(item)} disabled={deepening}
+                className="mt-3 flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-indigo-700 text-indigo-300 hover:border-indigo-400 hover:text-indigo-200 disabled:opacity-50">
+                {deepening?<Loader2 size={12} className="animate-spin"/>:<Sparkles size={12}/>}
+                {item.deepDiveTopicId?"Отвори задълбочаването":"Задълбочи"}
+              </button>
+            </>
           : <div className="flex items-center gap-2 text-stone-500 text-sm"><Loader2 size={14} className="animate-spin"/><span className="font-mono-cal">генерирам отговор…</span></div>}
       </div>
     ))}
