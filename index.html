@@ -1183,7 +1183,7 @@ function Aperture() {
     setNodeId(id);
 
     if(isPrefaceItem(subsubItem)){
-      const EMPTY={entries:[],prefaceLevel:null,tunedPreface:false,unitConfused:false};
+      const EMPTY={entries:[],prefaceLevel:null,tunedPreface:false,prefaceTopicId:null,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
       const allKeys=await loadJSON("allNodeKeys",[]);
@@ -1331,7 +1331,7 @@ function Aperture() {
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
       const names = await genPrefaceTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta);
-      const entries = names.map(n=>({name:n, spawnedTopicId:null}));
+      const entries = names.map(n=>({name:n}));
       const updated = {...base, entries, prefaceLevel:subLevel};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
@@ -1359,56 +1359,59 @@ function Aperture() {
     const entry = nodeData.entries[entryIdx];
     if(!entry) return;
 
-    if(entry.spawnedTopicId){
-      const existing = topics.find(t=>t.id===entry.spawnedTopicId);
-      if(existing){ resumeTopic(existing); return; }
-    }
-
     const subItem = hierarchy[subIdx];
     const level = subItem.activeLevel || planData.activeLevel || 3;
-    const broaderContext = currentTopic.prompt || currentTopic.name;
-    const prompt = `${broaderContext} > ${subItem.name} — предпоставна/основополагаща тема: "${entry.name}" (нужна база, преди да се разбере "${subItem.name}")`;
+    const levelMeta = LEVELS.find(l=>l.level===level);
 
     setLoadingH(true);
     try{
-      const name = await genTopicName(entry.name);
-      const id = slugify(name)+"-"+Date.now().toString(36);
-      const newTopic = { id, name, prompt, createdAt:Date.now(), originTopicId:currentTopic.id, originQuestion:null, isSingleSubtopic:true };
+      let metaTopic = nodeData.prefaceTopicId ? topics.find(t=>t.id===nodeData.prefaceTopicId) : null;
+      let metaPlan = metaTopic ? await loadJSON(`plan:${metaTopic.id}`, null) : null;
+      let metaHierarchy = metaPlan ? metaPlan.byLevel[metaPlan.activeLevel] : null;
 
-      const nextTopics=[newTopic,...topics];
-      setTopics(nextTopics); await saveJSON("topics", nextTopics);
+      if(!metaTopic || !metaPlan || !metaHierarchy){
+        // create the ONE shared meta-plan for this whole Предговор section — all entries become its subtopics
+        const metaName = `Предговор: ${subItem.name}`;
+        const id = slugify(metaName)+"-"+Date.now().toString(36);
+        metaTopic = { id, name:metaName, prompt:metaName, createdAt:Date.now(), originTopicId:currentTopic.id, originQuestion:null };
+        const nextTopics=[metaTopic,...topics];
+        setTopics(nextTopics); await saveJSON("topics", nextTopics);
 
-      // mark this entry as spawned, so revisiting never regenerates
-      const updatedEntries = nodeData.entries.map((e,i)=>i===entryIdx?{...e, spawnedTopicId:id}:e);
-      const updatedNode = {...nodeData, entries:updatedEntries};
-      setNodeData(updatedNode);
-      await saveJSON(`node:${nodeId}`, updatedNode);
+        metaHierarchy = nodeData.entries.map(e=>({ name:e.name, overviewLevels:null, byLevel:{}, activeLevel:null }));
+        metaPlan = { name:metaName, prompt:metaName, overviewLevels:null, byLevel:{[level]:metaHierarchy}, activeLevel:level };
 
-      // NOT a whole new plan with multiple subtopics — the prerequisite topic itself IS the single subtopic,
-      // built with the full 10-section set directly (minus Предговор itself, capping recursion at one level)
-      const levelMeta = LEVELS.find(l=>l.level===level);
-      const rawSubsubtopics = await genSubsubtopicsFor(prompt, entry.name, levelMeta);
-      const overviewItem = { name:"Общ преглед", isOverview:true };
-      const examplesItem = { name:"Практически примери", isExamples:true };
-      const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
-      const quotesItem = { name:"Цитати", isQuotes:true };
-      const actionPlanItem = { name:"Rework", isActionPlan:true };
-      const socraticItem = { name:"Сократически диалог", isSocratic:true };
-      const testItem = { name:"Тест", isTest:true };
-      const confessionItem = { name:"Признание на AI", isConfession:true };
-      const simulationItem = { name:"Симулация", isSimulation:true };
-      const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
-      const prefaceItem = { name:"Предговор", isPreface:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
+        const updatedNode = {...nodeData, prefaceTopicId:id};
+        setNodeData(updatedNode);
+        await saveJSON(`node:${nodeId}`, updatedNode);
+      }
 
-      const soleSubtopic = { name:entry.name, overviewLevels:null, byLevel:{[level]:subsubtopics}, activeLevel:level };
-      const newPlan = { name, prompt, overviewLevels:null, byLevel:{[level]:[soleSubtopic]}, activeLevel:level };
-      await saveJSON(`plan:${id}`, newPlan);
+      // generate this specific entry's content, if not already there
+      let subEntry = metaHierarchy[entryIdx];
+      if(!subEntry?.byLevel?.[subEntry?.activeLevel]?.length){
+        const rawSubsubtopics = await genSubsubtopicsFor(entry.name, entry.name, levelMeta);
+        const overviewItem = { name:"Общ преглед", isOverview:true };
+        const examplesItem = { name:"Практически примери", isExamples:true };
+        const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
+        const quotesItem = { name:"Цитати", isQuotes:true };
+        const actionPlanItem = { name:"Rework", isActionPlan:true };
+        const socraticItem = { name:"Сократически диалог", isSocratic:true };
+        const testItem = { name:"Тест", isTest:true };
+        const confessionItem = { name:"Признание на AI", isConfession:true };
+        const simulationItem = { name:"Симулация", isSimulation:true };
+        const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
+        const prefaceItem = { name:"Предговор", isPreface:true };
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
 
-      setCurrentTopic(newTopic);
-      setPlanData(newPlan);
-      setHierarchy([soleSubtopic]);
-      setSubtopicIdx(0); // skip picking — go straight into the sections
+        subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
+        metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
+        metaPlan = { ...metaPlan, byLevel:{...metaPlan.byLevel, [level]:metaHierarchy}, activeLevel:level };
+        await saveJSON(`plan:${metaTopic.id}`, metaPlan);
+      }
+
+      setCurrentTopic(metaTopic);
+      setPlanData(metaPlan);
+      setHierarchy(metaHierarchy);
+      setSubtopicIdx(entryIdx);
       setSubsubIdx(null); setNodeId(null); setNodeData(null); setLevelCheck(null);
     }catch(e){
       setNodeError(`Грешка: ${e.message}`);
@@ -1847,7 +1850,7 @@ function Aperture() {
           } else if(isPrefaceItem(item)){
             if(!existing?.entries?.length){
               const names = await genPrefaceTopics(topicPrompt, subItem.name, subLevelMeta);
-              const entries = names.map(n=>({name:n, spawnedTopicId:null}));
+              const entries = names.map(n=>({name:n}));
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, prefaceLevel:subLevel, tunedPreface:existing?.tunedPreface||false});
             }
           } else if(isGlossaryItem(item)){
@@ -2524,7 +2527,7 @@ function PrefacePanel({loading,entries,tuned,onTune,onOpen}){
           className="w-full text-left px-4 py-3 rounded border border-yellow-900/50 bg-yellow-950/10 hover:border-yellow-500 flex items-center justify-between group">
           <span className="font-read text-stone-100 text-base">{e.name}</span>
           <span className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-600 group-hover:text-yellow-400 flex items-center gap-1 shrink-0 ml-2">
-            {e.spawnedTopicId?"отвори":"генерирай план"} <ChevronRight size={14}/>
+            отвори <ChevronRight size={14}/>
           </span>
         </button>
       ))}
