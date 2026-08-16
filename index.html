@@ -442,6 +442,57 @@ Output ONLY the examples, wrapped exactly like this and nothing else before or a
   return extractField(raw, "TEXT");
 }
 
+// shared parser: blocks of exactly 3 lines (name/title, url, note), blank-line separated
+function parseLinkBlocks(text){
+  return (text||"").split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
+    const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
+    return { name:lines[0]||"", url:lines[1]||"", note:lines[2]||"" };
+  }).filter(it=>it.name && it.url);
+}
+
+// Ресурси: reference articles/pages — only a specific URL when genuinely confident it's real;
+// otherwise a Google search URL, which is always functional and never a fabricated dead link.
+async function genResources(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const count = lvl<=1?"2-3":lvl===2?"3":lvl===3?"3-4":lvl===4?"4-5":"5-6";
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `List ${count} REFERENCE resources (articles, official documentation, well-known guides) genuinely relevant to learning "${subtopicName}" (within the broader context of "${topicLabel}").${levelPart}
+CRITICAL — accuracy over quantity: only give a SPECIFIC article/page URL if you are genuinely confident it exists and is accurate (e.g. a well-known official documentation homepage, a canonical Wikipedia article for an unambiguous established topic). For anything you're not fully confident about, instead give a Google search URL (exactly this format: https://www.google.com/search?q=YOUR+QUERY+HERE with spaces replaced by + ) built with a well-chosen query pointing toward that kind of resource — never invent a specific article URL you are not sure is real.
+For each resource, give exactly 3 lines: (1) short title/description of the resource, (2) the URL (plain ASCII, no markdown formatting), (3) a one-sentence note on what it covers or why it's useful. Leave a blank line between resources.
+Write titles/notes in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output ONLY the resources, wrapped exactly like this and nothing else before or after: ###TEXT###the resources here###TEXT_END###`,
+    2000
+  );
+  return parseLinkBlocks(extractField(raw, "TEXT"));
+}
+
+// Шопинг лист: physical products/tools tied to the topic (core items, Bulgaria-first) + an Иновация group
+// (Amazon/Temu-style innovative products). Never a fabricated product-page URL — always a Google search URL,
+// which reliably returns real, current results without claiming a specific listing exists.
+async function genShoppingList(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const coreCount = lvl<=1?"2-3":lvl===2?"3-4":lvl===3?"3-5":lvl===4?"4-6":"5-7";
+  const innoCount = lvl<=2?"1-2":lvl<=3?"2-3":"3-4";
+  const raw = await callClaudeRaw(
+    `List CONCRETE physical products/tools/materials genuinely needed or useful to practice/apply "${subtopicName}" (within the broader context of "${topicLabel}") in real life. Only if the subject genuinely calls for physical products — if it's a purely abstract/theoretical subject with no natural physical products, say so honestly by returning fewer items, or generic study-material items (books, kits) instead of forcing irrelevant products.
+Group 1 — CORE ITEMS (${coreCount} items): specific tools/materials/equipment tied to this exact subject, the kind someone would actually go buy to work on this.
+Group 2 — INNOVATION (${innoCount} items): genuinely innovative/modern products (gadgets, smart tools, kits) that make learning or doing "${subtopicName}" easier or more efficient — the kind of thing found on Amazon or Temu.
+For EACH item in both groups, give exactly 3 lines:
+(1) a short product name/description
+(2) a URL — ALWAYS construct it as a Google search: https://www.google.com/search?q=YOUR+QUERY+HERE (spaces as +) — never invent a specific product-page or listing URL, since you cannot know real current availability or prices. For Group 1 items, build the query to prioritize Bulgarian retailers/availability by including terms like "България цена" in the query. For Group 2 items, bias the query toward the mentioned platforms, e.g. include "Amazon" or "Temu" in the query.
+(3) a one-sentence note on why/where it's used in this topic
+Leave a blank line between items.
+Write item names/notes in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Keep URLs in plain ASCII.
+Never use the " character inside the text.
+Output the two groups in this exact order, nothing before the first marker or after the last one: ###CORE### Group 1 items here ###INNOVATION### Group 2 items here ###END###`,
+    2600
+  );
+  const fields = extractSequentialFields(raw, ["CORE","INNOVATION"]);
+  return { items: parseLinkBlocks(fields.CORE), innovations: parseLinkBlocks(fields.INNOVATION) };
+}
+
 // Енциклопедия: 5 fixed entry types — curious fact, biography, history/timeline, etymology, common mistake
 async function genEncyclopedia(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level||3;
@@ -724,6 +775,8 @@ Output ONLY the profile text, wrapped exactly like this and nothing else: ###PRO
 function subName(item){ return typeof item==="string" ? item : (item?.name||""); }
 function isOverviewItem(item){ return typeof item==="object" && item!==null && !!item.isOverview; }
 function isExamplesItem(item){ return typeof item==="object" && item!==null && !!item.isExamples; }
+function isResourcesItem(item){ return typeof item==="object" && item!==null && !!item.isResources; }
+function isShoppingItem(item){ return typeof item==="object" && item!==null && !!item.isShopping; }
 function isEncyclopediaItem(item){ return typeof item==="object" && item!==null && !!item.isEncyclopedia; }
 function isQuotesItem(item){ return typeof item==="object" && item!==null && !!item.isQuotes; }
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
@@ -1065,16 +1118,18 @@ function Aperture() {
       const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
+      const resourcesItem = { name:"Ресурси", isResources:true };
       const actionPlanItem = { name:"Rework", isActionPlan:true };
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
+      const shoppingItem = { name:"Шопинг лист", isShopping:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
       const prefaceItem = { name:"Предговор", isPreface:true };
       const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem, shoppingItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1139,16 +1194,18 @@ function Aperture() {
       const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
+      const resourcesItem = { name:"Ресурси", isResources:true };
       const actionPlanItem = { name:"Rework", isActionPlan:true };
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
+      const shoppingItem = { name:"Шопинг лист", isShopping:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
       const prefaceItem = { name:"Предговор", isPreface:true };
       const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem, shoppingItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1219,6 +1276,26 @@ function Aperture() {
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
       if(!cached.examples) doLoadExamples(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isResourcesItem(subsubItem)){
+      const EMPTY={resources:[],resourcesLevel:null,tunedResources:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.resources||!cached.resources.length) doLoadResources(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isShoppingItem(subsubItem)){
+      const EMPTY={shopItems:[],shopInnovations:[],shopLevel:null,tunedShopping:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.shopItems||!cached.shopItems.length) doLoadShopping(id,sub,subLevel,cached);
       return;
     }
 
@@ -1391,16 +1468,18 @@ function Aperture() {
         const rawSubsubtopics = await genSubsubtopicsFor(entry.name, entry.name, levelMeta);
         const overviewItem = { name:"Общ преглед", isOverview:true };
         const examplesItem = { name:"Практически примери", isExamples:true };
+        const resourcesItem = { name:"Ресурси", isResources:true };
         const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
         const quotesItem = { name:"Цитати", isQuotes:true };
         const actionPlanItem = { name:"Rework", isActionPlan:true };
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
+      const shoppingItem = { name:"Шопинг лист", isShopping:true };
         const confessionItem = { name:"Признание на AI", isConfession:true };
         const simulationItem = { name:"Симулация", isSimulation:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem, shoppingItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -1450,6 +1529,56 @@ function Aperture() {
     if(!nodeData||nodeData.tunedExamples)return;
     const level = nodeData.examplesLevel;
     const updNode={...nodeData,tunedExamples:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadResources(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const resources = await genResources(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, resources, resourcesLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneResources(){
+    if(!nodeData||nodeData.tunedResources)return;
+    const level = nodeData.resourcesLevel;
+    const updNode={...nodeData,tunedResources:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadShopping(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const {items,innovations} = await genShoppingList(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, shopItems:items, shopInnovations:innovations, shopLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneShopping(){
+    if(!nodeData||nodeData.tunedShopping)return;
+    const level = nodeData.shopLevel;
+    const updNode={...nodeData,tunedShopping:true};
     setNodeData(updNode);
     await saveJSON(`node:${nodeId}`,updNode);
     if(level){
@@ -1817,6 +1946,16 @@ function Aperture() {
               const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
             }
+          } else if(isResourcesItem(item)){
+            if(!existing?.resources?.length){
+              const resources = await genResources(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), resources, resourcesLevel:subLevel, tunedResources:existing?.tunedResources||false});
+            }
+          } else if(isShoppingItem(item)){
+            if(!existing?.shopItems?.length){
+              const {items,innovations} = await genShoppingList(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), shopItems:items, shopInnovations:innovations, shopLevel:subLevel, tunedShopping:existing?.tunedShopping||false});
+            }
           } else if(isEncyclopediaItem(item)){
             if(!existing?.entries?.length){
               const entries = await genEncyclopedia(topicPrompt, subItem.name, subLevelMeta);
@@ -1997,6 +2136,8 @@ function Aperture() {
               isPreface={isPrefaceItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isGlossary={isGlossaryItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isExamples={isExamplesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isResources={isResourcesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isShopping={isShoppingItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isEncyclopedia={isEncyclopediaItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isQuotes={isQuotesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isActionPlan={isActionPlanItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
@@ -2015,6 +2156,8 @@ function Aperture() {
               onRetryGlossary={()=>doLoadGlossary(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData,getDisplayList(hierarchy[subtopicIdx])[subsubIdx]?.terms||[])}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryResources={()=>doLoadResources(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryShopping={()=>doLoadShopping(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryEncyclopedia={()=>doLoadEncyclopedia(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryQuotes={()=>doLoadQuotes(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryActionPlan={()=>doLoadActionPlan(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
@@ -2031,6 +2174,8 @@ function Aperture() {
               onTuneGlossary={tuneGlossary}
               onTuneEssay={tuneEssay}
               onTuneExamples={tuneExamples}
+              onTuneResources={tuneResources}
+              onTuneShopping={tuneShopping}
               onTuneEncyclopedia={tuneEncyclopedia}
               onTuneQuotes={tuneQuotes}
               onTuneActionPlan={tuneActionPlan}
@@ -2207,6 +2352,8 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
         const isGl = isGlossaryItem(s);
         const isOv = isOverviewItem(s);
         const isEx = isExamplesItem(s);
+        const isRe = isResourcesItem(s);
+        const isSh = isShoppingItem(s);
         const isEn = isEncyclopediaItem(s);
         const isQu = isQuotesItem(s);
         const isAP = isActionPlanItem(s);
@@ -2219,6 +2366,8 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isGl ? "border-lime-800 bg-lime-950/20 hover:border-lime-500"
                           : isOv ? "border-sky-800 bg-sky-950/20 hover:border-sky-500"
                           : isEx ? "border-emerald-800 bg-emerald-950/20 hover:border-emerald-500"
+                          : isRe ? "border-blue-800 bg-blue-950/20 hover:border-blue-500"
+                          : isSh ? "border-red-800 bg-red-950/20 hover:border-red-500"
                           : isEn ? "border-orange-800 bg-orange-950/20 hover:border-orange-500"
                           : isQu ? "border-pink-800 bg-pink-950/20 hover:border-pink-500"
                           : isAP ? "border-violet-800 bg-violet-950/20 hover:border-violet-500"
@@ -2228,12 +2377,12 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isCo ? "border-fuchsia-800 bg-fuchsia-950/20 hover:border-fuchsia-500"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isEn ? "text-orange-300" : isQu ? "text-pink-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isQu ? "text-pink-700 group-hover:text-pink-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isQu ? "text-pink-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isQu ? "text-pink-700 group-hover:text-pink-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isPr||isGl||isOv||isEx||isEn||isQu||isAP||isSo||isTe||isSi||isCo||isCu) && <Sparkles size={14}/>}
+            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isQu||isAP||isSo||isTe||isSi||isCo||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -2244,7 +2393,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamples,isEncyclopedia,isQuotes,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryEncyclopedia,onRetryQuotes,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneEncyclopedia,onTuneQuotes,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -2325,6 +2474,27 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamp
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryExamples}/>}
       <ExamplesPanel loading={loadingLevels} examples={nodeData?.examples||""} tuned={!!nodeData?.tunedExamples} onTune={onTuneExamples} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
+    </div>;
+  }
+
+  if(isResources){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-blue-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Част от линковете са търсения вместо конкретни статии — AI-то не може да провери дали точна страница все още съществува.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryResources}/>}
+      <ResourcesPanel loading={loadingLevels} resources={nodeData?.resources||[]} tuned={!!nodeData?.tunedResources} onTune={onTuneResources}/>
     </div>;
   }
 
@@ -2428,6 +2598,27 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamp
       <p className="font-read text-stone-500 text-sm italic">Провери се — 6 въпроса от различен тип по тази тема.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryTest}/>}
       <TestPanel loading={loadingLevels} questions={nodeData?.testQuestions||[]} tuned={!!nodeData?.tunedTest} onTune={onTuneTest}/>
+    </div>;
+  }
+
+  if(isShopping){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-red-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Линковете водят към търсене (не конкретен продукт) — приоритет на български магазини, после чужбина.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryShopping}/>}
+      <ShoppingPanel loading={loadingLevels} items={nodeData?.shopItems||[]} innovations={nodeData?.shopInnovations||[]} tuned={!!nodeData?.tunedShopping} onTune={onTuneShopping}/>
     </div>;
   }
 
@@ -2649,6 +2840,51 @@ function ExamplesPanel({loading,examples,tuned,onTune,onAsk,curiosityQuestions})
         </div>;
       })}
     </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function LinkCard({name,url,note,colorClass,textClass}){
+  return <a href={url} target="_blank" rel="noopener noreferrer"
+    className={`block rounded border p-3 hover:opacity-90 transition-opacity ${colorClass}`}>
+    <div className={`font-read text-base font-medium ${textClass}`}>{name}</div>
+    {note && <p className="font-read text-stone-400 text-sm mt-1">{note}</p>}
+    <div className="font-mono-cal text-[11px] text-stone-500 mt-1.5 truncate">{url}</div>
+  </a>;
+}
+
+function ResourcesPanel({loading,resources,tuned,onTune}){
+  if(loading) return <Spinner label="събирам ресурси…"/>;
+  if(!resources||!resources.length) return null;
+  return <div className="space-y-4">
+    <div className="space-y-2">
+      {resources.map((r,i)=>(
+        <LinkCard key={i} name={r.name} url={r.url} note={r.note}
+          colorClass="border-blue-900/50 bg-blue-950/10" textClass="text-blue-300"/>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function ShoppingPanel({loading,items,innovations,tuned,onTune}){
+  if(loading) return <Spinner label="съставям шопинг лист…"/>;
+  if((!items||!items.length)&&(!innovations||!innovations.length)) return null;
+  return <div className="space-y-4">
+    {items&&items.length>0 && <div className="space-y-2">
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-red-500">Продукти</div>
+      {items.map((it,i)=>(
+        <LinkCard key={i} name={it.name} url={it.url} note={it.note}
+          colorClass="border-red-900/50 bg-red-950/10" textClass="text-red-300"/>
+      ))}
+    </div>}
+    {innovations&&innovations.length>0 && <div className="space-y-2">
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-red-400">Иновация</div>
+      {innovations.map((it,i)=>(
+        <LinkCard key={i} name={it.name} url={it.url} note={it.note}
+          colorClass="border-red-800/50 bg-red-900/10" textClass="text-red-200"/>
+      ))}
+    </div>}
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
 }
