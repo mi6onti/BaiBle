@@ -253,6 +253,21 @@ Return: {"names":["..."]}`,
   return d.names||[];
 }
 
+// Следваща стъпка: forward-looking topics — what a learner would naturally move to AFTER mastering this
+// subtopic, mirroring Предговор's structure exactly but pointing ahead instead of behind.
+async function genNextTopics(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level || 3;
+  const countRange = lvl<=1 ? "2-3" : lvl===2 ? "3" : lvl===3 ? "3-4" : lvl===4 ? "4-5" : "5-6";
+  const levelPart = levelHint ? ` The learner is approaching the subtopic at the "${levelHint.label}" level (${levelHint.hint}) — calibrate ambition accordingly (closer/simpler next steps at lower levels, further/more ambitious ones at higher levels).` : "";
+  const d = await callClaude(
+    `The learner has just studied "${subtopicName}", within the broader plan "${topicLabel}". Identify NATURAL FOLLOW-UP topics — what someone would logically move to next, having mastered "${subtopicName}", to keep building forward (deeper specializations, adjacent extensions, or real applications that only become reachable once this is understood). NOT a review or a different unrelated subject — genuine forward progress from here.${levelPart}
+List ${countRange} such follow-up topics, under 5 words each, no numbering. CRITICAL — order them in genuine progression: the first item should be the most immediate, closest next step; each following item should build further ahead, ending with the most ambitious/advanced follow-up. Write them in the SAME language as the subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.
+Return: {"names":["..."]}`,
+    500
+  );
+  return d.names||[];
+}
+
 async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
   const lvl = levelHint?.level || 3;
   const countRange = lvl<=1 ? "2-3" : lvl===2 ? "3" : lvl===3 ? "3-4" : lvl===4 ? "4-5" : "5-6";
@@ -923,6 +938,7 @@ function isTestItem(item){ return typeof item==="object" && item!==null && !!ite
 function isSimulationItem(item){ return typeof item==="object" && item!==null && !!item.isSimulation; }
 function isGlossaryItem(item){ return typeof item==="object" && item!==null && !!item.isGlossary; }
 function isPrefaceItem(item){ return typeof item==="object" && item!==null && !!item.isPreface; }
+function isNextItem(item){ return typeof item==="object" && item!==null && !!item.isNext; }
 function isConfessionItem(item){ return typeof item==="object" && item!==null && !!item.isConfession; }
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
@@ -1261,6 +1277,7 @@ function Aperture() {
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
+      const nextItem = { name:"Следваща стъпка", isNext:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
       const gamesItem = { name:"Игри", isGames:true };
@@ -1269,7 +1286,7 @@ function Aperture() {
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1339,6 +1356,7 @@ function Aperture() {
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
+      const nextItem = { name:"Следваща стъпка", isNext:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
       const gamesItem = { name:"Игри", isGames:true };
@@ -1347,7 +1365,7 @@ function Aperture() {
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1388,6 +1406,16 @@ function Aperture() {
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
       if(!cached.entries||!cached.entries.length) doLoadPreface(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isNextItem(subsubItem)){
+      const EMPTY={entries:[],nextLevel:null,tunedNext:false,nextTopicId:null,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.entries||!cached.entries.length) doLoadNext(id,sub,subLevel,cached);
       return;
     }
 
@@ -1638,12 +1666,110 @@ function Aperture() {
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
+      const nextItem = { name:"Следваща стъпка", isNext:true };
         const confessionItem = { name:"Признание на AI", isConfession:true };
         const simulationItem = { name:"Симулация", isSimulation:true };
       const gamesItem = { name:"Игри", isGames:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
+
+        subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
+        metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
+        metaPlan = { ...metaPlan, byLevel:{...metaPlan.byLevel, [level]:metaHierarchy}, activeLevel:level };
+        await saveJSON(`plan:${metaTopic.id}`, metaPlan);
+      }
+
+      setCurrentTopic(metaTopic);
+      setPlanData(metaPlan);
+      setHierarchy(metaHierarchy);
+      setSubtopicIdx(entryIdx);
+      setSubsubIdx(null); setNodeId(null); setNodeData(null); setLevelCheck(null);
+    }catch(e){
+      setNodeError(`Грешка: ${e.message}`);
+    }finally{
+      setLoadingH(false);
+    }
+  }
+
+  async function doLoadNext(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const names = await genNextTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const entries = names.map(n=>({name:n}));
+      const updated = {...base, entries, nextLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneNext(){
+    if(!nodeData||nodeData.tunedNext)return;
+    const level = nodeData.nextLevel;
+    const updNode={...nodeData,tunedNext:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  // opening a Следваща стъпка entry spins it off into a full, real plan — mirrors Предговор exactly,
+  // just pointing forward instead of backward. Re-entering never regenerates.
+  async function openNextEntry(subIdx, entryIdx){
+    if(!nodeData?.entries) return;
+    const entry = nodeData.entries[entryIdx];
+    if(!entry) return;
+
+    const subItem = hierarchy[subIdx];
+    const level = subItem.activeLevel || planData.activeLevel || 3;
+    const levelMeta = LEVELS.find(l=>l.level===level);
+
+    setLoadingH(true);
+    try{
+      let metaTopic = nodeData.nextTopicId ? topics.find(t=>t.id===nodeData.nextTopicId) : null;
+      let metaPlan = metaTopic ? await loadJSON(`plan:${metaTopic.id}`, null) : null;
+      let metaHierarchy = metaPlan ? metaPlan.byLevel[metaPlan.activeLevel] : null;
+
+      if(!metaTopic || !metaPlan || !metaHierarchy){
+        const metaName = `Следваща стъпка: ${subItem.name}`;
+        const id = slugify(metaName)+"-"+Date.now().toString(36);
+        metaTopic = { id, name:metaName, prompt:metaName, createdAt:Date.now(), originTopicId:currentTopic.id, originQuestion:null };
+        const nextTopicsList=[metaTopic,...topics];
+        setTopics(nextTopicsList); await saveJSON("topics", nextTopicsList);
+
+        metaHierarchy = nodeData.entries.map(e=>({ name:e.name, overviewLevels:null, byLevel:{}, activeLevel:null }));
+        metaPlan = { name:metaName, prompt:metaName, overviewLevels:null, byLevel:{[level]:metaHierarchy}, activeLevel:level };
+
+        const updatedNode = {...nodeData, nextTopicId:id};
+        setNodeData(updatedNode);
+        await saveJSON(`node:${nodeId}`, updatedNode);
+      }
+
+      let subEntry = metaHierarchy[entryIdx];
+      if(!subEntry?.byLevel?.[subEntry?.activeLevel]?.length){
+        const rawSubsubtopics = await genSubsubtopicsFor(entry.name, entry.name, levelMeta);
+        const overviewItem = { name:"Общ преглед", isOverview:true };
+        const examplesItem = { name:"Практически примери", isExamples:true };
+        const resourcesItem = { name:"Ресурси", isResources:true };
+        const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
+        const quotesItem = { name:"Цитати", isQuotes:true };
+        const bibleItem = { name:"Learn from Bible", isBible:true };
+        const actionPlanItem = { name:"Rework", isActionPlan:true };
+        const socraticItem = { name:"Сократически диалог", isSocratic:true };
+        const testItem = { name:"Тест", isTest:true };
+        const shoppingItem = { name:"Шопинг лист", isShopping:true };
+        const nextItem = { name:"Следваща стъпка", isNext:true };
+        const confessionItem = { name:"Признание на AI", isConfession:true };
+        const simulationItem = { name:"Симулация", isSimulation:true };
+        const gamesItem = { name:"Игри", isGames:true };
+        const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
+        const prefaceItem = { name:"Предговор", isPreface:true };
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -1950,6 +2076,13 @@ function Aperture() {
       const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
       setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
     }
+  }
+
+  async function saveCrosswordInput(inputGrid){
+    if(!nodeData||!nodeId) return;
+    const updated = {...nodeData, crosswordInput:inputGrid};
+    setNodeData(updated);
+    await saveJSON(`node:${nodeId}`, updated);
   }
 
   async function doLoadConfession(id, sub, subLevel, base){
@@ -2360,6 +2493,7 @@ function Aperture() {
               subsub={subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isOverview={isOverviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isPreface={isPrefaceItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isNext={isNextItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isGlossary={isGlossaryItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isExamples={isExamplesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isResources={isResourcesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
@@ -2381,6 +2515,8 @@ function Aperture() {
               onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]),hierarchy[subtopicIdx].activeLevel,regularUnitCount(getDisplayList(hierarchy[subtopicIdx])),nodeData)}
               onRetryPreface={()=>doLoadPreface(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onOpenPrefaceEntry={(entryIdx)=>openPrefaceEntry(subtopicIdx,entryIdx)}
+              onRetryNext={()=>doLoadNext(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onOpenNextEntry={(entryIdx)=>openNextEntry(subtopicIdx,entryIdx)}
               onRetryGlossary={()=>doLoadGlossary(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData,getDisplayList(hierarchy[subtopicIdx])[subsubIdx]?.terms||[])}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
@@ -2394,6 +2530,7 @@ function Aperture() {
               onRetryTest={()=>doLoadTest(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetrySimulation={()=>doLoadSimulation(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onSelectCrossword={()=>doLoadCrossword(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onCrosswordInputChange={saveCrosswordInput}
               onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
@@ -2401,6 +2538,7 @@ function Aperture() {
               onTuneAbstraction={key=>tune("abstraction",key)}
               onTuneBlend={tuneBlend}
               onTunePreface={tunePreface}
+              onTuneNext={tuneNext}
               onTuneGlossary={tuneGlossary}
               onTuneEssay={tuneEssay}
               onTuneExamples={tuneExamples}
@@ -2629,7 +2767,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onCrosswordInputChange,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -2650,6 +2788,27 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamp
       <p className="font-read text-stone-500 text-sm italic">Основополагащи теми — избери коя да разгърнеш в отделен план.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryPreface}/>}
       <PrefacePanel loading={loadingLevels} entries={nodeData?.entries||[]} tuned={!!nodeData?.tunedPreface} onTune={onTunePreface} onOpen={onOpenPrefaceEntry}/>
+    </div>;
+  }
+
+  if(isNext){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-green-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Естествени продължения — избери коя да разгърнеш в отделен план.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryNext}/>}
+      <NextPanel loading={loadingLevels} entries={nodeData?.entries||[]} tuned={!!nodeData?.tunedNext} onTune={onTuneNext} onOpen={onOpenNextEntry}/>
     </div>;
   }
 
@@ -2915,7 +3074,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamp
         </button>
       </div>
       {error&&<ErrorNote message={error} onRetry={onSelectCrossword}/>}
-      <GamesPanel loading={loadingLevels} nodeData={nodeData} tuned={!!nodeData?.tunedGames} onTune={onTuneGames} onSelectCrossword={onSelectCrossword}/>
+      <GamesPanel loading={loadingLevels} nodeData={nodeData} tuned={!!nodeData?.tunedGames} onTune={onTuneGames} onSelectCrossword={onSelectCrossword} onCrosswordInputChange={onCrosswordInputChange}/>
     </div>;
   }
 
@@ -2994,6 +3153,25 @@ function PrefacePanel({loading,entries,tuned,onTune,onOpen}){
           className="w-full text-left px-4 py-3 rounded border border-yellow-900/50 bg-yellow-950/10 hover:border-yellow-500 flex items-center justify-between group">
           <span className="font-read text-stone-100 text-base">{e.name}</span>
           <span className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-600 group-hover:text-yellow-400 flex items-center gap-1 shrink-0 ml-2">
+            отвори <ChevronRight size={14}/>
+          </span>
+        </button>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function NextPanel({loading,entries,tuned,onTune,onOpen}){
+  if(loading) return <Spinner label="откривам естествени продължения…"/>;
+  if(!entries||!entries.length) return null;
+  return <div className="space-y-4">
+    <div className="space-y-2">
+      {entries.map((e,i)=>(
+        <button key={i} onClick={()=>onOpen(i)}
+          className="w-full text-left px-4 py-3 rounded border border-green-900/50 bg-green-950/10 hover:border-green-500 flex items-center justify-between group">
+          <span className="font-read text-stone-100 text-base">{e.name}</span>
+          <span className="font-mono-cal text-[10px] uppercase tracking-wide text-green-600 group-hover:text-green-400 flex items-center gap-1 shrink-0 ml-2">
             отвори <ChevronRight size={14}/>
           </span>
         </button>
@@ -3430,7 +3608,7 @@ function SimulationPanel({loading,html,tuned,onTune}){
   </div>;
 }
 
-function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword}){
+function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword,onCrosswordInputChange}){
   if(loading) return <Spinner label="съставям кръстословица…"/>;
   if(!nodeData?.gameType){
     return <div className="space-y-3">
@@ -3445,42 +3623,71 @@ function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword}){
   if(nodeData.gameType==="crossword"){
     if(!nodeData.crosswordPuzzle) return <p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно думи за изграждане на кръстословица — опитай друго ниво.</p>;
     return <div className="space-y-4">
-      <CrosswordGame puzzle={nodeData.crosswordPuzzle}/>
+      <CrosswordGame puzzle={nodeData.crosswordPuzzle} savedInput={nodeData.crosswordInput} onInputChange={onCrosswordInputChange}/>
       <div><TuneButton tuned={tuned} onClick={onTune}/></div>
     </div>;
   }
   return null;
 }
 
-function CrosswordGame({puzzle}){
+function CrosswordGame({puzzle,savedInput,onInputChange}){
   const {grid,words,rows,cols} = puzzle;
-  const [input,setInput] = useState(()=>grid.map(row=>row.map(cell=>cell?"":null)));
+  const [input,setInput] = useState(()=> savedInput || grid.map(row=>row.map(cell=>cell?"":null)));
   const [checked,setChecked] = useState(false);
+  const [selectedDir,setSelectedDir] = useState("across");
   const inputRefs = useRef({});
+
+  // map each filled cell to which word direction(s) pass through it, so typing/advancing follows the right word
+  const cellDirs = {};
+  words.forEach(w=>{
+    for(let i=0;i<w.word.length;i++){
+      const r = w.dir==="down" ? w.row+i : w.row;
+      const c = w.dir==="across" ? w.col+i : w.col;
+      const key=`${r}-${c}`;
+      if(!cellDirs[key]) cellDirs[key]={};
+      cellDirs[key][w.dir]=true;
+    }
+  });
+
+  function handleCellClick(r,c){
+    const dirs = cellDirs[`${r}-${c}`]||{};
+    if(dirs.across && dirs.down) setSelectedDir(prev=> prev==="across" ? "down" : "across");
+    else if(dirs.across) setSelectedDir("across");
+    else if(dirs.down) setSelectedDir("down");
+  }
 
   function handleChange(r,c,val){
     const letter=(val||"").slice(-1).toUpperCase();
-    setInput(prev=>{ const next=prev.map(row=>row.slice()); next[r][c]=letter; return next; });
+    const next = input.map(row=>row.slice());
+    next[r][c]=letter;
+    setInput(next);
     setChecked(false);
-    if(val && c+1<cols && grid[r][c+1] && inputRefs.current[`${r}-${c+1}`]) inputRefs.current[`${r}-${c+1}`].focus();
+    if(onInputChange) onInputChange(next);
+    if(val){
+      const nr = selectedDir==="down" ? r+1 : r;
+      const nc = selectedDir==="across" ? c+1 : c;
+      if(nr<rows && nc<cols && grid[nr][nc] && inputRefs.current[`${nr}-${nc}`]) inputRefs.current[`${nr}-${nc}`].focus();
+    }
   }
 
   const across = words.filter(w=>w.dir==="across").sort((a,b)=>a.number-b.number);
   const down = words.filter(w=>w.dir==="down").sort((a,b)=>a.number-b.number);
-  const cellSize = cols>16 ? 22 : 28;
+  const cellSize = cols>16 ? 24 : 30;
 
   return <div className="space-y-4">
+    <p className="font-mono-cal text-[11px] text-stone-500">Посока: <span className="text-amber-400">{selectedDir==="across"?"хоризонтално →":"вертикално ↓"}</span> — натисни клетка на пресичане, за да смениш</p>
     <div className="overflow-x-auto pb-2">
       <div className="inline-grid gap-0.5 bg-stone-800 p-1 rounded" style={{gridTemplateColumns:`repeat(${cols}, ${cellSize}px)`}}>
         {grid.map((row,r)=>row.map((cell,c)=>{
           if(!cell) return <div key={`${r}-${c}`} style={{width:cellSize,height:cellSize}} className="bg-stone-950"/>;
           const num = words.find(w=>w.row===r&&w.col===c)?.number;
-          const val = input[r][c];
+          const val = input[r]?.[c];
           const isCorrect = checked ? val===cell : null;
           return <div key={`${r}-${c}`} className="relative" style={{width:cellSize,height:cellSize}}>
-            {num && <span className="absolute top-0 left-0.5 text-[7px] text-stone-500 font-mono-cal leading-none z-10">{num}</span>}
+            {num && <span className="absolute top-0 left-0.5 text-[10px] text-stone-800 font-mono-cal font-bold leading-none z-10">{num}</span>}
             <input value={val||""} maxLength={1}
               ref={el=>inputRefs.current[`${r}-${c}`]=el}
+              onClick={()=>handleCellClick(r,c)}
               onChange={e=>handleChange(r,c,e.target.value)}
               className={`w-full h-full text-center text-sm font-bold uppercase bg-amber-50 text-stone-900 focus:outline-none focus:ring-2 focus:ring-amber-500 ${checked?(isCorrect?"bg-emerald-200":"bg-red-200"):""}`}/>
           </div>;
