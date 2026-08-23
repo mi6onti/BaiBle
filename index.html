@@ -22,7 +22,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 
 /* ── Icons ─────────────────────────────────────────────────────────── */
 const Ic = ({d,size=16}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>;
@@ -572,6 +572,111 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return { verses, wwjd };
 }
 
+// Игри — Кръстословица: AI generates ONLY the word+clue list; the grid layout itself is a pure, deterministic
+// algorithm below, reused for every crossword regardless of topic/level — never AI-generated, never re-invented.
+async function genCrosswordWords(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const count = lvl<=1?"5-6":lvl===2?"6-8":lvl===3?"8-10":lvl===4?"10-12":"12-15";
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Generate ${count} single WORDS (no spaces, no punctuation, no numbers, one token each) with short clues, all genuinely related to "${subtopicName}" (within the broader context of "${topicLabel}"), suitable for a crossword puzzle.${levelPart}
+Each word must be a real term/name/concept from this exact subject — vary word length for a good mix (some short 3-5 letters, some longer 6-10 letters). Each clue is a short hint (under 12 words) that leads to that exact word without giving it away directly.
+Write words and clues in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically) — words must be single tokens with no spaces (for compound terms, pick the single most essential word).
+Never use the " character inside the text.
+Output as blocks separated by a blank line, each block being exactly 2 lines: the word, then the clue. Nothing else before or after.
+Output ONLY this list, wrapped exactly like this and nothing else before or after: ###TEXT###the words here###TEXT_END###`,
+    1800
+  );
+  const raw2 = extractField(raw, "TEXT");
+  return raw2.split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
+    const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
+    return { word:lines[0]||"", clue:lines[1]||"" };
+  }).filter(w=>w.word && w.clue);
+}
+
+function normalizeXWord(w){ return (w||"").toUpperCase().replace(/[^A-ZА-Я]/g,""); }
+
+// deterministic greedy crossword layout — always produces a valid, self-consistent grid; words that
+// genuinely can't be placed (no valid crossing found) are simply skipped rather than corrupting the grid
+function buildCrossword(wordList){
+  const words = wordList
+    .map(w=>({ word:normalizeXWord(w.word), clue:w.clue }))
+    .filter(w=>w.word.length>=3)
+    .sort((a,b)=>b.word.length-a.word.length);
+  if(!words.length) return null;
+
+  const SIZE = 25;
+  const CENTER = Math.floor(SIZE/2);
+  const grid = Array.from({length:SIZE},()=>Array(SIZE).fill(null));
+  const placed = [];
+
+  function canPlace(word,row,col,dir){
+    for(let i=0;i<word.length;i++){
+      const r = dir==="down" ? row+i : row;
+      const c = dir==="across" ? col+i : col;
+      if(r<0||r>=SIZE||c<0||c>=SIZE) return false;
+      const existing = grid[r][c];
+      if(existing && existing!==word[i]) return false;
+    }
+    if(dir==="across"){
+      if(col-1>=0 && grid[row][col-1]) return false;
+      if(col+word.length<SIZE && grid[row][col+word.length]) return false;
+    }else{
+      if(row-1>=0 && grid[row-1][col]) return false;
+      if(row+word.length<SIZE && grid[row+word.length][col]) return false;
+    }
+    return true;
+  }
+  function place(word,row,col,dir){
+    for(let i=0;i<word.length;i++){
+      const r = dir==="down" ? row+i : row;
+      const c = dir==="across" ? col+i : col;
+      grid[r][c]=word[i];
+    }
+  }
+
+  const first = words[0];
+  const startCol = CENTER - Math.floor(first.word.length/2);
+  place(first.word, CENTER, startCol, "across");
+  placed.push({...first, row:CENTER, col:startCol, dir:"across"});
+
+  for(let idx=1; idx<words.length; idx++){
+    const w = words[idx];
+    let best = null;
+    outer:
+    for(const pw of placed){
+      for(let i=0;i<w.word.length;i++){
+        for(let j=0;j<pw.word.length;j++){
+          if(w.word[i]!==pw.word[j]) continue;
+          const dir = pw.dir==="across" ? "down" : "across";
+          const row = dir==="down" ? pw.row-i : pw.row+j;
+          const col = dir==="down" ? pw.col+j : pw.col-i;
+          if(canPlace(w.word,row,col,dir)){ best={row,col,dir}; break outer; }
+        }
+      }
+    }
+    if(best){ place(w.word,best.row,best.col,best.dir); placed.push({...w,...best}); }
+  }
+
+  let minR=SIZE,maxR=0,minC=SIZE,maxC=0;
+  for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++) if(grid[r][c]){ minR=Math.min(minR,r);maxR=Math.max(maxR,r);minC=Math.min(minC,c);maxC=Math.max(maxC,c); }
+  const trimmed=[];
+  for(let r=minR;r<=maxR;r++){ const row=[]; for(let c=minC;c<=maxC;c++) row.push(grid[r][c]); trimmed.push(row); }
+  const adjPlaced = placed.map(p=>({...p, row:p.row-minR, col:p.col-minC}));
+
+  const rows=trimmed.length, cols=trimmed[0].length;
+  const numGrid = Array.from({length:rows},()=>Array(cols).fill(null));
+  let num=1;
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    if(!trimmed[r][c]) continue;
+    const startsAcross = (c===0||!trimmed[r][c-1]) && c+1<cols && trimmed[r][c+1];
+    const startsDown = (r===0||!trimmed[r-1][c]) && r+1<rows && trimmed[r+1][c];
+    if(startsAcross||startsDown) numGrid[r][c]=num++;
+  }
+  const numbered = adjPlaced.map(p=>({...p, number:numGrid[p.row][p.col]}));
+  return { grid:trimmed, words:numbered, rows, cols };
+}
+
 function itemCountForLevel(level){
   return {1:3,2:4,3:5,4:5,5:5}[level]||5;
 }
@@ -811,6 +916,7 @@ function isShoppingItem(item){ return typeof item==="object" && item!==null && !
 function isEncyclopediaItem(item){ return typeof item==="object" && item!==null && !!item.isEncyclopedia; }
 function isQuotesItem(item){ return typeof item==="object" && item!==null && !!item.isQuotes; }
 function isBibleItem(item){ return typeof item==="object" && item!==null && !!item.isBible; }
+function isGamesItem(item){ return typeof item==="object" && item!==null && !!item.isGames; }
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
 function isSocraticItem(item){ return typeof item==="object" && item!==null && !!item.isSocratic; }
 function isTestItem(item){ return typeof item==="object" && item!==null && !!item.isTest; }
@@ -1157,12 +1263,13 @@ function Aperture() {
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
+      const gamesItem = { name:"Игри", isGames:true };
       const prefaceItem = { name:"Предговор", isPreface:true };
       const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem, shoppingItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1234,12 +1341,13 @@ function Aperture() {
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
+      const gamesItem = { name:"Игри", isGames:true };
       const prefaceItem = { name:"Предговор", isPreface:true };
       const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem, shoppingItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1403,6 +1511,16 @@ function Aperture() {
       return;
     }
 
+    if(isGamesItem(subsubItem)){
+      const EMPTY={gameType:null,crosswordWords:[],crosswordPuzzle:null,gamesLevel:null,tunedGames:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      // no auto-generation — user picks a game type from the menu first
+      return;
+    }
+
     if(isConfessionItem(subsubItem)){
       const EMPTY={confession:"",confessionLevel:null,tunedConfession:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
@@ -1522,9 +1640,10 @@ function Aperture() {
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
         const confessionItem = { name:"Признание на AI", isConfession:true };
         const simulationItem = { name:"Симулация", isSimulation:true };
+      const gamesItem = { name:"Игри", isGames:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, testItem, shoppingItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -1807,6 +1926,32 @@ function Aperture() {
     }
   }
 
+  async function doLoadCrossword(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const words = await genCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const puzzle = buildCrossword(words);
+      const updated = {...base, gameType:"crossword", crosswordWords:words, crosswordPuzzle:puzzle, gamesLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneGames(){
+    if(!nodeData||nodeData.tunedGames)return;
+    const level = nodeData.gamesLevel;
+    const updNode={...nodeData,tunedGames:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
   async function doLoadConfession(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
@@ -2026,6 +2171,12 @@ function Aperture() {
               const {items,innovations} = await genShoppingList(topicPrompt, subItem.name, subLevelMeta);
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), shopItems:items, shopInnovations:innovations, shopLevel:subLevel, tunedShopping:existing?.tunedShopping||false});
             }
+          } else if(isGamesItem(item)){
+            if(!existing?.crosswordPuzzle){
+              const cwWords = await genCrosswordWords(topicPrompt, subItem.name, subLevelMeta);
+              const cwPuzzle = buildCrossword(cwWords);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), gameType:"crossword", crosswordWords:cwWords, crosswordPuzzle:cwPuzzle, gamesLevel:subLevel, tunedGames:existing?.tunedGames||false});
+            }
           } else if(isEncyclopediaItem(item)){
             if(!existing?.entries?.length){
               const entries = await genEncyclopedia(topicPrompt, subItem.name, subLevelMeta);
@@ -2220,6 +2371,7 @@ function Aperture() {
               isSocratic={isSocraticItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isTest={isTestItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isSimulation={isSimulationItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isGames={isGamesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isConfession={isConfessionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
@@ -2241,6 +2393,7 @@ function Aperture() {
               onRetrySocratic={()=>doLoadSocratic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryTest={()=>doLoadTest(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetrySimulation={()=>doLoadSimulation(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onSelectCrossword={()=>doLoadCrossword(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
@@ -2260,6 +2413,7 @@ function Aperture() {
               onTuneSocratic={tuneSocratic}
               onTuneTest={tuneTest}
               onTuneSimulation={tuneSimulation}
+              onTuneGames={tuneGames}
               onTuneConfession={tuneConfession}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
@@ -2439,6 +2593,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
         const isSo = isSocraticItem(s);
         const isTe = isTestItem(s);
         const isSi = isSimulationItem(s);
+        const isGa = isGamesItem(s);
         const isCo = isConfessionItem(s);
         const isCu = isCuriousItem(s);
         const colorClass = isPr ? "border-yellow-800 bg-yellow-950/20 hover:border-yellow-500"
@@ -2454,15 +2609,16 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isSo ? "border-teal-800 bg-teal-950/20 hover:border-teal-500"
                           : isTe ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
                           : isSi ? "border-cyan-800 bg-cyan-950/20 hover:border-cyan-500"
+                          : isGa ? "border-amber-800 bg-amber-950/20 hover:border-amber-500"
                           : isCo ? "border-fuchsia-800 bg-fuchsia-950/20 hover:border-fuchsia-500"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isQu ? "text-pink-300" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isQu ? "text-pink-300" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isGa ? "text-amber-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isGa ? "text-amber-700 group-hover:text-amber-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isQu||isBi||isAP||isSo||isTe||isSi||isCo||isCu) && <Sparkles size={14}/>}
+            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isQu||isBi||isAP||isSo||isTe||isSi||isGa||isCo||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -2473,7 +2629,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -2740,6 +2896,26 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isGlossary,isExamp
       <p className="font-read text-stone-500 text-sm italic">Интерактивна демонстрация — предварително скриптирано поведение, не истинска система.</p>
       {error&&<ErrorNote message={error} onRetry={onRetrySimulation}/>}
       <SimulationPanel loading={loadingLevels} html={nodeData?.simHtml||""} tuned={!!nodeData?.tunedSim} onTune={onTuneSimulation}/>
+    </div>;
+  }
+
+  if(isGames){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-amber-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onSelectCrossword}/>}
+      <GamesPanel loading={loadingLevels} nodeData={nodeData} tuned={!!nodeData?.tunedGames} onTune={onTuneGames} onSelectCrossword={onSelectCrossword}/>
     </div>;
   }
 
@@ -3251,6 +3427,77 @@ function SimulationPanel({loading,html,tuned,onTune}){
         style={{width:"100%",height:"100%",border:"none",background:"#0c0a09",overflow:"hidden"}}/>
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword}){
+  if(loading) return <Spinner label="съставям кръстословица…"/>;
+  if(!nodeData?.gameType){
+    return <div className="space-y-3">
+      <p className="font-read text-stone-400 text-sm">Избери игра:</p>
+      <button onClick={onSelectCrossword}
+        className="w-full text-left px-4 py-3 rounded border border-amber-900/50 bg-amber-950/10 hover:border-amber-500 flex items-center justify-between group">
+        <span className="font-read text-stone-100 text-base">🧩 Кръстословица</span>
+        <ChevronRight size={16} className="text-amber-700 group-hover:text-amber-400"/>
+      </button>
+    </div>;
+  }
+  if(nodeData.gameType==="crossword"){
+    if(!nodeData.crosswordPuzzle) return <p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно думи за изграждане на кръстословица — опитай друго ниво.</p>;
+    return <div className="space-y-4">
+      <CrosswordGame puzzle={nodeData.crosswordPuzzle}/>
+      <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+    </div>;
+  }
+  return null;
+}
+
+function CrosswordGame({puzzle}){
+  const {grid,words,rows,cols} = puzzle;
+  const [input,setInput] = useState(()=>grid.map(row=>row.map(cell=>cell?"":null)));
+  const [checked,setChecked] = useState(false);
+  const inputRefs = useRef({});
+
+  function handleChange(r,c,val){
+    const letter=(val||"").slice(-1).toUpperCase();
+    setInput(prev=>{ const next=prev.map(row=>row.slice()); next[r][c]=letter; return next; });
+    setChecked(false);
+    if(val && c+1<cols && grid[r][c+1] && inputRefs.current[`${r}-${c+1}`]) inputRefs.current[`${r}-${c+1}`].focus();
+  }
+
+  const across = words.filter(w=>w.dir==="across").sort((a,b)=>a.number-b.number);
+  const down = words.filter(w=>w.dir==="down").sort((a,b)=>a.number-b.number);
+  const cellSize = cols>16 ? 22 : 28;
+
+  return <div className="space-y-4">
+    <div className="overflow-x-auto pb-2">
+      <div className="inline-grid gap-0.5 bg-stone-800 p-1 rounded" style={{gridTemplateColumns:`repeat(${cols}, ${cellSize}px)`}}>
+        {grid.map((row,r)=>row.map((cell,c)=>{
+          if(!cell) return <div key={`${r}-${c}`} style={{width:cellSize,height:cellSize}} className="bg-stone-950"/>;
+          const num = words.find(w=>w.row===r&&w.col===c)?.number;
+          const val = input[r][c];
+          const isCorrect = checked ? val===cell : null;
+          return <div key={`${r}-${c}`} className="relative" style={{width:cellSize,height:cellSize}}>
+            {num && <span className="absolute top-0 left-0.5 text-[7px] text-stone-500 font-mono-cal leading-none z-10">{num}</span>}
+            <input value={val||""} maxLength={1}
+              ref={el=>inputRefs.current[`${r}-${c}`]=el}
+              onChange={e=>handleChange(r,c,e.target.value)}
+              className={`w-full h-full text-center text-sm font-bold uppercase bg-amber-50 text-stone-900 focus:outline-none focus:ring-2 focus:ring-amber-500 ${checked?(isCorrect?"bg-emerald-200":"bg-red-200"):""}`}/>
+          </div>;
+        }))}
+      </div>
+    </div>
+    <button onClick={()=>setChecked(true)} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-700 hover:bg-amber-600 text-white px-3 py-1.5 rounded transition-colors">Провери</button>
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="space-y-1">
+        <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500 mb-1">По хоризонтала</div>
+        {across.map(w=>(<p key={"a"+w.number} className="font-read text-stone-300 text-sm"><span className="text-amber-500 font-mono-cal mr-1">{w.number}.</span>{w.clue}</p>))}
+      </div>
+      <div className="space-y-1">
+        <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500 mb-1">По вертикала</div>
+        {down.map(w=>(<p key={"d"+w.number} className="font-read text-stone-300 text-sm"><span className="text-amber-500 font-mono-cal mr-1">{w.number}.</span>{w.clue}</p>))}
+      </div>
+    </div>
   </div>;
 }
 
