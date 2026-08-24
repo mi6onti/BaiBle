@@ -253,17 +253,20 @@ Return: {"names":["..."]}`,
   return d.names||[];
 }
 
-// Следваща стъпка: forward-looking topics — what a learner would naturally move to AFTER mastering this
+// Приложение: where the specific concept taught in this subtopic is used/applied elsewhere,
 // subtopic, mirroring Предговор's structure exactly but pointing ahead instead of behind.
-async function genNextTopics(topicLabel, subtopicName, levelHint) {
+async function genNextTopics(topicLabel, subtopicName, levelHint, existingTopics) {
   const lvl = levelHint?.level || 3;
   const countRange = lvl<=1 ? "2-3" : lvl===2 ? "3" : lvl===3 ? "3-4" : lvl===4 ? "4-5" : "5-6";
-  const levelPart = levelHint ? ` The learner is approaching the subtopic at the "${levelHint.label}" level (${levelHint.hint}) — calibrate ambition accordingly (closer/simpler next steps at lower levels, further/more ambitious ones at higher levels).` : "";
+  const levelPart = levelHint ? ` The learner is approaching the subtopic at the "${levelHint.label}" level (${levelHint.hint}) — calibrate ambition accordingly (closer/more familiar fields at lower levels, further/more advanced or unexpected ones at higher levels).` : "";
+  const existingPart = (existingTopics && existingTopics.length)
+    ? `\nThe plan "${topicLabel}" itself already covers: ${existingTopics.map((t,i)=>`${i+1}. ${t}`).join("; ")}. You may briefly acknowledge this plan's own context as ONE application if genuinely illuminating, but the whole point of this list is to show where "${subtopicName}" reaches BEYOND this specific plan — don't just restate or extend this plan's own sequence.`
+    : "";
   const d = await callClaude(
-    `The learner has just studied "${subtopicName}", within the broader plan "${topicLabel}". Identify NATURAL FOLLOW-UP topics — what someone would logically move to next, having mastered "${subtopicName}", to keep building forward (deeper specializations, adjacent extensions, or real applications that only become reachable once this is understood). NOT a review or a different unrelated subject — genuine forward progress from here.${levelPart}
-List ${countRange} such follow-up topics, under 5 words each, no numbering. CRITICAL — order them in genuine progression: the first item should be the most immediate, closest next step; each following item should build further ahead, ending with the most ambitious/advanced follow-up. Write them in the SAME language as the subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.
+    `The learner has just studied "${subtopicName}" specifically (within the broader plan "${topicLabel}", but focus on the CONCEPT/TECHNIQUE itself, not the plan). Identify OTHER fields, contexts, or more advanced topics where this EXACT concept/technique genuinely appears and is used — the different places this same knowledge shows up, including in more advanced, adjacent, or seemingly unrelated areas. This is a map of "${subtopicName}"'s real reach, not a suggestion for what to study next in this particular course.${levelPart}${existingPart}
+List ${countRange} such applications/contexts, under 6 words each, no numbering. Order them from most immediately related to most advanced/surprising. Write them in the SAME language as the subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.
 Return: {"names":["..."]}`,
-    500
+    600
   );
   return d.names||[];
 }
@@ -532,6 +535,32 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   const fields = extractSequentialFields(raw, ["E1T","E1B","E2T","E2B","E3T","E3B","E4T","E4B","E5T","E5B"]);
   const kinds = ["fact","bio","history","etymology","warning"];
   return [1,2,3,4,5].map(n=>({kind:kinds[n-1], title:fields[`E${n}T`]||"", text:fields[`E${n}B`]||""}));
+}
+
+// Хумор: 5 fixed comedic formats. The last two are explicitly framed as playful, invented AI-voice
+// fiction — never real claims about the AI's actual opinions, experiences, or past conversations.
+async function genHumor(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const ranges = {1:[20,35], 2:[30,50], 3:[40,60], 4:[55,80], 5:[70,100]};
+  const [lo,hi] = ranges[lvl]||ranges[3];
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Write exactly 5 genuinely FUNNY comedic entries about "${subtopicName}" (within the broader context of "${topicLabel}"), one of each type below. Each entry ${lo}-${hi} words. Be genuinely witty and specific to this exact subject — never generic filler jokes that could apply to anything.${levelPart}
+1. "Ако [нещо от темата] беше...": an absurd personification/analogy — turn a concept from this topic into a funny character, roommate, coworker, etc.
+2. Sarcastic dictionary entry: an ironic, witty mock-definition of a key term from this topic, in the spirit of Ambrose Bierce's "Devil's Dictionary".
+3. One-star review: a fictional 1-star product review of a concept from this topic, written as an annoyed customer.
+4. AI's absurd "opinion": a short, clearly fictional and over-the-top comedic "personal opinion" about this topic, written in first person as an AI — exaggerated, self-aware, and silly, NOT a real claim about actual preferences or experiences. Make it obviously absurd (e.g. wildly disproportionate enthusiasm or dread about a mundane detail).
+5. AI's absurd "someone once asked me" story: a short, CLEARLY FICTIONAL comedic anecdote, first person as an AI, about an absurd/funny hypothetical question someone could ask related to this topic, and an exaggerated, funny reaction — invented for comedic effect, not a real past conversation.
+For each entry also give a short punchy title (2-5 words).
+Write in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###H1T### title ###H1B### as-if entry ###H2T### title ###H2B### dictionary entry ###H3T### title ###H3B### review entry ###H4T### title ###H4B### opinion entry ###H5T### title ###H5B### story entry ###END###`,
+    2400
+  );
+  const fields = extractSequentialFields(raw, ["H1T","H1B","H2T","H2B","H3T","H3B","H4T","H4B","H5T","H5B"]);
+  const kinds = ["asif","dict","review","opinion","story"];
+  return [1,2,3,4,5].map(n=>({kind:kinds[n-1], title:fields[`H${n}T`]||"", text:fields[`H${n}B`]||""}));
 }
 
 // Цитати: only quotes the model is genuinely confident are real and accurately attributed — better fewer than fabricated
@@ -940,6 +969,7 @@ function isGlossaryItem(item){ return typeof item==="object" && item!==null && !
 function isPrefaceItem(item){ return typeof item==="object" && item!==null && !!item.isPreface; }
 function isNextItem(item){ return typeof item==="object" && item!==null && !!item.isNext; }
 function isConfessionItem(item){ return typeof item==="object" && item!==null && !!item.isConfession; }
+function isHumorItem(item){ return typeof item==="object" && item!==null && !!item.isHumor; }
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
 function getDisplayList(subItem){
@@ -1277,8 +1307,9 @@ function Aperture() {
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
-      const nextItem = { name:"Следваща стъпка", isNext:true };
+      const nextItem = { name:"Приложение", isNext:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
+      const humorItem = { name:"Хумор", isHumor:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
       const gamesItem = { name:"Игри", isGames:true };
       const prefaceItem = { name:"Предговор", isPreface:true };
@@ -1286,7 +1317,7 @@ function Aperture() {
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1356,8 +1387,9 @@ function Aperture() {
       const socraticItem = { name:"Сократически диалог", isSocratic:true };
       const testItem = { name:"Тест", isTest:true };
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
-      const nextItem = { name:"Следваща стъпка", isNext:true };
+      const nextItem = { name:"Приложение", isNext:true };
       const confessionItem = { name:"Признание на AI", isConfession:true };
+      const humorItem = { name:"Хумор", isHumor:true };
       const simulationItem = { name:"Симулация", isSimulation:true };
       const gamesItem = { name:"Игри", isGames:true };
       const prefaceItem = { name:"Предговор", isPreface:true };
@@ -1365,7 +1397,7 @@ function Aperture() {
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1559,6 +1591,16 @@ function Aperture() {
       return;
     }
 
+    if(isHumorItem(subsubItem)){
+      const EMPTY={humorEntries:[],humorLevel:null,tunedHumor:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.humorEntries||!cached.humorEntries.length) doLoadHumor(id,sub,subLevel,cached);
+      return;
+    }
+
     const EMPTY={abstraction:[],personality:[],blend:null,tunedAbstraction:[],tunedPersonality:[],tunedBlendKey:null,unitConfused:false};
     const cached=await loadJSON(`node:${id}`,EMPTY);
     setNodeData(cached);
@@ -1666,13 +1708,14 @@ function Aperture() {
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
       const shoppingItem = { name:"Шопинг лист", isShopping:true };
-      const nextItem = { name:"Следваща стъпка", isNext:true };
+      const nextItem = { name:"Приложение", isNext:true };
         const confessionItem = { name:"Признание на AI", isConfession:true };
+      const humorItem = { name:"Хумор", isHumor:true };
         const simulationItem = { name:"Симулация", isSimulation:true };
       const gamesItem = { name:"Игри", isGames:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -1696,7 +1739,8 @@ function Aperture() {
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
-      const names = await genNextTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const existingNames = hierarchy.map(s=>s.name);
+      const names = await genNextTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta, existingNames);
       const entries = names.map(n=>({name:n}));
       const updated = {...base, entries, nextLevel:subLevel};
       setNodeData(updated);
@@ -1718,7 +1762,7 @@ function Aperture() {
     }
   }
 
-  // opening a Следваща стъпка entry spins it off into a full, real plan — mirrors Предговор exactly,
+  // opening a Приложение entry spins it off into a full, real plan — mirrors Предговор exactly,
   // just pointing forward instead of backward. Re-entering never regenerates.
   async function openNextEntry(subIdx, entryIdx){
     if(!nodeData?.entries) return;
@@ -1736,7 +1780,7 @@ function Aperture() {
       let metaHierarchy = metaPlan ? metaPlan.byLevel[metaPlan.activeLevel] : null;
 
       if(!metaTopic || !metaPlan || !metaHierarchy){
-        const metaName = `Следваща стъпка: ${subItem.name}`;
+        const metaName = `Приложение: ${subItem.name}`;
         const id = slugify(metaName)+"-"+Date.now().toString(36);
         metaTopic = { id, name:metaName, prompt:metaName, createdAt:Date.now(), originTopicId:currentTopic.id, originQuestion:null };
         const nextTopicsList=[metaTopic,...topics];
@@ -1763,13 +1807,14 @@ function Aperture() {
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
         const shoppingItem = { name:"Шопинг лист", isShopping:true };
-        const nextItem = { name:"Следваща стъпка", isNext:true };
+        const nextItem = { name:"Приложение", isNext:true };
         const confessionItem = { name:"Признание на AI", isConfession:true };
+      const humorItem = { name:"Хумор", isHumor:true };
         const simulationItem = { name:"Симулация", isSimulation:true };
         const gamesItem = { name:"Игри", isGames:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, testItem, shoppingItem, nextItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -2110,6 +2155,31 @@ function Aperture() {
     }
   }
 
+  async function doLoadHumor(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const humorEntries = await genHumor(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, humorEntries, humorLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneHumor(){
+    if(!nodeData||nodeData.tunedHumor)return;
+    const level = nodeData.humorLevel;
+    const updNode={...nodeData,tunedHumor:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
   async function askCuriosityQuestion(questionText, parentId=null){
     const q = questionText.trim();
     if(!q || subtopicIdx==null || !currentTopic || !planData) return;
@@ -2351,6 +2421,13 @@ function Aperture() {
               const entries = names.map(n=>({name:n}));
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, prefaceLevel:subLevel, tunedPreface:existing?.tunedPreface||false});
             }
+          } else if(isNextItem(item)){
+            if(!existing?.entries?.length){
+              const existingNames = curHierarchy.map(s=>s.name);
+              const names = await genNextTopics(topicPrompt, subItem.name, subLevelMeta, existingNames);
+              const entries = names.map(n=>({name:n}));
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, nextLevel:subLevel, tunedNext:existing?.tunedNext||false});
+            }
           } else if(isGlossaryItem(item)){
             if(!existing?.terms?.length){
               const terms = await genGlossary(topicPrompt, subItem.name, item.terms||[], subLevelMeta);
@@ -2360,6 +2437,11 @@ function Aperture() {
             if(!existing?.confession){
               const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
+            }
+          } else if(isHumorItem(item)){
+            if(!existing?.humorEntries?.length){
+              const humorEntries = await genHumor(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), humorEntries, humorLevel:subLevel, tunedHumor:existing?.tunedHumor||false});
             }
           } else {
             if(!existing?.abstraction?.length){
@@ -2507,6 +2589,7 @@ function Aperture() {
               isSimulation={isSimulationItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isGames={isGamesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isConfession={isConfessionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isHumor={isHumorItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
@@ -2532,6 +2615,7 @@ function Aperture() {
               onSelectCrossword={()=>doLoadCrossword(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onCrosswordInputChange={saveCrosswordInput}
               onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryHumor={()=>doLoadHumor(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryCurious={()=>generateCuriosityAnswers(subtopicIdx)}
               onAsk={askCuriosityQuestion}
               curiosityQuestions={hierarchy[subtopicIdx].curiosityQuestions||[]}
@@ -2553,6 +2637,7 @@ function Aperture() {
               onTuneSimulation={tuneSimulation}
               onTuneGames={tuneGames}
               onTuneConfession={tuneConfession}
+              onTuneHumor={tuneHumor}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
               canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]))}/>
@@ -2732,7 +2817,9 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
         const isTe = isTestItem(s);
         const isSi = isSimulationItem(s);
         const isGa = isGamesItem(s);
+        const isNe = isNextItem(s);
         const isCo = isConfessionItem(s);
+        const isHu = isHumorItem(s);
         const isCu = isCuriousItem(s);
         const colorClass = isPr ? "border-yellow-800 bg-yellow-950/20 hover:border-yellow-500"
                           : isGl ? "border-lime-800 bg-lime-950/20 hover:border-lime-500"
@@ -2748,15 +2835,17 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isTe ? "border-rose-800 bg-rose-950/20 hover:border-rose-500"
                           : isSi ? "border-cyan-800 bg-cyan-950/20 hover:border-cyan-500"
                           : isGa ? "border-amber-800 bg-amber-950/20 hover:border-amber-500"
+                          : isNe ? "border-green-800 bg-green-950/20 hover:border-green-500"
                           : isCo ? "border-fuchsia-800 bg-fuchsia-950/20 hover:border-fuchsia-500"
+                          : isHu ? "border-orange-700/60 bg-orange-900/15 hover:border-orange-400"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isQu ? "text-pink-300" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isGa ? "text-amber-300" : isCo ? "text-fuchsia-300" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isGa ? "text-amber-700 group-hover:text-amber-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isQu ? "text-pink-300" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isGa ? "text-amber-300" : isNe ? "text-green-300" : isCo ? "text-fuchsia-300" : isHu ? "text-orange-200" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isGa ? "text-amber-700 group-hover:text-amber-400" : isNe ? "text-green-700 group-hover:text-green-400" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isHu ? "text-orange-500 group-hover:text-orange-300" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isQu||isBi||isAP||isSo||isTe||isSi||isGa||isCo||isCu) && <Sparkles size={14}/>}
+            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isQu||isBi||isAP||isSo||isTe||isSi||isGa||isNe||isCo||isHu||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -2767,7 +2856,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isConfession,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onCrosswordInputChange,onRetryConfession,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneConfession,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onCrosswordInputChange,onRetryConfession,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -2806,7 +2895,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,
           {unitConfused?"Неясно ✓":"Не разбирам"}
         </button>
       </div>
-      <p className="font-read text-stone-500 text-sm italic">Естествени продължения — избери коя да разгърнеш в отделен план.</p>
+      <p className="font-read text-stone-500 text-sm italic">Къде другаде се среща и използва това понятие — избери приложение да разгърнеш в отделен план.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryNext}/>}
       <NextPanel loading={loadingLevels} entries={nodeData?.entries||[]} tuned={!!nodeData?.tunedNext} onTune={onTuneNext} onOpen={onOpenNextEntry}/>
     </div>;
@@ -3099,6 +3188,27 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,
     </div>;
   }
 
+  if(isHumor){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-orange-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Изцяло измислено, за смях — последните две са фиктивен, комедиен глас на AI, не истински мнения или разговори.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryHumor}/>}
+      <HumorPanel loading={loadingLevels} entries={nodeData?.humorEntries||[]} tuned={!!nodeData?.tunedHumor} onTune={onTuneHumor}/>
+    </div>;
+  }
+
   if(isCurious){
     return <div className="space-y-5">
       <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
@@ -3163,7 +3273,7 @@ function PrefacePanel({loading,entries,tuned,onTune,onOpen}){
 }
 
 function NextPanel({loading,entries,tuned,onTune,onOpen}){
-  if(loading) return <Spinner label="откривам естествени продължения…"/>;
+  if(loading) return <Spinner label="откривам приложения…"/>;
   if(!entries||!entries.length) return null;
   return <div className="space-y-4">
     <div className="space-y-2">
@@ -3357,6 +3467,28 @@ function EncyclopediaPanel({loading,entries,tuned,onTune}){
             <span className="font-mono-cal text-[10px] uppercase tracking-wide text-orange-500">{ENC_LABELS[e.kind]||""}</span>
           </div>
           {e.title && <div className="font-display text-orange-300 font-bold text-base mb-1">{e.title}</div>}
+          <p className="font-read text-stone-300 leading-relaxed text-base">{e.text}</p>
+        </div>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+const HUM_ICONS = {asif:"🎭", dict:"📔", review:"⭐", opinion:"🤖", story:"😂"};
+const HUM_LABELS = {asif:"Ако беше...", dict:"Саркастичен речник", review:"Едно-звездна рецензия", opinion:"AI мнение", story:"AI история"};
+function HumorPanel({loading,entries,tuned,onTune}){
+  if(loading) return <Spinner label="търся смешната страна…"/>;
+  if(!entries||!entries.length) return null;
+  return <div className="space-y-4">
+    <div className="space-y-3">
+      {entries.map((e,i)=>(
+        <div key={i} className="rounded border border-orange-800/40 bg-orange-900/10 p-4">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span>{HUM_ICONS[e.kind]||"•"}</span>
+            <span className="font-mono-cal text-[10px] uppercase tracking-wide text-orange-400">{HUM_LABELS[e.kind]||""}</span>
+          </div>
+          {e.title && <div className="font-display text-orange-200 font-bold text-base mb-1">{e.title}</div>}
           <p className="font-read text-stone-300 leading-relaxed text-base">{e.text}</p>
         </div>
       ))}
