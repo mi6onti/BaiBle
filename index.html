@@ -226,6 +226,23 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return LEVELS.map(m=>({level:m.level, text:fields[`L${m.level}`]||""}));
 }
 
+// Трейлър: a short, punchy sales-pitch for the WHOLE plan — hooks the learner, gives a taste of the
+// most exciting payoffs, and leaves them hungry to go through everything. Never tries to teach content itself.
+async function genTrailer(topicPrompt, topicName, subtopicNames, levelHint) {
+  const levelPart = levelHint ? ` The learner is approaching this plan at the "${levelHint.label}" level (${levelHint.hint}) — pitch accordingly (accessible excitement at lower levels, ambitious/impressive payoffs at higher levels).` : "";
+  const subsList = (subtopicNames||[]).map((n,i)=>`${i+1}. ${n}`).join("; ");
+  const raw = await callClaudeRaw(
+    `Write a SHORT, punchy TRAILER/PITCH for the learning plan "${topicName}" (full context: "${topicPrompt}"), which covers these subtopics in order: ${subsList}.
+Write like a genuinely great sales agent or a movie trailer narrator — NOT to "win" or oversell dishonestly, but to create a real "wow, I want this" effect. Give a taste of the single most exciting or valuable payoff, hint at 2-3 genuinely compelling moments/skills from across the plan (pick the most impressive ones, don't just list all subtopics mechanically), and end on a hook that makes the learner want to dive in immediately — not a full explanation of anything, just enough to be genuinely thrilling and leave them hungry for more.${levelPart}
+Keep it SHORT: 100-160 words, punchy short sentences, real energy — not a wall of text.
+Write in the SAME language as the topic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output ONLY the trailer text, wrapped exactly like this and nothing else before or after: ###TEXT###the trailer here###TEXT_END###`,
+    900
+  );
+  return extractField(raw, "TEXT");
+}
+
 async function genSubtopicNames(prompt, learningProfile, levelHint) {
   const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
   const lvl = levelHint?.level || 3;
@@ -968,6 +985,7 @@ function isTestItem(item){ return typeof item==="object" && item!==null && !!ite
 function isSimulationItem(item){ return typeof item==="object" && item!==null && !!item.isSimulation; }
 function isGlossaryItem(item){ return typeof item==="object" && item!==null && !!item.isGlossary; }
 function isPrefaceItem(item){ return typeof item==="object" && item!==null && !!item.isPreface; }
+function isTrailerItem(item){ return typeof item==="object" && item!==null && !!item.isTrailer; }
 function isNextItem(item){ return typeof item==="object" && item!==null && !!item.isNext; }
 function isConfessionItem(item){ return typeof item==="object" && item!==null && !!item.isConfession; }
 function isHumorItem(item){ return typeof item==="object" && item!==null && !!item.isHumor; }
@@ -1157,7 +1175,8 @@ function Aperture() {
       try{
         const levelMeta = LEVELS.find(l=>l.level===level);
         const names = await genSubtopicNames(pd.prompt, null, levelMeta);
-        const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
+        const trailerItem = { name:"Трейлър", isTrailer:true, trailerText:null, tunedTrailer:false, unitConfused:false };
+      const subtopics = [trailerItem, ...names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}))];
         const updated = {...pd, byLevel:{...pd.byLevel, [level]:subtopics}, activeLevel:level};
         setPlanData(updated); setHierarchy(subtopics);
         await saveJSON(`plan:${id}`, updated);
@@ -1179,7 +1198,8 @@ function Aperture() {
     try{
       const levelMeta = LEVELS.find(l=>l.level===level);
       const names = await genSubtopicNames(prompt, learningProfile, levelMeta);
-      const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
+      const trailerItem = { name:"Трейлър", isTrailer:true, trailerText:null, tunedTrailer:false, unitConfused:false };
+      const subtopics = [trailerItem, ...names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}))];
       const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level};
       setPlanData(newPlan); setHierarchy(subtopics);
       await saveJSON(`plan:${id}`, newPlan);
@@ -1270,6 +1290,27 @@ function Aperture() {
     setSubtopicIdx(i);
     const sub = hierarchy[i];
     const topicLevel = planData?.activeLevel;
+
+    if(isTrailerItem(sub)){
+      if(sub.trailerText){ return; } // already generated — just navigate, render logic shows TrailerView
+      setLoadingH(true);
+      try{
+        const levelMeta = LEVELS.find(l=>l.level===topicLevel);
+        const otherNames = hierarchy.filter(s=>!isTrailerItem(s)).map(s=>s.name);
+        const trailerText = await genTrailer(currentTopic.prompt||currentTopic.name, currentTopic.name, otherNames, levelMeta);
+        const updatedSub = {...sub, trailerText};
+        const updatedHierarchy = hierarchy.map((s,idx)=>idx===i?updatedSub:s);
+        setHierarchy(updatedHierarchy);
+        const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+        setPlanData(updatedPlan);
+        await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
+      }catch(e){
+        setHomeError(`Грешка: ${e.message}`);
+      }finally{
+        setLoadingH(false);
+      }
+      return;
+    }
 
     // if content for the plan's level already exists (generated before), just make sure it's active and go straight in
     if(sub.byLevel && sub.byLevel[topicLevel] && sub.byLevel[topicLevel].length){
@@ -2306,6 +2347,19 @@ function Aperture() {
     setNodeData(u);await saveJSON(`node:${nodeId}`,u);
   }
 
+  async function updateTrailerItem(patch){
+    if(subtopicIdx==null || !hierarchy[subtopicIdx] || !isTrailerItem(hierarchy[subtopicIdx])) return;
+    const updatedSub = {...hierarchy[subtopicIdx], ...patch};
+    const updatedHierarchy = hierarchy.map((s,idx)=>idx===subtopicIdx?updatedSub:s);
+    setHierarchy(updatedHierarchy);
+    const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
+    setPlanData(updatedPlan);
+    await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
+  }
+  function tuneTrailer(){ updateTrailerItem({tunedTrailer:true}); }
+  function markTrailerConfused(){ updateTrailerItem({unitConfused:true}); }
+  function unmarkTrailerConfused(){ updateTrailerItem({unitConfused:false}); }
+
   async function runLevelCheck(){
     setLoadingLC(true);setLcError(null);setLevelCheck(null);
     try{
@@ -2501,7 +2555,8 @@ function Aperture() {
       const levelMeta = LEVELS.find(l=>l.level===level);
       const overviewLevels = await genOverviewLevels(adaptedPrompt);
       const names = await genSubtopicNames(adaptedPrompt, null, levelMeta);
-      const subtopics = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}));
+      const trailerItem = { name:"Трейлър", isTrailer:true, trailerText:null, tunedTrailer:false, unitConfused:false };
+      const subtopics = [trailerItem, ...names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}))];
       const newPlan = {name:adaptedName, prompt:adaptedPrompt, overviewLevels, byLevel:{[level]:subtopics}, activeLevel:level};
       await saveJSON(`plan:${id}`, newPlan);
 
@@ -2556,6 +2611,11 @@ function Aperture() {
               onNavigateTopic={t=>{resumeTopic(t);}}
               onChangeLevel={openTopicLevelPicker}
               currentLevel={planData?.activeLevel}/>
+          ):hierarchy[subtopicIdx]?.isTrailer?(
+            <TrailerView topic={currentTopic} item={hierarchy[subtopicIdx]} loading={loadingH}
+              onBack={()=>setSubtopicIdx(null)}
+              onTune={tuneTrailer}
+              onConfused={markTrailerConfused} onUnconfused={unmarkTrailerConfused}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
@@ -2701,6 +2761,35 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
   </div>;
 }
 
+function TrailerView({topic,item,loading,onBack,onTune,onConfused,onUnconfused}){
+  const unitConfused = !!item?.unitConfused;
+  if(loading) return <div className="space-y-5">
+    <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+      <ChevronLeft size={16}/> {topicLabel(topic)}
+    </button>
+    <Spinner label="подготвям трейлъра…"/>
+  </div>;
+  return <div className="space-y-5">
+    <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+      <ChevronLeft size={16}/> {topicLabel(topic)}
+    </button>
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <div className="font-mono-cal text-xs text-amber-500 flex items-center gap-1"><Sparkles size={12}/> {topicLabel(topic)}</div>
+        <h2 className="font-display text-xl font-bold text-stone-100">🎬 Трейлър</h2>
+      </div>
+      <button onClick={unitConfused?onUnconfused:onConfused}
+        className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+        {unitConfused?"Неясно ✓":"Не разбирам"}
+      </button>
+    </div>
+    {item?.trailerText
+      ? <p className="font-read text-stone-100 leading-relaxed text-lg">{item.trailerText}</p>
+      : <p className="font-read text-stone-500 text-sm py-6">Нещо се обърка при генерирането.</p>}
+    <div><TuneButton tuned={!!item?.tunedTrailer} onClick={onTune}/></div>
+  </div>;
+}
+
 function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
@@ -2769,13 +2858,17 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     </div>}
 
     <div className="space-y-1">
-      {hierarchy.map((s,i)=>(
-        <button key={i} onClick={()=>onPick(i)}
-          className="w-full text-left px-3 py-3 rounded border border-stone-800 hover:border-amber-600/50 flex items-center justify-between group">
-          <span className="font-read text-stone-100">{s.name}</span>
-          <span className="text-stone-600 group-hover:text-amber-500"><ChevronRight size={16}/></span>
-        </button>
-      ))}
+      {hierarchy.map((s,i)=>{
+        const isTr = isTrailerItem(s);
+        return <button key={i} onClick={()=>onPick(i)}
+          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isTr?"border-amber-700 bg-amber-950/20 hover:border-amber-400":"border-stone-800 hover:border-amber-600/50"}`}>
+          <span className={`font-read flex items-center gap-2 ${isTr?"text-amber-300 font-medium":"text-stone-100"}`}>
+            {isTr && <span>🎬</span>}
+            {s.name}
+          </span>
+          <span className={isTr?"text-amber-600 group-hover:text-amber-400":"text-stone-600 group-hover:text-amber-500"}><ChevronRight size={16}/></span>
+        </button>;
+      })}
     </div>
   </div>;
 }
