@@ -2167,6 +2167,11 @@ function Aperture() {
   }
 
   async function doLoadCrossword(id, sub, subLevel, base){
+    if(base?.crosswordPuzzle){
+      const updated = {...base, gameType:"crossword"};
+      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      return;
+    }
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
@@ -2181,6 +2186,11 @@ function Aperture() {
   }
 
   async function doLoadCryptic(id, sub, subLevel, base){
+    if(base?.crypticPuzzle){
+      const updated = {...base, gameType:"cryptic"};
+      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      return;
+    }
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
@@ -2195,6 +2205,11 @@ function Aperture() {
   }
 
   async function doLoadConnections(id, sub, subLevel, base){
+    if(base?.connectionsGroups?.length){
+      const updated = {...base, gameType:"connections"};
+      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      return;
+    }
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
@@ -2205,6 +2220,13 @@ function Aperture() {
       if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
     }catch(e){setNodeError(`Грешка: ${e.message}`);}
     finally{setLoadingL(false);}
+  }
+
+  async function backToGamesMenu(){
+    if(!nodeData||!nodeId) return;
+    const updated = {...nodeData, gameType:null};
+    setNodeData(updated);
+    await saveJSON(`node:${nodeId}`, updated);
   }
 
   async function tuneGames(){
@@ -2713,6 +2735,7 @@ function Aperture() {
               onSelectCrossword={()=>doLoadCrossword(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onSelectCryptic={()=>doLoadCryptic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onSelectConnections={()=>doLoadConnections(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onBackToGamesMenu={backToGamesMenu}
               onCrosswordInputChange={grid=>saveGameField("crosswordInput",grid)}
               onCrypticInputChange={grid=>saveGameField("crypticInput",grid)}
               onConnectionsStateChange={state=>saveGameField("connectionsState",state)}
@@ -2962,7 +2985,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectConnections,onCrosswordInputChange,onCrypticInputChange,onConnectionsStateChange,onRetryConfession,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectConnections,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onConnectionsStateChange,onRetryConfession,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -3271,6 +3294,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isGlossary,
       {error&&<ErrorNote message={error} onRetry={onSelectCrossword}/>}
       <GamesPanel loading={loadingLevels} nodeData={nodeData} tuned={!!nodeData?.tunedGames} onTune={onTuneGames}
         onSelectCrossword={onSelectCrossword} onSelectCryptic={onSelectCryptic} onSelectConnections={onSelectConnections}
+        onBackToGamesMenu={onBackToGamesMenu}
         onCrosswordInputChange={onCrosswordInputChange} onCrypticInputChange={onCrypticInputChange} onConnectionsStateChange={onConnectionsStateChange}/>
     </div>;
   }
@@ -3848,46 +3872,52 @@ function SimulationPanel({loading,html,tuned,onTune}){
   </div>;
 }
 
-function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword,onSelectCryptic,onSelectConnections,onCrosswordInputChange,onCrypticInputChange,onConnectionsStateChange}){
+function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword,onSelectCryptic,onSelectConnections,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onConnectionsStateChange}){
   if(loading) return <Spinner label="съставям игра…"/>;
   if(!nodeData?.gameType){
     return <div className="space-y-3">
       <p className="font-read text-stone-400 text-sm">Избери игра:</p>
       <button onClick={onSelectCrossword}
         className="w-full text-left px-4 py-3 rounded border border-amber-900/50 bg-amber-950/10 hover:border-amber-500 flex items-center justify-between group">
-        <span className="font-read text-stone-100 text-base">🧩 Кръстословица</span>
+        <span className="font-read text-stone-100 text-base">🧩 Кръстословица{nodeData?.crosswordPuzzle&&<span className="font-mono-cal text-[10px] text-amber-600 ml-2">(продължи)</span>}</span>
         <ChevronRight size={16} className="text-amber-700 group-hover:text-amber-400"/>
       </button>
       <button onClick={onSelectCryptic}
         className="w-full text-left px-4 py-3 rounded border border-amber-900/50 bg-amber-950/10 hover:border-amber-500 flex items-center justify-between group">
-        <span className="font-read text-stone-100 text-base">🕵️ Криптична кръстословица</span>
+        <span className="font-read text-stone-100 text-base">🕵️ Криптична кръстословица{nodeData?.crypticPuzzle&&<span className="font-mono-cal text-[10px] text-amber-600 ml-2">(продължи)</span>}</span>
         <ChevronRight size={16} className="text-amber-700 group-hover:text-amber-400"/>
       </button>
       <button onClick={onSelectConnections}
         className="w-full text-left px-4 py-3 rounded border border-amber-900/50 bg-amber-950/10 hover:border-amber-500 flex items-center justify-between group">
-        <span className="font-read text-stone-100 text-base">🔗 Connections</span>
+        <span className="font-read text-stone-100 text-base">🔗 Connections{nodeData?.connectionsGroups?.length>0&&<span className="font-mono-cal text-[10px] text-amber-600 ml-2">(продължи)</span>}</span>
         <ChevronRight size={16} className="text-amber-700 group-hover:text-amber-400"/>
       </button>
     </div>;
   }
+  const backBtn = <button onClick={onBackToGamesMenu} className="flex items-center gap-1 text-stone-500 hover:text-amber-400 text-xs font-mono-cal uppercase tracking-wide">
+    <ChevronLeft size={14}/> Смени игра
+  </button>;
   if(nodeData.gameType==="crossword"){
-    if(!nodeData.crosswordPuzzle) return <p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно думи за изграждане на кръстословица — опитай друго ниво.</p>;
+    if(!nodeData.crosswordPuzzle) return <div className="space-y-3">{backBtn}<p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно думи за изграждане на кръстословица — опитай друго ниво.</p></div>;
     return <div className="space-y-4">
+      {backBtn}
       <CrosswordGame puzzle={nodeData.crosswordPuzzle} savedInput={nodeData.crosswordInput} onInputChange={onCrosswordInputChange}/>
       <div><TuneButton tuned={tuned} onClick={onTune}/></div>
     </div>;
   }
   if(nodeData.gameType==="cryptic"){
-    if(!nodeData.crypticPuzzle) return <p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно думи за изграждане на кръстословица — опитай друго ниво.</p>;
+    if(!nodeData.crypticPuzzle) return <div className="space-y-3">{backBtn}<p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно думи за изграждане на кръстословица — опитай друго ниво.</p></div>;
     return <div className="space-y-4">
+      {backBtn}
       <p className="font-read text-stone-500 text-sm italic">Криптичните подсказки крият думата чрез игра на думи, не директно значение.</p>
       <CrosswordGame puzzle={nodeData.crypticPuzzle} savedInput={nodeData.crypticInput} onInputChange={onCrypticInputChange}/>
       <div><TuneButton tuned={tuned} onClick={onTune}/></div>
     </div>;
   }
   if(nodeData.gameType==="connections"){
-    if(!nodeData.connectionsGroups||nodeData.connectionsGroups.length<4) return <p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно групи — опитай друго ниво.</p>;
+    if(!nodeData.connectionsGroups||nodeData.connectionsGroups.length<4) return <div className="space-y-3">{backBtn}<p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно групи — опитай друго ниво.</p></div>;
     return <div className="space-y-4">
+      {backBtn}
       <ConnectionsGame groups={nodeData.connectionsGroups} savedState={nodeData.connectionsState} onStateChange={onConnectionsStateChange}/>
       <div><TuneButton tuned={tuned} onClick={onTune}/></div>
     </div>;
