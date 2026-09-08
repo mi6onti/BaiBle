@@ -859,12 +859,13 @@ async function genAppIdeas(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
     `This learning app already presents "${subtopicName}" (within "${topicLabel}") through these formats: a glossary of terms, an overview essay, worked examples, reference links, an encyclopedia of fun facts/biography/history/etymology/warnings, quotes from real people, book recommendations, Bible-based reflection, a Socratic dialogue, an AI honesty reflection, comedic entries, unconventional "rework" approaches, an interactive simulation widget, mini-games (crossword, Connections, a quiz-show game), a multi-type test, a shopping list of related products, and lists of prerequisite/follow-up topics.
-Propose exactly ${count} GENUINELY NEW, different ways to present or learn "${subtopicName}" that are NOT already covered by any of the above — styled as App Store listings for hypothetical apps. Each must be a real, distinct pedagogical or interactive approach (e.g. a spaced-repetition flashcard app, an AR/visual overlay experience, a rhythm or mnemonic-based app, a debate simulator, a build-your-own-explanation tool, a habit-tracker tied to practicing the skill, a collaborative/social study format, a voice-based conversational tutor) — genuinely tailored and specific to this exact subject, never generic filler that could apply to any topic.${levelPart}
+
+Propose exactly ${count} GENUINELY NEW, different TEXT-BASED presentation formats for "${subtopicName}" that are NOT already covered by any of the above — framed as App Store listings for fun, but each idea must be LIGHTWEIGHT and TEXT-CENTERED, buildable the exact same way every format in this app already is: the AI generates a small piece of structured text/data, and a simple fixed template displays it. NO ideas requiring AR, camera, voice/audio, multiplayer/social features, complex animation, or any heavy technical stack — think in the register of a flashcard deck, a timeline, a comparison table, a branching-choice mini-story, a fill-in-the-blank passage, a debate transcript between two viewpoints, a "spot the mistake" passage, a matching-pairs list, a devil's-advocate rebuttal, an analogy generator, a "explain it to a 5-year-old vs an expert" side-by-side, a decision tree in text, a mnemonic generator, a compare/contrast grid — genuinely tailored and specific to this exact subject, never generic filler.${levelPart}
 For each app idea, give exactly 6 lines:
 (1) app name (2-4 words, catchy, like a real App Store app name)
 (2) a single emoji as the app icon
 (3) tagline (under 8 words, like a real App Store subtitle)
-(4) description (2-3 sentences — what the app would actually do for learning THIS specific subject)
+(4) description (2-3 sentences — describe the simple TEXT FORMAT/structure it would show for THIS specific subject, concrete enough that it could be built as a new section, not just a vague concept)
 (5) a fictional star rating out of 5 (e.g. 4.7)
 (6) a fictional review count (e.g. 12.3K)
 Leave a blank line between app ideas.
