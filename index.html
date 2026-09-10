@@ -226,6 +226,25 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return LEVELS.map(m=>({level:m.level, text:fields[`L${m.level}`]||""}));
 }
 
+// Надгради плана: synthesizes the CURRENT plan's theme + a new raw idea into ONE combined, specific,
+// genuinely integrated learning topic — replaces the plan's own identity, so it can evolve indefinitely.
+async function genFusedTopic(currentPrompt, newIdea, levelHint) {
+  const levelPart = levelHint ? ` The learner is working at the "${levelHint.label}" level (${levelHint.hint}) — keep the combined scenario appropriately scoped for that.` : "";
+  const raw = await callClaudeRaw(
+    `The learner currently has a study plan about: "${currentPrompt}". They now ALSO want to learn about: "${newIdea}".
+Synthesize these into ONE single, coherent, SPECIFIC combined learning topic that genuinely teaches BOTH areas together through one unified, sensible scenario or project — a real integration where studying this one topic naturally covers both original interests, not a forced or nonsensical mashup. Be creative but grounded: find the genuine natural bridge between them.${levelPart}
+Give:
+(1) a short display name for this combined plan (under 8 words)
+(2) a one-paragraph description of the combined topic (this becomes the plan's guiding description for all further content generated from it) — describe the specific integrated scenario/project clearly enough to guide a full curriculum built on top of it.
+Write in the SAME language as the inputs above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one: ###NAME### the name ###PROMPT### the description ###END###`,
+    900
+  );
+  const fields = extractSequentialFields(raw, ["NAME","PROMPT"]);
+  return { name: fields.NAME||newIdea, prompt: fields.PROMPT||`${currentPrompt} + ${newIdea}` };
+}
+
 async function genSubtopicNames(prompt, learningProfile, levelHint) {
   const profileHint = learningProfile ? `\nLearner profile (use to shape structure): ${learningProfile}` : "";
   const lvl = levelHint?.level || 3;
@@ -1347,6 +1366,38 @@ function Aperture() {
       await saveJSON(`plan:${id}`, newPlan);
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
     finally{setLoadingH(false);}
+  }
+
+  // Надгради плана: fuse the current plan's own theme + a new raw idea into one combined topic,
+  // update this SAME topic in place (name/prompt change), then regenerate fresh content at the same level
+  async function evolveTopicWithIdea(newIdea){
+    const idea = (newIdea||"").trim();
+    if(!idea || !currentTopic || !planData) return;
+    setLoadingH(true);
+    try{
+      const level = planData.activeLevel;
+      const levelMeta = LEVELS.find(l=>l.level===level);
+      const {name, prompt} = await genFusedTopic(currentTopic.prompt||currentTopic.name, idea, levelMeta);
+
+      const updatedTopic = {...currentTopic, name, prompt};
+      const updatedTopics = topics.map(t=>t.id===currentTopic.id?updatedTopic:t);
+      setTopics(updatedTopics); await saveJSON("topics", updatedTopics);
+      setCurrentTopic(updatedTopic);
+
+      // old subtopics/content no longer match the new combined theme — regenerate fresh at the current level
+      const names = await genSubtopicNames(prompt, null, levelMeta);
+      const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
+      const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
+      const subtopics = [trailerItem, ...names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null}))];
+      const newPlan = { name, prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level };
+      setPlanData(newPlan); setHierarchy(subtopics);
+      await saveJSON(`plan:${currentTopic.id}`, newPlan);
+      setSubtopicIdx(null); setSubsubIdx(null); setNodeId(null); setNodeData(null); setLevelCheck(null);
+    }catch(e){
+      setHomeError(`Грешка: ${e.message}`);
+    }finally{
+      setLoadingH(false);
+    }
   }
 
   // reopen the topic-level picker to revisit or switch levels, reusing cached overview texts (no regeneration)
@@ -2874,7 +2925,8 @@ function Aperture() {
               allTopics={topics}
               onNavigateTopic={t=>{resumeTopic(t);}}
               onChangeLevel={openTopicLevelPicker}
-              currentLevel={planData?.activeLevel}/>
+              currentLevel={planData?.activeLevel}
+              onEvolve={evolveTopicWithIdea} evolving={loadingH}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
@@ -3033,7 +3085,7 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel}){
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -3057,6 +3109,8 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
         <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
       </button>}
     </div>
+
+    {onEvolve && <EvolvePlanButton onEvolve={onEvolve} evolving={evolving}/>}
 
     {/* T.6: related topic links */}
     {(parentTopic||childTopic||originTopic)&&<div className="space-y-1">
@@ -4644,6 +4698,36 @@ function ReplyInput({onSubmit}){
     </button>
   </div>;
 }
+
+function EvolvePlanButton({onEvolve,evolving}){
+  const [open,setOpen]=useState(false);
+  const [val,setVal]=useState("");
+  function submit(){
+    const t=val.trim();
+    if(!t||evolving) return;
+    onEvolve(t);
+    setVal(""); setOpen(false);
+  }
+  if(evolving) return <div className="flex items-center gap-2 text-emerald-400 text-sm font-mono-cal"><Loader2 size={14} className="animate-spin"/> Надграждам плана…</div>;
+  if(!open) return <button onClick={()=>setOpen(true)}
+    className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-emerald-800 text-emerald-500 hover:border-emerald-500 hover:text-emerald-400 w-fit">
+    <Sparkles size={12}/> Надгради с нова идея
+  </button>;
+  return <div className="space-y-2">
+    <p className="font-read text-stone-500 text-xs">Нова идея за учене — планът ще се промени, за да ги съчетае и двете.</p>
+    <div className="flex gap-2">
+      <input value={val} onChange={e=>setVal(e.target.value)}
+        onKeyDown={e=>{if(e.key==="Enter")submit();}}
+        autoFocus placeholder="напр. Arduino UNO…"
+        className="flex-1 bg-stone-900 border border-emerald-800 rounded px-3 py-2 text-stone-100 font-read text-sm placeholder:text-stone-500 focus:outline-none focus:border-emerald-500"/>
+      <button onClick={submit}
+        className="font-mono-cal text-xs uppercase tracking-wide bg-emerald-700 hover:bg-emerald-600 text-white font-medium px-3 rounded transition-colors">
+        Съчетай
+      </button>
+    </div>
+  </div>;
+}
+
 
 /* ── Panels ──────────────────────────────────────────────────────────── */
 function LevelsPanel({loading,levels,tuned,onTune,topLevel}){
