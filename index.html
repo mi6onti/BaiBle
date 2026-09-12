@@ -295,16 +295,21 @@ Return: {"names":["..."]}`,
 // same "click an entry, spin off into a full plan" mechanism as Предговор/Приложение.
 async function genInceptionPrompts(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level || 3;
-  const countRange = lvl<=1 ? "2-3" : lvl===2 ? "3" : lvl===3 ? "3-4" : lvl===4 ? "4-5" : "5-6";
+  const count = lvl<=1 ? 2 : lvl===2 ? 3 : lvl===3 ? 3 : lvl===4 ? 4 : 5;
   const levelPart = levelHint ? ` The learner is approaching this at the "${levelHint.label}" level (${levelHint.hint}) — calibrate the sophistication of the prompts accordingly.` : "";
-  const d = await callClaude(
+  const fieldNames = Array.from({length:count},(_,i)=>`P${i+1}`);
+  const markerLines = fieldNames.map(f=>`###${f}### the prompt text`).join(" ");
+  const raw = await callClaudeRaw(
     `Imagine YOU, an AI, needed to master "${subtopicName}" (within the broader context of "${topicLabel}") as fast and as effectively as possible — not to explain it to someone else, but to genuinely internalize it yourself, efficiently, direct route to the core of it.${levelPart}
-List ${countRange} DIFFERENT prompts you would actually write — for yourself or another AI instance — to generate the most effective possible learning experience for this specific knowledge. Each must be a real, complete, concrete prompt (actual instruction text an AI would submit, not a description of one), and each should take a genuinely different angle or approach to mastering "${subtopicName}" efficiently — not variations of the same idea.
-Write in the SAME language as the subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Never use " inside.
-Return: {"names":["..."]}`,
-    900
+Write exactly ${count} DIFFERENT prompts you would actually submit — for yourself or another AI instance — to generate the most effective possible learning experience for this specific knowledge. Each must be a real, complete, concrete prompt (actual instruction text an AI would write, not a description of one), reasonably concise (under 40 words each), and each should take a genuinely different angle or approach to mastering "${subtopicName}" efficiently — not variations of the same idea.
+Write in the SAME language as the subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+${markerLines} ###END###`,
+    Math.min(3800, 400+count*300)
   );
-  return d.names||[];
+  const fields = extractSequentialFields(raw, fieldNames);
+  return fieldNames.map(f=>fields[f]||"").filter(Boolean);
 }
 
 async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
