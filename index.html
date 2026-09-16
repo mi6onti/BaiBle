@@ -509,6 +509,14 @@ function parseLinkBlocks(text){
   }).filter(it=>it.name && it.url);
 }
 
+// 4-line variant for Услуги: name, url, note, and a legitimacy/vetting tip
+function parseServiceBlocks(text){
+  return (text||"").split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
+    const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
+    return { name:lines[0]||"", url:lines[1]||"", note:lines[2]||"", tip:lines[3]||"" };
+  }).filter(it=>it.name && it.url);
+}
+
 // Ресурси: reference articles/pages — only a specific URL when genuinely confident it's real;
 // otherwise a Google search URL, which is always functional and never a fabricated dead link.
 async function genResources(topicLabel, subtopicName, levelHint) {
@@ -527,29 +535,37 @@ Output ONLY the resources, wrapped exactly like this and nothing else before or 
   return parseLinkBlocks(extractField(raw, "TEXT"));
 }
 
-// Шопинг лист: physical products/tools tied to the topic (core items, Bulgaria-first) + an Иновация group
-// (Amazon/Temu-style innovative products). Never a fabricated product-page URL — always a Google search URL,
-// which reliably returns real, current results without claiming a specific listing exists.
+// Шопинг лист: physical products (Group 1), innovative products (Group 2), and — only when the topic genuinely
+// involves hiring a local physical/professional service — Услуги (Group 3). NEVER a specific named company
+// (the AI cannot verify any real business's legitimacy), always a search link + concrete vetting criteria.
 async function genShoppingList(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level||3;
   const coreCount = lvl<=1?"2-3":lvl===2?"3-4":lvl===3?"3-5":lvl===4?"4-6":"5-7";
   const innoCount = lvl<=2?"1-2":lvl<=3?"2-3":"3-4";
   const raw = await callClaudeRaw(
     `List CONCRETE physical products/tools/materials genuinely needed or useful to practice/apply "${subtopicName}" (within the broader context of "${topicLabel}") in real life. Only if the subject genuinely calls for physical products — if it's a purely abstract/theoretical subject with no natural physical products, say so honestly by returning fewer items, or generic study-material items (books, kits) instead of forcing irrelevant products.
+
 Group 1 — CORE ITEMS (${coreCount} items): specific tools/materials/equipment tied to this exact subject, the kind someone would actually go buy to work on this.
+
 Group 2 — INNOVATION (${innoCount} items): genuinely innovative/modern products (gadgets, smart tools, kits) that make learning or doing "${subtopicName}" easier or more efficient — the kind of thing found on Amazon or Temu.
-For EACH item in both groups, give exactly 3 lines:
-(1) a short product name/description
-(2) a URL — ALWAYS construct it as a Google search: https://www.google.com/search?q=YOUR+QUERY+HERE (spaces as +) — never invent a specific product-page or listing URL, since you cannot know real current availability or prices. For Group 1 items, build the query to prioritize Bulgarian retailers/availability by including terms like "България цена" in the query. For Group 2 items, bias the query toward the mentioned platforms, e.g. include "Amazon" or "Temu" in the query.
-(3) a one-sentence note on why/where it's used in this topic
-Leave a blank line between items.
+
+Group 3 — УСЛУГИ (services): ONLY if "${topicLabel}"/"${subtopicName}" genuinely involves a task most people would hire a local professional/company for (construction, repair, installation, legal, medical, personal services, etc.) — otherwise return NOTHING for this group (leave it empty), never force irrelevant services onto an unrelated topic. If relevant, give 2-3 service categories needed.
+CRITICAL for Group 3: NEVER name a specific real company — you cannot verify any real business's current legitimacy, licensing, or scam status, and recommending one by name risks real financial harm if wrong. Instead, for each service category:
+(1) a short description of the TYPE of service/company needed (e.g. "Лицензирана покривна фирма"), never a specific business name
+(2) a Google search URL (https://www.google.com/search?q=YOUR+QUERY+HERE, spaces as +) that would help someone find and compare real options — check if "${topicLabel}" specifies a location; if so use that location in the query, otherwise default to "Варна" in the query but don't imply results must be limited only to that city
+(3) a one-sentence note on why this service is needed for this topic
+(4) a concrete, SPECIFIC-to-this-service-type legitimacy/vetting tip — a real, actionable thing to check before trusting a provider (e.g. registration in the public commercial registry, insurance/liability coverage, request references from recent local clients, red flags like demanding full payment upfront, checking reviews with real profile photos not just text) — tailored to what actually matters for THIS type of service, not generic filler.
+
+For Groups 1 and 2, give exactly 3 lines per item: (1) short product name/description, (2) a Google search URL (https://www.google.com/search?q=YOUR+QUERY+HERE, spaces as +) — never invent a specific product-page or listing URL, since you cannot know real current availability or prices; for Group 1 include "България цена" in the query, for Group 2 bias toward "Amazon" or "Temu", (3) a one-sentence note on why/where it's used.
+
+Leave a blank line between items within each group.
 Write item names/notes in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Keep URLs in plain ASCII.
 Never use the " character inside the text.
-Output the two groups in this exact order, nothing before the first marker or after the last one: ###CORE### Group 1 items here ###INNOVATION### Group 2 items here ###END###`,
-    2600
+Output the three groups in this exact order, nothing before the first marker or after the last one (Group 3 section can be empty if not relevant, but keep the markers): ###CORE### Group 1 items here ###INNOVATION### Group 2 items here ###SERVICES### Group 3 items here (or nothing) ###END###`,
+    3200
   );
-  const fields = extractSequentialFields(raw, ["CORE","INNOVATION"]);
-  return { items: parseLinkBlocks(fields.CORE), innovations: parseLinkBlocks(fields.INNOVATION) };
+  const fields = extractSequentialFields(raw, ["CORE","INNOVATION","SERVICES"]);
+  return { items: parseLinkBlocks(fields.CORE), innovations: parseLinkBlocks(fields.INNOVATION), services: parseServiceBlocks(fields.SERVICES) };
 }
 
 // Енциклопедия: 5 fixed entry types — curious fact, biography, history/timeline, etymology, common mistake
@@ -1744,7 +1760,7 @@ function Aperture() {
     }
 
     if(isShoppingItem(subsubItem)){
-      const EMPTY={shopItems:[],shopInnovations:[],shopLevel:null,tunedShopping:false,unitConfused:false};
+      const EMPTY={shopItems:[],shopInnovations:[],shopServices:[],shopLevel:null,tunedShopping:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
       const allKeys=await loadJSON("allNodeKeys",[]);
@@ -2280,8 +2296,8 @@ function Aperture() {
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
-      const {items,innovations} = await genShoppingList(currentTopic.prompt||currentTopic.name, sub, levelMeta);
-      const updated = {...base, shopItems:items, shopInnovations:innovations, shopLevel:subLevel};
+      const {items,innovations,services} = await genShoppingList(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, shopItems:items, shopInnovations:innovations, shopServices:services, shopLevel:subLevel};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
@@ -2867,8 +2883,8 @@ function Aperture() {
             }
           } else if(isShoppingItem(item)){
             if(!existing?.shopItems?.length){
-              const {items,innovations} = await genShoppingList(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), shopItems:items, shopInnovations:innovations, shopLevel:subLevel, tunedShopping:existing?.tunedShopping||false});
+              const {items,innovations,services} = await genShoppingList(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), shopItems:items, shopInnovations:innovations, shopServices:services, shopLevel:subLevel, tunedShopping:existing?.tunedShopping||false});
             }
           } else if(isGamesItem(item)){
             if(!existing?.crosswordPuzzle){
@@ -3708,7 +3724,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       <p className="font-read text-stone-500 text-sm italic">Линковете водят към търсене (не конкретен продукт) — приоритет на български магазини, после чужбина.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryShopping}/>}
-      <ShoppingPanel loading={loadingLevels} items={nodeData?.shopItems||[]} innovations={nodeData?.shopInnovations||[]} tuned={!!nodeData?.tunedShopping} onTune={onTuneShopping}/>
+      <ShoppingPanel loading={loadingLevels} items={nodeData?.shopItems||[]} innovations={nodeData?.shopInnovations||[]} services={nodeData?.shopServices||[]} tuned={!!nodeData?.tunedShopping} onTune={onTuneShopping}/>
     </div>;
   }
 
@@ -4060,9 +4076,9 @@ function ResourcesPanel({loading,resources,tuned,onTune}){
   </div>;
 }
 
-function ShoppingPanel({loading,items,innovations,tuned,onTune}){
+function ShoppingPanel({loading,items,innovations,services,tuned,onTune}){
   if(loading) return <Spinner label="съставям шопинг лист…"/>;
-  if((!items||!items.length)&&(!innovations||!innovations.length)) return null;
+  if((!items||!items.length)&&(!innovations||!innovations.length)&&(!services||!services.length)) return null;
   return <div className="space-y-4">
     {items&&items.length>0 && <div className="space-y-2">
       <div className="font-mono-cal text-xs uppercase tracking-wide text-red-500">Продукти</div>
@@ -4076,6 +4092,19 @@ function ShoppingPanel({loading,items,innovations,tuned,onTune}){
       {innovations.map((it,i)=>(
         <LinkCard key={i} name={it.name} url={it.url} note={it.note}
           colorClass="border-red-800/50 bg-red-900/10" textClass="text-red-200"/>
+      ))}
+    </div>}
+    {services&&services.length>0 && <div className="space-y-2">
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-red-300">Услуги</div>
+      <p className="font-read text-stone-500 text-xs italic">Линкове водят към търсене, не към конкретна препоръчана фирма — AI-то не може да провери реална легитимност на бизнес. Критериите по-долу са за да я прецениш сам.</p>
+      {services.map((s,i)=>(
+        <a key={i} href={s.url} target="_blank" rel="noopener noreferrer"
+          className="block rounded border border-red-900/50 bg-red-950/10 p-3 hover:opacity-90 transition-opacity">
+          <div className="font-read text-base font-medium text-red-300">{s.name}</div>
+          {s.note && <p className="font-read text-stone-400 text-sm mt-1">{s.note}</p>}
+          {s.tip && <p className="font-read text-emerald-400 text-sm mt-2 flex gap-1.5"><span>✓</span><span>{s.tip}</span></p>}
+          <div className="font-mono-cal text-[11px] text-stone-500 mt-1.5 truncate">{s.url}</div>
+        </a>
       ))}
     </div>}
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
