@@ -705,6 +705,36 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return { verses, wwjd };
 }
 
+// Преди откритието: shows how the world/people functioned BEFORE this topic existed, to make its real-world
+// impact and value tangible. A narrative "before" picture, plus concrete scannable before/after contrasts.
+async function genBeforeDiscovery(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const target = Math.max(90, wb(lvl, 0.14));
+  const lo=Math.round(target*0.85), hi=Math.round(target*1.15);
+  const compareCount = lvl<=1?"2":lvl===2?"2-3":lvl===3?"3":lvl===4?"3-4":"4-5";
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Help a learner appreciate the real IMPACT and VALUE of "${subtopicName}" (within the broader context of "${topicLabel}") by showing what came before it.
+
+PART 1 — "BEFORE" NARRATIVE (${lo}-${hi} words): describe, in engaging narrative prose, how people/the world actually functioned BEFORE this specific thing existed or was discovered/invented — what problem was unsolved, what workaround or inferior method people relied on instead, and what that was actually like in practice (the friction, cost, risk, or limitation it caused). Ground this in genuine, accurate history/context of THIS exact topic — never a generic "life was harder before technology" filler.${levelPart}
+CRITICAL — accuracy over drama: only include specific historical claims, dates, names, or practices you are genuinely confident are accurate. If uncertain of a specific detail, describe the situation more generally rather than inventing a precise-sounding but unverified fact. If the topic is timeless/abstract with no genuine "before" (e.g. a basic mathematical truth), be honest about that rather than forcing a fabricated history — in that rare case, instead describe the state of NOT understanding or not having this mental tool, and what that confusion/limitation was like.
+
+PART 2 — CONCRETE BEFORE/AFTER CONTRASTS (${compareCount} of them): short, scannable pairs that each name one specific aspect (e.g. "Диагностика на счупена кост"), then state briefly how it was handled BEFORE, then briefly what changed AFTER — making the practical improvement concrete and specific, not vague praise.
+
+Write everything in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###BEFORE### the before narrative here ###COMPARE### comparison blocks here, each block exactly 3 lines (aspect / before / after), blank line between blocks ###END###`,
+    Math.min(3800, 500+hi*3+Number(compareCount.split("-").pop())*120)
+  );
+  const fields = extractSequentialFields(raw, ["BEFORE","COMPARE"]);
+  const comparisons = (fields.COMPARE||"").split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
+    const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
+    return { aspect:lines[0]||"", before:lines[1]||"", after:lines[2]||"" };
+  }).filter(c=>c.aspect && c.before && c.after);
+  return { before: fields.BEFORE||"", comparisons };
+}
+
 // Игри — Кръстословица: AI generates ONLY the word+clue list; the grid layout itself is a pure, deterministic
 // algorithm below, reused for every crossword regardless of topic/level — never AI-generated, never re-invented.
 async function genCrosswordWords(topicLabel, subtopicName, levelHint) {
@@ -746,6 +776,30 @@ Never use the " character inside the text.
 Output as blocks separated by a blank line, each block being exactly 2 lines: the word, then the clue. Nothing else before or after.
 Output ONLY this list, wrapped exactly like this and nothing else before or after: ###TEXT###the words here###TEXT_END###`,
     2000
+  );
+  const raw2 = extractField(raw, "TEXT");
+  return raw2.split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
+    const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
+    return { word:lines[0]||"", clue:lines[1]||"" };
+  }).filter(w=>w.word && w.clue);
+}
+
+// Кръстословица на противоположностите: SAME word list shape as the plain crossword — reuses buildCrossword()
+// and CrosswordGame unchanged. Words are topic concepts; clues point to their OPPOSITE/antonym concept, so the
+// learner must recognize the contrast to solve it (e.g. clue "Противоположност на ООП" → word "ПРОЦЕДУРНО").
+async function genOppositesCrosswordWords(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const count = lvl<=1?"5-6":lvl===2?"6-8":lvl===3?"8-10":lvl===4?"10-12":"12-15";
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Generate ${count} single WORDS (no spaces, no punctuation, no numbers, one token each) for a crossword, all genuinely related to "${subtopicName}" (within the broader context of "${topicLabel}").${levelPart}
+Each word must be a real term/name/concept that has a clear OPPOSITE or contrasting counterpart within this subject (e.g. if the subject were object-oriented programming, "ПРОЦЕДУРНО" could be a word whose clue references its opposite, "обектно-ориентирано програмиране"). Vary word length for a good mix (some short 3-5 letters, some longer 6-10 letters).
+For each clue: name or describe the OPPOSITE/contrasting concept (never the word itself), so the learner must recognize what the word is the opposite of in order to solve it. The clue should make the contrast clear and educational, under 14 words.
+Write words and clues in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically) — words must be single tokens with no spaces (for compound terms, pick the single most essential word).
+Never use the " character inside the text.
+Output as blocks separated by a blank line, each block being exactly 2 lines: the word, then the clue. Nothing else before or after.
+Output ONLY this list, wrapped exactly like this and nothing else before or after: ###TEXT###the words here###TEXT_END###`,
+    1800
   );
   const raw2 = extractField(raw, "TEXT");
   return raw2.split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
@@ -1173,6 +1227,7 @@ function isEncyclopediaItem(item){ return typeof item==="object" && item!==null 
 function isQuotesItem(item){ return typeof item==="object" && item!==null && !!item.isQuotes; }
 function isBooksItem(item){ return typeof item==="object" && item!==null && !!item.isBooks; }
 function isBibleItem(item){ return typeof item==="object" && item!==null && !!item.isBible; }
+function isBeforeItem(item){ return typeof item==="object" && item!==null && !!item.isBefore; }
 function isGamesItem(item){ return typeof item==="object" && item!==null && !!item.isGames; }
 function isAppIdeasItem(item){ return typeof item==="object" && item!==null && !!item.isAppIdeas; }
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
@@ -1572,7 +1627,8 @@ function Aperture() {
       const quotesItem = { name:"Цитати", isQuotes:true };
       const booksItem = { name:"Advice from books", isBooks:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const beforeItem = { name:"Преди откритието", isBefore:true };
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1655,7 +1711,8 @@ function Aperture() {
       const quotesItem = { name:"Цитати", isQuotes:true };
       const booksItem = { name:"Advice from books", isBooks:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const beforeItem = { name:"Преди откритието", isBefore:true };
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1809,6 +1866,16 @@ function Aperture() {
       return;
     }
 
+    if(isBeforeItem(subsubItem)){
+      const EMPTY={beforeText:"",beforeComparisons:[],beforeLevel:null,tunedBefore:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.beforeText) doLoadBefore(id,sub,subLevel,cached);
+      return;
+    }
+
     if(isQuotesItem(subsubItem)){
       const EMPTY={quotes:[],quotesLevel:null,tunedQuotes:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
@@ -1850,7 +1917,7 @@ function Aperture() {
     }
 
     if(isGamesItem(subsubItem)){
-      const EMPTY={gameType:null,crosswordWords:[],crosswordPuzzle:null,crosswordInput:null,crypticWords:[],crypticPuzzle:null,crypticInput:null,connectionsGroups:null,connectionsState:null,millionaireQuestions:null,millionaireState:null,gamesLevel:null,tunedGames:false,unitConfused:false};
+      const EMPTY={gameType:null,crosswordWords:[],crosswordPuzzle:null,crosswordInput:null,crypticWords:[],crypticPuzzle:null,crypticInput:null,oppositesWords:[],oppositesPuzzle:null,oppositesInput:null,connectionsGroups:null,connectionsState:null,millionaireQuestions:null,millionaireState:null,gamesLevel:null,tunedGames:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
       const allKeys=await loadJSON("allNodeKeys",[]);
@@ -1993,6 +2060,7 @@ function Aperture() {
         const quotesItem = { name:"Цитати", isQuotes:true };
       const booksItem = { name:"Advice from books", isBooks:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
+      const beforeItem = { name:"Преди откритието", isBefore:true };
         const actionPlanItem = { name:"Rework", isActionPlan:true };
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
@@ -2006,7 +2074,7 @@ function Aperture() {
       const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -2095,6 +2163,7 @@ function Aperture() {
         const quotesItem = { name:"Цитати", isQuotes:true };
       const booksItem = { name:"Advice from books", isBooks:true };
         const bibleItem = { name:"Learn from Bible", isBible:true };
+      const beforeItem = { name:"Преди откритието", isBefore:true };
         const actionPlanItem = { name:"Rework", isActionPlan:true };
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
@@ -2108,7 +2177,7 @@ function Aperture() {
       const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -2196,6 +2265,7 @@ function Aperture() {
         const quotesItem = { name:"Цитати", isQuotes:true };
         const booksItem = { name:"Advice from books", isBooks:true };
         const bibleItem = { name:"Learn from Bible", isBible:true };
+      const beforeItem = { name:"Преди откритието", isBefore:true };
         const actionPlanItem = { name:"Rework", isActionPlan:true };
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
@@ -2209,7 +2279,7 @@ function Aperture() {
         const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -2492,6 +2562,31 @@ function Aperture() {
     }
   }
 
+  async function doLoadBefore(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const {before,comparisons} = await genBeforeDiscovery(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, beforeText:before, beforeComparisons:comparisons, beforeLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneBefore(){
+    if(!nodeData||nodeData.tunedBefore)return;
+    const level = nodeData.beforeLevel;
+    const updNode={...nodeData,tunedBefore:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
   async function doLoadSimulation(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
@@ -2548,6 +2643,25 @@ function Aperture() {
       const words = await genCrypticCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const puzzle = buildCrossword(words);
       const updated = {...base, gameType:"cryptic", crypticWords:words, crypticPuzzle:puzzle, gamesLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function doLoadOpposites(id, sub, subLevel, base){
+    if(base?.oppositesPuzzle){
+      const updated = {...base, gameType:"opposites"};
+      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      return;
+    }
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const words = await genOppositesCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const puzzle = buildCrossword(words);
+      const updated = {...base, gameType:"opposites", oppositesWords:words, oppositesPuzzle:puzzle, gamesLevel:subLevel};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
@@ -2902,6 +3016,11 @@ function Aperture() {
               const entries = await genEncyclopedia(topicPrompt, subItem.name, subLevelMeta);
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, encLevel:subLevel, tunedEnc:existing?.tunedEnc||false});
             }
+          } else if(isBeforeItem(item)){
+            if(!existing?.beforeText){
+              const {before,comparisons} = await genBeforeDiscovery(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), beforeText:before, beforeComparisons:comparisons, beforeLevel:subLevel, tunedBefore:existing?.tunedBefore||false});
+            }
           } else if(isQuotesItem(item)){
             if(!existing?.quotes?.length){
               const quotes = await genQuotes(topicPrompt, subItem.name, subLevelMeta);
@@ -3113,6 +3232,7 @@ function Aperture() {
               isResources={isResourcesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isShopping={isShoppingItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isEncyclopedia={isEncyclopediaItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isBefore={isBeforeItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isQuotes={isQuotesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isBooks={isBooksItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isBible={isBibleItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
@@ -3142,6 +3262,7 @@ function Aperture() {
               onRetryResources={()=>doLoadResources(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryShopping={()=>doLoadShopping(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryEncyclopedia={()=>doLoadEncyclopedia(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryBefore={()=>doLoadBefore(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryQuotes={()=>doLoadQuotes(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryBooks={()=>doLoadBooks(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryBible={()=>doLoadBible(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
@@ -3151,11 +3272,13 @@ function Aperture() {
               onRetrySimulation={()=>doLoadSimulation(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onSelectCrossword={()=>doLoadCrossword(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onSelectCryptic={()=>doLoadCryptic(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onSelectOpposites={()=>doLoadOpposites(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onSelectConnections={()=>doLoadConnections(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onSelectMillionaire={()=>doLoadMillionaire(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onBackToGamesMenu={backToGamesMenu}
               onCrosswordInputChange={grid=>saveGameField("crosswordInput",grid)}
               onCrypticInputChange={grid=>saveGameField("crypticInput",grid)}
+              onOppositesInputChange={grid=>saveGameField("oppositesInput",grid)}
               onConnectionsStateChange={state=>saveGameField("connectionsState",state)}
               onMillionaireStateChange={state=>saveGameField("millionaireState",state)}
               onRetryConfession={()=>doLoadConfession(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
@@ -3175,6 +3298,7 @@ function Aperture() {
               onTuneResources={tuneResources}
               onTuneShopping={tuneShopping}
               onTuneEncyclopedia={tuneEncyclopedia}
+              onTuneBefore={tuneBefore}
               onTuneQuotes={tuneQuotes}
               onTuneBooks={tuneBooks}
               onTuneBible={tuneBible}
@@ -3364,6 +3488,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
         const isRe = isResourcesItem(s);
         const isSh = isShoppingItem(s);
         const isEn = isEncyclopediaItem(s);
+        const isBe = isBeforeItem(s);
         const isQu = isQuotesItem(s);
         const isBo = isBooksItem(s);
         const isBi = isBibleItem(s);
@@ -3385,6 +3510,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isRe ? "border-blue-800 bg-blue-950/20 hover:border-blue-500"
                           : isSh ? "border-red-800 bg-red-950/20 hover:border-red-500"
                           : isEn ? "border-orange-800 bg-orange-950/20 hover:border-orange-500"
+                          : isBe ? "border-slate-500/50 bg-slate-800/15 hover:border-slate-300"
                           : isQu ? "border-pink-800 bg-pink-950/20 hover:border-pink-500"
                           : isBo ? "border-blue-500/50 bg-blue-800/15 hover:border-blue-300"
                           : isBi ? "border-purple-800 bg-purple-950/20 hover:border-purple-500"
@@ -3400,12 +3526,12 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isHu ? "border-orange-700/60 bg-orange-900/15 hover:border-orange-400"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isQu ? "text-pink-300" : isBo ? "text-blue-200" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isGa ? "text-amber-300" : isAI ? "text-cyan-200" : isNe ? "text-green-300" : isIn ? "text-indigo-200" : isCo ? "text-fuchsia-300" : isHu ? "text-orange-200" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBo ? "text-blue-400 group-hover:text-blue-200" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isGa ? "text-amber-700 group-hover:text-amber-400" : isAI ? "text-cyan-400 group-hover:text-cyan-200" : isNe ? "text-green-700 group-hover:text-green-400" : isIn ? "text-indigo-400 group-hover:text-indigo-200" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isHu ? "text-orange-500 group-hover:text-orange-300" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isBe ? "text-slate-300" : isQu ? "text-pink-300" : isBo ? "text-blue-200" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isGa ? "text-amber-300" : isAI ? "text-cyan-200" : isNe ? "text-green-300" : isIn ? "text-indigo-200" : isCo ? "text-fuchsia-300" : isHu ? "text-orange-200" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isBe ? "text-slate-400 group-hover:text-slate-200" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBo ? "text-blue-400 group-hover:text-blue-200" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isGa ? "text-amber-700 group-hover:text-amber-400" : isAI ? "text-cyan-400 group-hover:text-cyan-200" : isNe ? "text-green-700 group-hover:text-green-400" : isIn ? "text-indigo-400 group-hover:text-indigo-200" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isHu ? "text-orange-500 group-hover:text-orange-300" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isQu||isBo||isBi||isAP||isSo||isTe||isSi||isGa||isAI||isNe||isIn||isCo||isHu||isCu) && <Sparkles size={14}/>}
+            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isBe||isQu||isBo||isBi||isAP||isSo||isTe||isSi||isGa||isAI||isNe||isIn||isCo||isHu||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -3416,7 +3542,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -3580,6 +3706,27 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryEncyclopedia}/>}
       <EncyclopediaPanel loading={loadingLevels} entries={nodeData?.entries||[]} tuned={!!nodeData?.tunedEnc} onTune={onTuneEncyclopedia}/>
+    </div>;
+  }
+
+  if(isBefore){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-slate-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">Как е изглеждал светът преди — за да усетиш реалната стойност на това, което учиш.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryBefore}/>}
+      <BeforePanel loading={loadingLevels} before={nodeData?.beforeText||""} comparisons={nodeData?.beforeComparisons||[]} tuned={!!nodeData?.tunedBefore} onTune={onTuneBefore}/>
     </div>;
   }
 
@@ -3766,9 +3913,9 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       {error&&<ErrorNote message={error} onRetry={onSelectCrossword}/>}
       <GamesPanel loading={loadingLevels} nodeData={nodeData} tuned={!!nodeData?.tunedGames} onTune={onTuneGames}
-        onSelectCrossword={onSelectCrossword} onSelectCryptic={onSelectCryptic} onSelectConnections={onSelectConnections} onSelectMillionaire={onSelectMillionaire}
+        onSelectCrossword={onSelectCrossword} onSelectCryptic={onSelectCryptic} onSelectOpposites={onSelectOpposites} onSelectConnections={onSelectConnections} onSelectMillionaire={onSelectMillionaire}
         onBackToGamesMenu={onBackToGamesMenu}
-        onCrosswordInputChange={onCrosswordInputChange} onCrypticInputChange={onCrypticInputChange} onConnectionsStateChange={onConnectionsStateChange} onMillionaireStateChange={onMillionaireStateChange}/>
+        onCrosswordInputChange={onCrosswordInputChange} onCrypticInputChange={onCrypticInputChange} onOppositesInputChange={onOppositesInputChange} onConnectionsStateChange={onConnectionsStateChange} onMillionaireStateChange={onMillionaireStateChange}/>
     </div>;
   }
 
@@ -4133,6 +4280,36 @@ function EncyclopediaPanel({loading,entries,tuned,onTune}){
   </div>;
 }
 
+function BeforePanel({loading,before,comparisons,tuned,onTune}){
+  if(loading) return <Spinner label="изследвам света преди…"/>;
+  if(!before && (!comparisons||!comparisons.length)) return null;
+  return <div className="space-y-4">
+    {before && <div className="rounded border border-slate-700/60 bg-slate-800/20 p-4">
+      <div className="font-mono-cal text-[10px] uppercase tracking-wide text-slate-400 mb-2">Преди</div>
+      <p className="font-read text-stone-200 leading-relaxed text-base whitespace-pre-wrap">{before}</p>
+    </div>}
+    {comparisons&&comparisons.length>0 && <div className="space-y-2">
+      {comparisons.map((c,i)=>(
+        <div key={i} className="rounded border border-slate-700/40 bg-slate-900/30 p-3">
+          <div className="font-mono-cal text-[10px] uppercase tracking-wide text-slate-400 mb-1.5">{c.aspect}</div>
+          <div className="flex items-start gap-2">
+            <div className="flex-1">
+              <div className="font-mono-cal text-[9px] uppercase tracking-wide text-stone-600 mb-0.5">Преди</div>
+              <p className="font-read text-stone-400 text-sm leading-snug">{c.before}</p>
+            </div>
+            <ArrowRight size={14} className="text-slate-500 shrink-0 mt-4"/>
+            <div className="flex-1">
+              <div className="font-mono-cal text-[9px] uppercase tracking-wide text-emerald-700 mb-0.5">Сега</div>
+              <p className="font-read text-emerald-200 text-sm leading-snug">{c.after}</p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>}
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
 const HUM_ICONS = {asif:"🎭", dict:"📔", review:"⭐", opinion:"🤖", story:"😂"};
 const HUM_LABELS = {asif:"Ако беше...", dict:"Саркастичен речник", review:"Едно-звездна рецензия", opinion:"AI мнение", story:"AI история"};
 function HumorPanel({loading,entries,tuned,onTune}){
@@ -4445,7 +4622,7 @@ function AppIdeasPanel({loading,apps,tuned,onTune}){
   </div>;
 }
 
-function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword,onSelectCryptic,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onConnectionsStateChange,onMillionaireStateChange}){
+function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange}){
   if(loading) return <Spinner label="съставям игра…"/>;
   if(!nodeData?.gameType){
     return <div className="space-y-3">
@@ -4458,6 +4635,11 @@ function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword,onSelectCry
       <button onClick={onSelectCryptic}
         className="w-full text-left px-4 py-3 rounded border border-amber-900/50 bg-amber-950/10 hover:border-amber-500 flex items-center justify-between group">
         <span className="font-read text-stone-100 text-base">🕵️ Криптична кръстословица{nodeData?.crypticPuzzle&&<span className="font-mono-cal text-[10px] text-amber-600 ml-2">(продължи)</span>}</span>
+        <ChevronRight size={16} className="text-amber-700 group-hover:text-amber-400"/>
+      </button>
+      <button onClick={onSelectOpposites}
+        className="w-full text-left px-4 py-3 rounded border border-amber-900/50 bg-amber-950/10 hover:border-amber-500 flex items-center justify-between group">
+        <span className="font-read text-stone-100 text-base">⇄ Противоположности{nodeData?.oppositesPuzzle&&<span className="font-mono-cal text-[10px] text-amber-600 ml-2">(продължи)</span>}</span>
         <ChevronRight size={16} className="text-amber-700 group-hover:text-amber-400"/>
       </button>
       <button onClick={onSelectConnections}
@@ -4489,6 +4671,15 @@ function GamesPanel({loading,nodeData,tuned,onTune,onSelectCrossword,onSelectCry
       {backBtn}
       <p className="font-read text-stone-500 text-sm italic">Криптичните подсказки крият думата чрез игра на думи, не директно значение.</p>
       <CrosswordGame puzzle={nodeData.crypticPuzzle} savedInput={nodeData.crypticInput} onInputChange={onCrypticInputChange}/>
+      <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+    </div>;
+  }
+  if(nodeData.gameType==="opposites"){
+    if(!nodeData.oppositesPuzzle) return <div className="space-y-3">{backBtn}<p className="font-read text-stone-500 text-sm py-6">Нямаше достатъчно думи за изграждане на кръстословица — опитай друго ниво.</p></div>;
+    return <div className="space-y-4">
+      {backBtn}
+      <p className="font-read text-stone-500 text-sm italic">Всяка подсказка описва противоположността на думата, която трябва да намериш.</p>
+      <CrosswordGame puzzle={nodeData.oppositesPuzzle} savedInput={nodeData.oppositesInput} onInputChange={onOppositesInputChange}/>
       <div><TuneButton tuned={tuned} onClick={onTune}/></div>
     </div>;
   }
