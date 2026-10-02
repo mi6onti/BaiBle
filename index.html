@@ -814,6 +814,58 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return { scenario: fields.SCENARIO||"", ripples };
 }
 
+// Експерименти: SAFE, at-home/low-cost experiments using common household items, that let the learner
+// personally test/observe/validate the idea behind this topic rather than just read about it.
+async function genExperiments(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const count = lvl<=1?"1-2":lvl===2?"2":lvl===3?"2-3":lvl===4?"3":"3-4";
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `Design ${count} SAFE, at-home or low-cost experiments/exercises that let a learner personally test, observe, or validate a real idea behind "${subtopicName}" (within the broader context of "${topicLabel}") — hands-on proof rather than just reading about it. If the subject is technical/abstract (e.g. software, math), a "home experiment" can be a small self-contained script, spreadsheet calculation, or thought-experiment-with-real-numbers the learner runs themselves — pick whatever kind of hands-on validation genuinely fits this exact subject.${levelPart}
+CRITICAL SAFETY — every experiment MUST be genuinely safe to do at home with no special training: only common household/office items or free/cheap software already accessible to an ordinary person, no dangerous chemicals, no mains-electricity wiring work, no fire/heat hazards, no sharp tools beyond ordinary kitchen use, nothing requiring specialized safety equipment. If a topic has NO genuinely safe hands-on angle at all, say so honestly by returning fewer (even zero) experiments rather than forcing something risky or impractical.
+For each experiment give exactly 5 lines:
+(1) a short title (3-6 words)
+(2) the HYPOTHESIS: the specific question or decision this experiment helps answer/validate, phrased as "Ще провери дали..." or similar
+(3) MATERIALS: common items needed, separated by " || " (e.g. "хартия || ножица || хронометър")
+(4) STEPS: the procedure as ordered steps, separated by " || " (e.g. "Стъпка едно || Стъпка две || Стъпка три")
+(5) RESULT: what outcome would validate/prove the idea, and what a different outcome would mean instead
+Write everything in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output as blocks separated by a blank line, each block being exactly 5 lines as above. Output ONLY this list, wrapped exactly like this and nothing else before or after: ###TEXT###the experiments here###TEXT_END###`,
+    Math.min(3800, 600+Number(count.split("-").pop())*700)
+  );
+  const raw2 = extractField(raw, "TEXT");
+  return raw2.split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
+    const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
+    const splitParts = s => (s||"").split("||").map(x=>x.trim()).filter(Boolean);
+    return { title:lines[0]||"", hypothesis:lines[1]||"", materials:splitParts(lines[2]), steps:splitParts(lines[3]), result:lines[4]||"" };
+  }).filter(e=>e.title && e.hypothesis);
+}
+
+// Интервю: AI plays a warm, genuinely curious podcast HOST interviewing the learner as an important guest —
+// questions probe the learner's OWN views, experience, and intuition about the topic, not their knowledge of
+// facts (that's what Тест is for). The learner's typed answers are saved; nothing here is graded or corrected.
+async function genInterview(topicLabel, subtopicName, levelHint) {
+  const lvl = levelHint?.level||3;
+  const count = lvl<=1?"3":lvl===2?"3-4":lvl===3?"4-5":lvl===4?"5-6":"6-7";
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+    `You are a warm, genuinely curious podcast HOST, and the learner is your IMPORTANT GUEST on the show, being interviewed about "${subtopicName}" (within the broader context of "${topicLabel}"). Make the guest feel valued, interesting, and worth listening to — the way a great host draws out a guest's personality, not a quiz or an exam.${levelPart}
+
+PART 1 — a short, warm INTRO (1-2 sentences) welcoming the guest to the show and introducing the topic, in a genuine podcast-host voice (not cheesy or over-the-top).
+
+PART 2 — exactly ${count} interview QUESTIONS, each one genuinely curious about the GUEST'S OWN perspective, experience, instincts, or opinions related to "${subtopicName}" — never a knowledge quiz question with one right answer. Good angles to draw from (vary across the questions, don't use all of them): what first drew them to this; a moment they struggled with or that clicked for them; an opinion or take they hold that others might disagree with; how they'd explain this to someone very different from them and why that way; what in this topic genuinely excites or frustrates them; a real decision or trade-off they've faced related to this; what they'd do differently knowing what they know now. Keep each question open-ended, personal, and genuinely engaging to answer — a real host question, not a survey item.
+Write everything in the SAME language as the topic/subtopic above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+Never use the " character inside the text.
+Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
+###INTRO### the host intro here ###QUESTIONS### the questions here, one per line, no numbering ###END###`,
+    Math.min(2600, 400+Number(count.split("-").pop())*180)
+  );
+  const fields = extractSequentialFields(raw, ["INTRO","QUESTIONS"]);
+  const questions = (fields.QUESTIONS||"").split("\n").map(l=>l.trim()).filter(Boolean);
+  return { intro: fields.INTRO||"", questions };
+}
+
 // Игри — Кръстословица: AI generates ONLY the word+clue list; the grid layout itself is a pure, deterministic
 // algorithm below, reused for every crossword regardless of topic/level — never AI-generated, never re-invented.
 async function genCrosswordWords(topicLabel, subtopicName, levelHint) {
@@ -1310,6 +1362,8 @@ function isBeforeItem(item){ return typeof item==="object" && item!==null && !!i
 function isCompareItem(item){ return typeof item==="object" && item!==null && !!item.isCompare; }
 function isTimelineItem(item){ return typeof item==="object" && item!==null && !!item.isTimeline; }
 function isButterflyItem(item){ return typeof item==="object" && item!==null && !!item.isButterfly; }
+function isExperimentsItem(item){ return typeof item==="object" && item!==null && !!item.isExperiments; }
+function isInterviewItem(item){ return typeof item==="object" && item!==null && !!item.isInterview; }
 function isGamesItem(item){ return typeof item==="object" && item!==null && !!item.isGames; }
 function isAppIdeasItem(item){ return typeof item==="object" && item!==null && !!item.isAppIdeas; }
 function isActionPlanItem(item){ return typeof item==="object" && item!==null && !!item.isActionPlan; }
@@ -1713,7 +1767,9 @@ function Aperture() {
       const compareItem = { name:"Сравнения", isCompare:true };
       const timelineItem = { name:"Timeline", isTimeline:true };
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const experimentsItem = { name:"Експерименти", isExperiments:true };
+      const interviewItem = { name:"Интервю", isInterview:true };
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1800,7 +1856,9 @@ function Aperture() {
       const compareItem = { name:"Сравнения", isCompare:true };
       const timelineItem = { name:"Timeline", isTimeline:true };
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const experimentsItem = { name:"Експерименти", isExperiments:true };
+      const interviewItem = { name:"Интервю", isInterview:true };
+      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -1994,6 +2052,26 @@ function Aperture() {
       return;
     }
 
+    if(isExperimentsItem(subsubItem)){
+      const EMPTY={experiments:[],experimentsLevel:null,tunedExperiments:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.experiments||!cached.experiments.length) doLoadExperiments(id,sub,subLevel,cached);
+      return;
+    }
+
+    if(isInterviewItem(subsubItem)){
+      const EMPTY={interviewIntro:"",interviewQuestions:[],interviewAnswers:{},interviewLevel:null,tunedInterview:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.interviewQuestions||!cached.interviewQuestions.length) doLoadInterview(id,sub,subLevel,cached);
+      return;
+    }
+
     if(isQuotesItem(subsubItem)){
       const EMPTY={quotes:[],quotesLevel:null,tunedQuotes:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
@@ -2182,6 +2260,8 @@ function Aperture() {
       const compareItem = { name:"Сравнения", isCompare:true };
       const timelineItem = { name:"Timeline", isTimeline:true };
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
+      const experimentsItem = { name:"Експерименти", isExperiments:true };
+      const interviewItem = { name:"Интервю", isInterview:true };
         const actionPlanItem = { name:"Rework", isActionPlan:true };
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
@@ -2195,7 +2275,7 @@ function Aperture() {
       const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -2288,6 +2368,8 @@ function Aperture() {
       const compareItem = { name:"Сравнения", isCompare:true };
       const timelineItem = { name:"Timeline", isTimeline:true };
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
+      const experimentsItem = { name:"Експерименти", isExperiments:true };
+      const interviewItem = { name:"Интервю", isInterview:true };
         const actionPlanItem = { name:"Rework", isActionPlan:true };
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
@@ -2301,7 +2383,7 @@ function Aperture() {
       const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -2393,6 +2475,8 @@ function Aperture() {
       const compareItem = { name:"Сравнения", isCompare:true };
       const timelineItem = { name:"Timeline", isTimeline:true };
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
+      const experimentsItem = { name:"Експерименти", isExperiments:true };
+      const interviewItem = { name:"Интервю", isInterview:true };
         const actionPlanItem = { name:"Rework", isActionPlan:true };
         const socraticItem = { name:"Сократически диалог", isSocratic:true };
         const testItem = { name:"Тест", isTest:true };
@@ -2406,7 +2490,7 @@ function Aperture() {
         const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, humorItem, actionPlanItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -2781,6 +2865,56 @@ function Aperture() {
     if(!nodeData||nodeData.tunedButterfly)return;
     const level = nodeData.butterflyLevel;
     const updNode={...nodeData,tunedButterfly:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadExperiments(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const experiments = await genExperiments(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, experiments, experimentsLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneExperiments(){
+    if(!nodeData||nodeData.tunedExperiments)return;
+    const level = nodeData.experimentsLevel;
+    const updNode={...nodeData,tunedExperiments:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+
+  async function doLoadInterview(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const {intro,questions} = await genInterview(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, interviewIntro:intro, interviewQuestions:questions, interviewLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+
+  async function tuneInterview(){
+    if(!nodeData||nodeData.tunedInterview)return;
+    const level = nodeData.interviewLevel;
+    const updNode={...nodeData,tunedInterview:true};
     setNodeData(updNode);
     await saveJSON(`node:${nodeId}`,updNode);
     if(level){
@@ -3238,6 +3372,16 @@ function Aperture() {
               const {scenario,ripples} = await genButterflyEffect(topicPrompt, subItem.name, subLevelMeta);
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), butterflyScenario:scenario, butterflyRipples:ripples, butterflyLevel:subLevel, tunedButterfly:existing?.tunedButterfly||false});
             }
+          } else if(isExperimentsItem(item)){
+            if(!existing?.experiments?.length){
+              const experiments = await genExperiments(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), experiments, experimentsLevel:subLevel, tunedExperiments:existing?.tunedExperiments||false});
+            }
+          } else if(isInterviewItem(item)){
+            if(!existing?.interviewQuestions?.length){
+              const {intro,questions} = await genInterview(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), interviewIntro:intro, interviewQuestions:questions, interviewAnswers:existing?.interviewAnswers||{}, interviewLevel:subLevel, tunedInterview:existing?.tunedInterview||false});
+            }
           } else if(isQuotesItem(item)){
             if(!existing?.quotes?.length){
               const quotes = await genQuotes(topicPrompt, subItem.name, subLevelMeta);
@@ -3453,6 +3597,8 @@ function Aperture() {
               isCompare={isCompareItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isTimeline={isTimelineItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isButterfly={isButterflyItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isExperiments={isExperimentsItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isInterview={isInterviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isQuotes={isQuotesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isBooks={isBooksItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isBible={isBibleItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
@@ -3486,6 +3632,9 @@ function Aperture() {
               onRetryCompare={()=>doLoadCompare(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryTimeline={()=>doLoadTimeline(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryButterfly={()=>doLoadButterfly(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryExperiments={()=>doLoadExperiments(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onRetryInterview={()=>doLoadInterview(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
+              onInterviewAnswerChange={(qIdx,val)=>saveGameField("interviewAnswers",{...(nodeData?.interviewAnswers||{}),[qIdx]:val})}
               onRetryQuotes={()=>doLoadQuotes(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryBooks={()=>doLoadBooks(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryBible={()=>doLoadBible(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
@@ -3525,6 +3674,8 @@ function Aperture() {
               onTuneCompare={tuneCompare}
               onTuneTimeline={tuneTimeline}
               onTuneButterfly={tuneButterfly}
+              onTuneExperiments={tuneExperiments}
+              onTuneInterview={tuneInterview}
               onTuneQuotes={tuneQuotes}
               onTuneBooks={tuneBooks}
               onTuneBible={tuneBible}
@@ -3718,6 +3869,8 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
         const isCm = isCompareItem(s);
         const isTl = isTimelineItem(s);
         const isBf = isButterflyItem(s);
+        const isXp = isExperimentsItem(s);
+        const isIv = isInterviewItem(s);
         const isQu = isQuotesItem(s);
         const isBo = isBooksItem(s);
         const isBi = isBibleItem(s);
@@ -3743,6 +3896,8 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isCm ? "border-zinc-600/60 bg-zinc-800/20 hover:border-zinc-400"
                           : isTl ? "border-gray-600/60 bg-gray-800/20 hover:border-gray-400"
                           : isBf ? "border-slate-700 bg-slate-950/30 hover:border-slate-500"
+                          : isXp ? "border-emerald-500/50 bg-emerald-900/15 hover:border-emerald-300"
+                          : isIv ? "border-fuchsia-500/50 bg-fuchsia-900/15 hover:border-fuchsia-300"
                           : isQu ? "border-pink-800 bg-pink-950/20 hover:border-pink-500"
                           : isBo ? "border-blue-500/50 bg-blue-800/15 hover:border-blue-300"
                           : isBi ? "border-purple-800 bg-purple-950/20 hover:border-purple-500"
@@ -3758,12 +3913,12 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
                           : isHu ? "border-orange-700/60 bg-orange-900/15 hover:border-orange-400"
                           : isCu ? "border-indigo-800 bg-indigo-950/20 hover:border-indigo-500"
                           : "border-stone-800 hover:border-amber-600/50";
-        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isBe ? "text-slate-300" : isCm ? "text-zinc-300" : isTl ? "text-gray-300" : isBf ? "text-slate-200" : isQu ? "text-pink-300" : isBo ? "text-blue-200" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isGa ? "text-amber-300" : isAI ? "text-cyan-200" : isNe ? "text-green-300" : isIn ? "text-indigo-200" : isCo ? "text-fuchsia-300" : isHu ? "text-orange-200" : isCu ? "text-indigo-300" : "text-stone-100";
-        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isBe ? "text-slate-400 group-hover:text-slate-200" : isCm ? "text-zinc-500 group-hover:text-zinc-300" : isTl ? "text-gray-500 group-hover:text-gray-300" : isBf ? "text-slate-600 group-hover:text-slate-300" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBo ? "text-blue-400 group-hover:text-blue-200" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isGa ? "text-amber-700 group-hover:text-amber-400" : isAI ? "text-cyan-400 group-hover:text-cyan-200" : isNe ? "text-green-700 group-hover:text-green-400" : isIn ? "text-indigo-400 group-hover:text-indigo-200" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isHu ? "text-orange-500 group-hover:text-orange-300" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
+        const textClass = isPr ? "text-yellow-300" : isGl ? "text-lime-300" : isOv ? "text-sky-300" : isEx ? "text-emerald-300" : isRe ? "text-blue-300" : isSh ? "text-red-300" : isEn ? "text-orange-300" : isBe ? "text-slate-300" : isCm ? "text-zinc-300" : isTl ? "text-gray-300" : isBf ? "text-slate-200" : isXp ? "text-emerald-200" : isIv ? "text-fuchsia-200" : isQu ? "text-pink-300" : isBo ? "text-blue-200" : isBi ? "text-purple-300" : isAP ? "text-violet-300" : isSo ? "text-teal-300" : isTe ? "text-rose-300" : isSi ? "text-cyan-300" : isGa ? "text-amber-300" : isAI ? "text-cyan-200" : isNe ? "text-green-300" : isIn ? "text-indigo-200" : isCo ? "text-fuchsia-300" : isHu ? "text-orange-200" : isCu ? "text-indigo-300" : "text-stone-100";
+        const chevronClass = isPr ? "text-yellow-700 group-hover:text-yellow-400" : isGl ? "text-lime-700 group-hover:text-lime-400" : isOv ? "text-sky-700 group-hover:text-sky-400" : isEx ? "text-emerald-700 group-hover:text-emerald-400" : isRe ? "text-blue-700 group-hover:text-blue-400" : isSh ? "text-red-700 group-hover:text-red-400" : isEn ? "text-orange-700 group-hover:text-orange-400" : isBe ? "text-slate-400 group-hover:text-slate-200" : isCm ? "text-zinc-500 group-hover:text-zinc-300" : isTl ? "text-gray-500 group-hover:text-gray-300" : isBf ? "text-slate-600 group-hover:text-slate-300" : isXp ? "text-emerald-500 group-hover:text-emerald-300" : isIv ? "text-fuchsia-500 group-hover:text-fuchsia-300" : isQu ? "text-pink-700 group-hover:text-pink-400" : isBo ? "text-blue-400 group-hover:text-blue-200" : isBi ? "text-purple-700 group-hover:text-purple-400" : isAP ? "text-violet-700 group-hover:text-violet-400" : isSo ? "text-teal-700 group-hover:text-teal-400" : isTe ? "text-rose-700 group-hover:text-rose-400" : isSi ? "text-cyan-700 group-hover:text-cyan-400" : isGa ? "text-amber-700 group-hover:text-amber-400" : isAI ? "text-cyan-400 group-hover:text-cyan-200" : isNe ? "text-green-700 group-hover:text-green-400" : isIn ? "text-indigo-400 group-hover:text-indigo-200" : isCo ? "text-fuchsia-700 group-hover:text-fuchsia-400" : isHu ? "text-orange-500 group-hover:text-orange-300" : isCu ? "text-indigo-700 group-hover:text-indigo-400" : "text-stone-600 group-hover:text-amber-500";
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
-            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isBe||isCm||isTl||isBf||isQu||isBo||isBi||isAP||isSo||isTe||isSi||isGa||isAI||isNe||isIn||isCo||isHu||isCu) && <Sparkles size={14}/>}
+            {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isBe||isCm||isTl||isBf||isXp||isIv||isQu||isBo||isBi||isAP||isSo||isTe||isSi||isGa||isAI||isNe||isIn||isCo||isHu||isCu) && <Sparkles size={14}/>}
             {subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
@@ -3774,7 +3929,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -4022,6 +4177,47 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       <p className="font-read text-stone-500 text-sm italic">🦋 Хипотетично — какво щеше да е различно, ако това никога не се беше случило.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryButterfly}/>}
       <ButterflyPanel loading={loadingLevels} scenario={nodeData?.butterflyScenario||""} ripples={nodeData?.butterflyRipples||[]} tuned={!!nodeData?.tunedButterfly} onTune={onTuneButterfly}/>
+    </div>;
+  }
+
+  if(isExperiments){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-emerald-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      <p className="font-read text-stone-500 text-sm italic">🧪 Безопасни експерименти с домашни средства — за да провериш идеята сам, не само да я прочетеш.</p>
+      {error&&<ErrorNote message={error} onRetry={onRetryExperiments}/>}
+      <ExperimentsPanel loading={loadingLevels} experiments={nodeData?.experiments||[]} tuned={!!nodeData?.tunedExperiments} onTune={onTuneExperiments}/>
+    </div>;
+  }
+
+  if(isInterview){
+    return <div className="space-y-5">
+      <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+        <ChevronLeft size={16}/> {subtopic}
+      </button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono-cal text-xs text-fuchsia-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
+          <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+        </div>
+        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+          className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
+          {unitConfused?"Неясно ✓":"Не разбирам"}
+        </button>
+      </div>
+      {error&&<ErrorNote message={error} onRetry={onRetryInterview}/>}
+      <InterviewPanel loading={loadingLevels} intro={nodeData?.interviewIntro||""} questions={nodeData?.interviewQuestions||[]} answers={nodeData?.interviewAnswers||{}} onAnswerChange={onInterviewAnswerChange} tuned={!!nodeData?.tunedInterview} onTune={onTuneInterview}/>
     </div>;
   }
 
@@ -4621,6 +4817,75 @@ function ButterflyPanel({loading,scenario,ripples,tuned,onTune}){
         </div>
       ))}
     </div>}
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function ExperimentsPanel({loading,experiments,tuned,onTune}){
+  if(loading) return <Spinner label="скроявам експерименти…"/>;
+  if(!experiments||!experiments.length) return <p className="font-read text-stone-500 text-sm py-6">Няма безопасен домашен експеримент, подходящ за тази конкретна тема.</p>;
+  return <div className="space-y-4">
+    <div className="space-y-3">
+      {experiments.map((e,i)=>(
+        <div key={i} className="rounded border border-emerald-800/50 bg-emerald-950/10 p-4 space-y-2.5">
+          <div className="font-display text-emerald-300 font-bold text-base">🧪 {e.title}</div>
+          <p className="font-read text-stone-200 text-base leading-relaxed italic">{e.hypothesis}</p>
+          {e.materials?.length>0 && <div>
+            <div className="font-mono-cal text-[10px] uppercase tracking-wide text-emerald-600 mb-1">Материали</div>
+            <div className="flex flex-wrap gap-1.5">
+              {e.materials.map((m,mi)=>(
+                <span key={mi} className="font-mono-cal text-[11px] px-2 py-0.5 rounded bg-emerald-900/30 text-emerald-200">{m}</span>
+              ))}
+            </div>
+          </div>}
+          {e.steps?.length>0 && <div>
+            <div className="font-mono-cal text-[10px] uppercase tracking-wide text-emerald-600 mb-1">Стъпки</div>
+            <ol className="space-y-1 list-decimal list-inside">
+              {e.steps.map((s,si)=>(
+                <li key={si} className="font-read text-stone-300 text-sm leading-snug">{s}</li>
+              ))}
+            </ol>
+          </div>}
+          {e.result && <div>
+            <div className="font-mono-cal text-[10px] uppercase tracking-wide text-emerald-600 mb-1">Резултат</div>
+            <p className="font-read text-stone-300 text-sm leading-snug">{e.result}</p>
+          </div>}
+        </div>
+      ))}
+    </div>
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function InterviewPanel({loading,intro,questions,answers,onAnswerChange,tuned,onTune}){
+  if(loading) return <Spinner label="подготвям студиото…"/>;
+  if(!questions||!questions.length) return null;
+  return <div className="space-y-4">
+    {intro && <div className="rounded-xl border border-fuchsia-800/50 bg-fuchsia-950/15 p-4 flex items-start gap-3">
+      <span className="shrink-0 w-9 h-9 rounded-full bg-fuchsia-900/50 flex items-center justify-center text-base">🎙️</span>
+      <div>
+        <div className="font-mono-cal text-[10px] uppercase tracking-wide text-fuchsia-500 mb-1">Водещ</div>
+        <p className="font-read text-stone-100 leading-relaxed text-base italic">{intro}</p>
+      </div>
+    </div>}
+    <div className="space-y-5">
+      {questions.map((q,i)=>(
+        <div key={i} className="space-y-2">
+          <div className="flex items-start gap-3">
+            <span className="shrink-0 w-9 h-9 rounded-full bg-fuchsia-900/50 flex items-center justify-center text-base">🎙️</span>
+            <div className="flex-1 rounded-xl rounded-tl-sm border border-fuchsia-800/40 bg-fuchsia-950/10 px-4 py-3">
+              <p className="font-read text-stone-100 leading-relaxed text-base font-medium">{q}</p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <span className="shrink-0 w-9 h-9 rounded-full bg-stone-800 flex items-center justify-center text-base">😊</span>
+            <textarea value={answers?.[i]||""} onChange={e=>onAnswerChange(i,e.target.value)}
+              placeholder="Твоят отговор…" rows={2}
+              className="flex-1 bg-stone-900 border border-stone-700 rounded-xl rounded-tl-sm px-4 py-3 text-stone-100 font-read text-base placeholder:text-stone-500 focus:outline-none focus:border-fuchsia-600 resize-y"/>
+          </div>
+        </div>
+      ))}
+    </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
 }
