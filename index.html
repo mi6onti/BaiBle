@@ -847,9 +847,15 @@ Output as blocks separated by a blank line, each block being exactly 5 lines as 
 // can't read RSS directly because of CORS). Nothing here is AI-written — headlines become plan subtopics as-is.
 async function fetchNewsRss(query, region, days){
   if(!query) return [];
-  const res = await fetch(NEWS_FN,{method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`,"apikey":SUPABASE_KEY},
-    body:JSON.stringify({query,region,days})});
+  let res;
+  try{
+    res = await fetch(NEWS_FN,{method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`,"apikey":SUPABASE_KEY},
+      body:JSON.stringify({query,region,days})});
+  }catch(e){
+    // the browser hides the real reason (no CORS headers on Supabase's own 401/404 replies) — say what to check
+    throw new Error(`няма връзка с функцията news-rss (${e.message}). Провери дали е качена в Supabase и дали JWT проверката ѝ е изключена.`);
+  }
   if(!res.ok) throw new Error(`[news] ${res.status}: ${(await res.text()).slice(0,120)}`);
   const d = await res.json();
   return Array.isArray(d.items) ? d.items : [];
