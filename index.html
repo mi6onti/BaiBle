@@ -211,10 +211,15 @@ async function genBlend(topic, sub, subsub, level) {
 }
 
 // overview: 5-level explanation of an ENTIRE subject (topic or subtopic), same length/style as a leaf-unit explanation
-async function genOverviewLevels(subjectLabel) {
+async function genOverviewLevels(subjectLabel, newsStories) {
   const levelDescs = LEVELS.map(m=>`Level ${m.level} ("${m.label}", ${m.hint})`).join("; ");
+  // news plans: the overview must be about the ACTUAL headlines in the plan, not about "the news" in general
+  const newsPart = (newsStories&&newsStories.length) ? `
+This subject is a set of REAL news stories. These are the actual headlines it covers:
+${newsStories.map((st,i)=>`${i+1}. ${st.title}`).join("\n")}
+Every level must be about THESE specific stories: name the concrete events/people/topics from the headlines and say what each is about, at that level's register. Do NOT talk about news, newspapers or what a day in the country looks like in general, do NOT give hypothetical examples (no "for example, if there is a headline about..."), and do NOT add details that are not in the headlines — if a headline is unclear, describe it only as far as its wording allows.` : "";
   const raw = await callClaudeRaw(
-    `Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) — write 5 versions, one for each level below, EACH 45-70 words, same length/style as a normal single-concept explanation, just covering the whole subject at that level of abstraction:
+    `Give an OVERALL explanation of the ENTIRE subject "${subjectLabel}" as a whole (not one narrow sub-part of it) — write 5 versions, one for each level below, EACH 45-70 words, same length/style as a normal single-concept explanation, just covering the whole subject at that level of abstraction:${newsPart}
 ${levelDescs}
 Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Each level should be genuinely distinct in register/depth from the others, not a reworded repeat.
 Write all 5 in the SAME language as the subject text above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
@@ -1732,7 +1737,7 @@ function Aperture() {
     setTopicOverview({loading:true, levels:[], prompt:planData.prompt, name:planData.name, existingPlanData:planData});
     (async()=>{
       try{
-        const levels = await genOverviewLevels(planData.prompt);
+        const levels = await genOverviewLevels(planData.prompt, planData.newsStories);
         const updated = {...planData, overviewLevels:levels};
         setPlanData(updated);
         await saveJSON(`plan:${currentTopic.id}`, updated);
@@ -1773,7 +1778,7 @@ function Aperture() {
       const id = "news-"+slugify(area.label)+"-"+dayKey+"-"+Date.now().toString(36);
       const newTopic = {id,name,prompt,createdAt:Date.now(),newsKey};
       setCurrentTopic(newTopic);
-      const levels = await genOverviewLevels(prompt);
+      const levels = await genOverviewLevels(prompt, stories);
       setTopicOverview({loading:false, levels, prompt, name, id, newTopic, learningProfile:null, newsStories:stories});
     }catch(e){
       setTopicOverview(null); setCurrentTopic(null); setShowNewsAreas(true);
