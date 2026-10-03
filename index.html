@@ -38,6 +38,7 @@ const Loader2       = ({size=16,className=""}) => <svg width={size} height={size
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
+const NEWS_FN = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/news-rss";
 const JSON_SYS     = "You return ONLY valid JSON. No markdown fences, no preamble, no trailing text.";
 
 let USE_LOCAL = (() => { try { return localStorage.getItem("aperture:_mode") === "local"; } catch { return false; } })();
@@ -840,6 +841,62 @@ Output as blocks separated by a blank line, each block being exactly 5 lines as 
     const splitParts = s => (s||"").split("||").map(x=>x.trim()).filter(Boolean);
     return { title:lines[0]||"", hypothesis:lines[1]||"", materials:splitParts(lines[2]), steps:splitParts(lines[3]), result:lines[4]||"" };
   }).filter(e=>e.title && e.hypothesis);
+}
+
+// Новини от днес: REAL headlines from Google News RSS, fetched by the news-rss Supabase function (the browser
+// can't read RSS directly because of CORS). Nothing here is AI-written — headlines become plan subtopics as-is.
+async function fetchNewsRss(query, region, days){
+  if(!query) return [];
+  const res = await fetch(NEWS_FN,{method:"POST",
+    headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`,"apikey":SUPABASE_KEY},
+    body:JSON.stringify({query,region,days})});
+  if(!res.ok) throw new Error(`[news] ${res.status}: ${(await res.text()).slice(0,120)}`);
+  const d = await res.json();
+  return Array.isArray(d.items) ? d.items : [];
+}
+
+// The pinned "Новини от днес" plan: not stored in the user's topics list (can't be deleted), always shown first.
+// Its prompt is the broader context every section generator receives, so it carries the no-fabrication rule.
+const NEWS_TOPIC = {
+  id:"news-today", name:"Новини от днес", createdAt:0, isNewsPlan:true,
+  prompt:"Днешни новини. Всяка подтема е реално заглавие от днешните новини. Обясни контекста, фона и значението на новината. Не измисляй факти за самото събитие (числа, имена, цитати, подробности), които не са в заглавието — опирай се само на общоизвестния контекст около темата."
+};
+const NEWS_AREAS = [
+  {label:"България",   query:"България"},
+  {label:"Светът",     query:"световни новини"},
+  {label:"Икономика",  query:"икономика"},
+  {label:"Технологии", query:"технологии"},
+  {label:"Наука",      query:"наука"},
+  {label:"Здраве",     query:"здраве"},
+];
+const NEWS_PER_AREA = 5;
+function localDayKey(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+// one plan subtopic per headline, tagged with its area; a headline already listed under an earlier area is skipped
+async function fetchTodayNewsSubtopics(){
+  let firstErr = null;
+  const grab = (q,days) => fetchNewsRss(q,"bg",days).catch(e=>{ firstErr=firstErr||e; return []; });
+  const groups = await Promise.all(NEWS_AREAS.map(async a=>{
+    let items = await grab(a.query,1);
+    if(items.length<3) items = items.concat(await grab(a.query,3)); // quiet day — widen to the last 3 days
+    return {a, items};
+  }));
+  const seen = new Set(); const out = [];
+  for(const {a,items} of groups){
+    const sorted = items.filter(it=>it.title&&it.link).sort((x,y)=>(Date.parse(y.pubDate)||0)-(Date.parse(x.pubDate)||0));
+    let n=0;
+    for(const it of sorted){
+      const k=it.title.toLowerCase();
+      if(seen.has(k)) continue;
+      seen.add(k);
+      out.push({name:it.title, isNewsStory:true, area:a.label, link:it.link, source:it.source||"", pubDate:it.pubDate||"", overviewLevels:null, byLevel:{}, activeLevel:null});
+      if(++n>=NEWS_PER_AREA) break;
+    }
+  }
+  if(!out.length && firstErr) throw firstErr;
+  return out;
 }
 
 // Интервю: AI plays a warm, genuinely curious podcast HOST interviewing the learner as an important guest —
@@ -1661,6 +1718,38 @@ function Aperture() {
       return { name:s.name, overviewLevels:null, byLevel: hasList?{[level]:legacyList}:{}, activeLevel: hasList?level:null };
     });
     return { name:cached.name, prompt:cached.prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level };
+  }
+
+  // pinned "Новини от днес": rebuilt from fresh headlines once per day (or on ↻); stories already opened today keep their content
+  async function openNewsPlan(force){
+    setHomeError(null);setSubtopicIdx(null);setSubsubIdx(null);
+    setNodeId(null);setNodeData(null);setLevelCheck(null);setSubtopicOverview(null);
+    setCurrentTopic(NEWS_TOPIC);
+    setLoadingH(true); // show the spinner (not an empty/error state) while the cached plan loads
+    const today = localDayKey();
+    const cached = await loadJSON(`plan:${NEWS_TOPIC.id}`, null);
+    if(cached && cached.newsDate===today && !force){
+      setPlanData(cached); setHierarchy(cached.byLevel[cached.activeLevel]);
+      setLoadingH(false);
+      return;
+    }
+    setHierarchy(null); setPlanData(null);
+    try{
+      const level = cached?.activeLevel || Number(topPreferred(prefs.abstraction,3)) || 3;
+      const fresh = await fetchTodayNewsSubtopics();
+      if(!fresh.length) throw new Error("Няма намерени новини за днес.");
+      const prev = (cached && cached.newsDate===today) ? (cached.byLevel?.[cached.activeLevel]||[]) : [];
+      const prevByName = new Map(prev.map(x=>[x.name,x]));
+      const subtopics = fresh.map(x=>prevByName.get(x.name)||x);
+      const plan = {name:NEWS_TOPIC.name, prompt:NEWS_TOPIC.prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level, newsDate:today};
+      setPlanData(plan); setHierarchy(subtopics);
+      await saveJSON(`plan:${NEWS_TOPIC.id}`, plan);
+    }catch(e){
+      if(cached){
+        setPlanData(cached); setHierarchy(cached.byLevel[cached.activeLevel]);
+        setHomeError(`Не успях да обновя новините (показвам последните заредени): ${e.message}`);
+      } else setHomeError(`Грешка при зареждане на новините: ${e.message}`);
+    }finally{setLoadingH(false);}
   }
 
   async function resumeTopic(topic){
@@ -3549,23 +3638,24 @@ function Aperture() {
           ):!currentTopic?(
             <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
               onStart={()=>startTopic(topicInput)} topics={activeTopics} deletedTopics={deletedTopics}
-              onResume={resumeTopic} error={homeError}
+              onResume={resumeTopic} onOpenNews={()=>openNewsPlan(false)} error={homeError}
               onDelete={softDeleteTopic} onRestore={restoreTopic}
               showTrash={showTrash} setShowTrash={setShowTrash}/>
           ):loadingH?<Spinner label="изграждам учебен план…"/>
-          :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>resumeTopic(currentTopic)}/>
+          :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>currentTopic?.isNewsPlan?openNewsPlan(true):resumeTopic(currentTopic)}/>
           :subtopicIdx===null?(
             <SubtopicList topic={currentTopic} hierarchy={hierarchy}
               onPick={pickSubtopic}
               onLevelCheck={runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
-              onDelete={()=>softDeleteTopic(currentTopic.id)}
+              onDelete={currentTopic?.isNewsPlan?null:()=>softDeleteTopic(currentTopic.id)}
               onGenerateAdapted={generateAdaptedTopic} generatingAdapted={generatingAdapted}
               allTopics={topics}
               onNavigateTopic={t=>{resumeTopic(t);}}
-              onChangeLevel={openTopicLevelPicker}
+              onChangeLevel={currentTopic?.isNewsPlan?null:openTopicLevelPicker}
               currentLevel={planData?.activeLevel}
-              onEvolve={evolveTopicWithIdea} evolving={loadingH}/>
+              onEvolve={currentTopic?.isNewsPlan?null:evolveTopicWithIdea} evolving={loadingH}
+              onRefreshNews={()=>openNewsPlan(true)} newsDate={planData?.newsDate}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
@@ -3697,7 +3787,7 @@ function Aperture() {
 }
 
 /* ── Screens ─────────────────────────────────────────────────────────── */
-function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,error,onDelete,onRestore,showTrash,setShowTrash}){
+function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,onOpenNews,error,onDelete,onRestore,showTrash,setShowTrash}){
   return <div className="space-y-8">
     <div>
       <h1 className="font-display text-2xl font-bold text-stone-100 mb-1">Какво искаш да научиш?</h1>
@@ -3711,6 +3801,14 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
       <button onClick={onStart} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 rounded">Старт</button>
     </div>
     {error&&<ErrorNote message={error}/>}
+    <button onClick={onOpenNews}
+      className="w-full text-left px-4 py-3 rounded border border-sky-700/60 bg-sky-950/20 hover:border-sky-400 flex items-center justify-between group">
+      <div>
+        <div className="font-display text-sky-200 font-bold">📰 Новини от днес</div>
+        <div className="font-mono-cal text-[10px] text-sky-600 mt-0.5">Днешните заглавия като учебни теми · обновява се всеки ден</div>
+      </div>
+      <span className="text-sky-600 group-hover:text-sky-300 shrink-0"><ChevronRight size={16}/></span>
+    </button>
     {topics.length>0&&<div>
       <div className="flex items-center justify-between mb-2">
         <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Активни планове</div>
@@ -3749,7 +3847,7 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving}){
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onRefreshNews,newsDate}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -3760,11 +3858,11 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     <div className="flex items-start justify-between gap-2">
       <div>
         <h2 className="font-display text-xl font-bold text-stone-100">{topicLabel(topic)}</h2>
-        {topic.prompt&&(topic.name||topic.title)&&topic.prompt!==(topic.name||topic.title)&&(
+        {!topic.isNewsPlan&&topic.prompt&&(topic.name||topic.title)&&topic.prompt!==(topic.name||topic.title)&&(
           <p className="font-read text-stone-400 text-sm mt-1 leading-relaxed">{topic.prompt}</p>
         )}
       </div>
-      <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>
+      {onDelete && <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>}
     </div>
 
     <div className="flex flex-wrap gap-2">
@@ -3819,7 +3917,8 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     </div>}
 
     <div className="space-y-1">
-      {hierarchy.map((s,i)=>{
+      {topic.isNewsPlan && <NewsPlanList hierarchy={hierarchy} onPick={onPick} onRefresh={onRefreshNews} newsDate={newsDate}/>}
+      {!topic.isNewsPlan && hierarchy.map((s,i)=>{
         const isTr = isTrailerItem(s);
         return <button key={i} onClick={()=>onPick(i)}
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isTr?"border-amber-700 bg-amber-950/20 hover:border-amber-400":"border-stone-800 hover:border-amber-600/50"}`}>
@@ -3834,6 +3933,46 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   </div>;
 }
 
+// "Новини от днес" plan screen: areas as collapsible groups, each headline is a normal plan subtopic
+function NewsPlanList({hierarchy,onPick,onRefresh,newsDate}){
+  const [openArea,setOpenArea] = useState(null);
+  const areas = [];
+  hierarchy.forEach((s,i)=>{
+    const label = s.area||"Други";
+    let g = areas.find(x=>x.label===label);
+    if(!g){ g={label,items:[]}; areas.push(g); }
+    g.items.push({s,i});
+  });
+  const dateLabel = newsDate ? new Date(newsDate+"T12:00:00").toLocaleDateString("bg-BG",{day:"numeric",month:"long"}) : "";
+  return <div className="space-y-2">
+    <div className="flex items-center justify-between gap-2 pb-1">
+      <span className="font-mono-cal text-[11px] text-stone-500">{dateLabel?`Новини за ${dateLabel}`:""}</span>
+      {onRefresh && <button onClick={onRefresh} className="font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-300 hover:border-sky-500 hover:text-sky-400">↻ Обнови</button>}
+    </div>
+    {areas.map(g=>{
+      const open = openArea===g.label;
+      return <div key={g.label} className="rounded border border-sky-900/50 bg-sky-950/10">
+        <button onClick={()=>setOpenArea(open?null:g.label)} className="w-full text-left px-3 py-3 flex items-center justify-between group">
+          <span className="font-read text-sky-200 font-medium">{g.label}<span className="font-mono-cal text-[10px] text-sky-600 ml-2">{g.items.length}</span></span>
+          <span className={`text-sky-600 group-hover:text-sky-300 transition-transform ${open?"rotate-90":""}`}><ChevronRight size={16}/></span>
+        </button>
+        {open && <div className="border-t border-sky-900/40 p-2 space-y-1">
+          {g.items.map(({s,i})=>(
+            <button key={i} onClick={()=>onPick(i)}
+              className="w-full text-left px-3 py-2.5 rounded border border-stone-800 hover:border-sky-600/60 flex items-center justify-between gap-2 group">
+              <span className="min-w-0">
+                <span className="block font-read text-stone-100 leading-snug">{s.name}</span>
+                <span className="block font-mono-cal text-[10px] text-stone-500 mt-0.5">{[s.source,newsRelTime(s.pubDate)].filter(Boolean).join(" · ")}{s.activeLevel!=null?" · отворена":""}</span>
+              </span>
+              <span className="text-stone-600 group-hover:text-sky-400 shrink-0"><ChevronRight size={16}/></span>
+            </button>
+          ))}
+        </div>}
+      </div>;
+    })}
+  </div>;
+}
+
 function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress,genAllError}){
   const list = getDisplayList(subtopic) || [];
   const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
@@ -3842,6 +3981,10 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
       <ChevronLeft size={16}/> {topicLabel(topic)}
     </button>
     <h2 className="font-display text-xl font-bold text-stone-100">{subtopic.name}</h2>
+    {subtopic.link && <a href={subtopic.link} target="_blank" rel="noopener noreferrer"
+      className="inline-flex flex-wrap items-center gap-x-2 font-mono-cal text-xs text-sky-400 hover:text-sky-300">
+      Оригинална статия ↗ <span className="text-stone-500">{[subtopic.source,newsRelTime(subtopic.pubDate)].filter(Boolean).join(" · ")}</span>
+    </a>}
     <div className="flex flex-wrap gap-2">
       {onChangeLevel && <button onClick={onChangeLevel}
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
@@ -4855,6 +4998,17 @@ function ExperimentsPanel({loading,experiments,tuned,onTune}){
     </div>
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
+}
+
+function newsRelTime(ts){
+  const t = typeof ts==="number" ? ts : Date.parse(ts);
+  if(!t) return "";
+  const m = Math.round((Date.now()-t)/60000);
+  if(m<60) return `преди ${Math.max(1,m)} мин`;
+  const h = Math.round(m/60);
+  if(h<24) return `преди ${h} ч`;
+  const d = Math.round(h/24);
+  return `преди ${d} ${d===1?"ден":"дни"}`;
 }
 
 function InterviewPanel({loading,intro,questions,answers,onAnswerChange,tuned,onTune}){
