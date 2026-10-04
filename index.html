@@ -1616,7 +1616,8 @@ function Aperture() {
     (async()=>{
       const t=await loadJSON("topics",[]);
       const p=await loadJSON("prefs",{abstraction:{},personality:{}});
-      setTopics(t);setPrefs(p);setBooting(false);
+      const seenIds=new Set();
+      setTopics((t||[]).filter(x=>x&&!seenIds.has(x.id)&&seenIds.add(x.id)));setPrefs(p);setBooting(false);
     })();
   },[booting]);
 
@@ -1721,7 +1722,7 @@ function Aperture() {
     // CASE 2: brand-new topic OR resuming an existing topic that has no cached plan yet
     const {prompt,name,id,newTopic,learningProfile,resumingExisting,newsStories} = topicOverview;
     if(newTopic && !resumingExisting){
-      const next=[newTopic,...topics];
+      const next=[newTopic,...topics.filter(t=>t.id!==newTopic.id)];
       setTopics(next); await saveJSON("topics",next);
     }
 
@@ -1806,15 +1807,17 @@ function Aperture() {
     return { name:cached.name, prompt:cached.prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level };
   }
 
-  async function openNewsArea(area){
+  async function openNewsArea(area, forceNew){
     const dayKey = localDayKey();
     const newsKey = `${area.label}|${dayKey}`;
-    const existing = topics.find(t=>!t.deletedAt && t.newsKey===newsKey);
+    const existing = forceNew ? null : topics.find(t=>!t.deletedAt && t.newsKey===newsKey);
+    const sameDay = topics.some(t=>!t.deletedAt && t.newsKey===newsKey);
     setShowNewsAreas(false);
     if(existing){ resumeTopic(existing); return; }
     setHomeError(null);setHierarchy(null);setPlanData(null);
     setSubtopicIdx(null);setSubsubIdx(null);setNodeId(null);setNodeData(null);setLevelCheck(null);setSubtopicOverview(null);
-    const name = `Новини: ${area.label} · ${newsDateLabel(dayKey)}`;
+    const nowT = new Date();
+    const name = `Новини: ${area.label} · ${newsDateLabel(dayKey)}${sameDay?`, ${String(nowT.getHours()).padStart(2,"0")}:${String(nowT.getMinutes()).padStart(2,"0")}`:""}`;
     const prompt = newsPlanPrompt(area, dayKey);
     setCurrentTopic(null);
     setTopicOverview({loading:true, levels:[], prompt, name});
@@ -4037,11 +4040,15 @@ function NewsAreaPicker({topics,onPick,onBack,error}){
     <div className="space-y-1">
       {NEWS_AREAS.map(a=>{
         const has = topics.some(t=>t.newsKey===`${a.label}|${dayKey}`);
-        return <button key={a.label} onClick={()=>onPick(a)}
-          className="w-full text-left px-3 py-3 rounded border border-sky-900/50 bg-sky-950/10 hover:border-sky-500 flex items-center justify-between group">
-          <span className="font-read text-sky-100">{a.label}{has&&<span className="font-mono-cal text-[10px] text-sky-500 ml-2">✓ план за днес</span>}</span>
-          <span className="text-sky-700 group-hover:text-sky-300"><ChevronRight size={16}/></span>
-        </button>;
+        return <div key={a.label} className="flex items-stretch gap-2">
+          <button onClick={()=>onPick(a,false)}
+            className="flex-1 text-left px-3 py-3 rounded border border-sky-900/50 bg-sky-950/10 hover:border-sky-500 flex items-center justify-between group">
+            <span className="font-read text-sky-100">{a.label}{has&&<span className="font-mono-cal text-[10px] text-sky-500 ml-2">✓ план за днес</span>}</span>
+            <span className="text-sky-700 group-hover:text-sky-300"><ChevronRight size={16}/></span>
+          </button>
+          {has && <button onClick={()=>onPick(a,true)} title="Нов план с най-новите новини"
+            className="shrink-0 px-3 rounded border border-sky-900/50 text-sky-400 hover:border-sky-500 hover:text-sky-200 font-mono-cal text-[11px] uppercase tracking-wide">↻ Нов</button>}
+        </div>;
       })}
     </div>
   </div>;
