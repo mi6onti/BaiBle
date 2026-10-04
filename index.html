@@ -874,6 +874,11 @@ const NEWS_AREAS = [
   {label:"Светът",     query:"световни новини"},
   {label:"Икономика",  query:"икономика"},
   {label:"Технологии", query:"технологии"},
+  // narrow areas: "strict" makes the story-picking step drop politics/general news that only mention the field
+  {label:"Информационни технологии", query:"IT сектор OR киберсигурност OR изкуствен интелект OR дата център OR облачни услуги", strict:true,
+   focus:"the IT industry, IT companies and jobs, cybersecurity, AI, data centers, cloud, telecom and digital infrastructure"},
+  {label:"Софтуер", query:"софтуер OR приложение OR програмиране OR разработчици OR софтуерна компания", strict:true,
+   focus:"software products and updates, apps, programming, developer tools, software companies and releases"},
   {label:"Наука",      query:"наука"},
   {label:"Здраве",     query:"здраве"},
 ];
@@ -921,7 +926,7 @@ async function fetchAreaStories(area){
   try{
     const list = items.map((it,i)=>`${i+1}. ${it.title}`).join("\n");
     const raw = await callClaudeRaw(
-`Below are recent news headlines. Many of them report the SAME event or story in different words (e.g. three outlets covering one announcement). Group headlines that are about the same event/story, then pick up to ${NEWS_PER_AREA} genuinely DISTINCT stories — exactly one headline per story (the clearest, most informative one), most significant first. Never pick two headlines about the same event.
+`Below are recent news headlines. Many of them report the SAME event or story in different words (e.g. three outlets covering one announcement). ${area.strict?`Only consider headlines that are genuinely about ${area.label} — ${area.focus}. Skip politics, war, diplomacy and general news that merely mention technology; if fewer qualify, return fewer (an empty list is fine). `:""}Group headlines that are about the same event/story, then pick up to ${NEWS_PER_AREA} genuinely DISTINCT stories — exactly one headline per story (the clearest, most informative one), most significant first. Never pick two headlines about the same event.
 ${list}
 Output ONLY the chosen headline numbers, comma-separated, wrapped exactly like this: ###PICK### 3, 1, 7 ###END###`, 200);
     const nums = (extractSequentialFields(raw,["PICK"]).PICK||"").match(/\d+/g)||[];
@@ -931,32 +936,45 @@ Output ONLY the chosen headline numbers, comma-separated, wrapped exactly like t
       if(i>=0 && i<items.length && !used.has(i)){ used.add(i); picked.push(items[i]); }
       if(picked.length>=NEWS_PER_AREA) break;
     }
-    if(picked.length) return picked;
+    // for a strict area an explicit empty answer means "nothing on-topic" — don't fall back to off-topic headlines
+    if(picked.length || (area.strict && /###PICK###/.test(raw))) return picked;
   }catch(e){ console.warn("news grouping failed, using word-overlap fallback", e); }
   return lexicalDistinct(items, NEWS_PER_AREA);
 }
 
-// Инвестиция (news stories only): what needs and opportunities for action this news creates — for a person,
-// a professional, a business. "Investment" in the broad sense (time, skills, attention, money) — NOT financial
-// advice: never a specific security/company to buy, never promised returns. Only the headline is known.
+// Инвестиция (news stories only): needs and opportunities for action (person / professional / business), the
+// future vectors (sectors, trends) this news could push forward, and REAL companies it could plausibly affect.
+// Analysis, NOT financial advice: never buy/sell wording, price targets or promised returns; companies only when
+// the model is confident they exist and genuinely operate in the affected area. Only the headline is known.
 async function genInvestment(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level||3;
   const count = lvl<=1?"2":lvl===2?"2-3":lvl===3?"3":lvl===4?"3-4":"4";
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-    `The news story with the headline "${subtopicName}" (context: "${topicLabel}") — describe ${count} concrete OPPORTUNITIES FOR ACTION and NEEDS that this news creates or reveals. Spread them across who can act: an ordinary person (Лично), a professional or freelancer (Професионално), a business or entrepreneur (Бизнес) — use whichever genuinely apply.${levelPart}
-"Investment" here means where it is worth investing time, skills, attention or money in a broad sense — what to prepare for, learn, offer, protect against, or take advantage of.
-CRITICAL: you only know the headline. Base everything on what it actually states plus well-established general context — never invent facts, numbers or details about the event itself. This is NOT financial advice: never recommend buying or selling specific stocks, crypto or other securities, never name a specific company as an investment, never promise returns. If the headline genuinely creates no real opportunity or need, return fewer items rather than forcing weak ones.
-For each give exactly 4 lines: (1) who: Лично, Професионално or Бизнес; (2) a short title (3-7 words); (3) the need or opportunity and a concrete first step (2-3 sentences); (4) the main risk or caveat (one sentence).
-Write everything in the SAME language as the headline above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically).
+    `The news story with the headline "${subtopicName}" (context: "${topicLabel}"). Analyse what it means for action and for the future, in three parts.${levelPart}
+CRITICAL for all parts: you only know the headline. Base everything on what it actually states plus well-established general context — never invent facts, numbers or details about the event itself. This is analysis, NOT financial advice: never tell anyone to buy, sell or invest in anything, no price targets, never promise returns. If a part has nothing genuine to say, return fewer items (even none) rather than forcing weak ones.
+
+PART 1 — OPPORTUNITIES AND NEEDS (${count}): concrete needs and opportunities for action this news creates — "investment" in the broad sense of time, skills, attention or money. Spread across who can act: Лично (an ordinary person), Професионално (a professional or freelancer), Бизнес (a business or entrepreneur) — whichever genuinely apply. Exactly 4 lines each: (1) Лично, Професионално or Бизнес; (2) a short title (3-7 words); (3) the need or opportunity and a concrete first step (2-3 sentences); (4) the main risk or caveat (one sentence).
+
+PART 2 — FUTURE VECTORS (2-4): sectors, technologies, markets or trends that could develop or accelerate in the future because of this news. Exactly 2 lines each: (1) the vector's name (2-6 words); (2) why and how it could develop (1-2 sentences).
+
+PART 3 — COMPANIES (0-5): REAL, existing companies (Bulgarian or international, preferably well-known) that this news could plausibly affect, positively or negatively. Accuracy over quantity: include a company only if you are confident it exists and genuinely operates in the affected business; never invent a company, and never claim the headline mentions a company unless it does. Your knowledge of companies has a cutoff, so describe the link in hedged terms (може, би могло). Exactly 4 lines each: (1) the company name; (2) what it does (a few words); (3) how this news could affect it (1-2 sentences); (4) exactly one word: ПЕЧЕЛИ, ГУБИ or НЕЯСНО.
+
+Write everything in the SAME language as the headline above (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Company names stay in their usual form.
 Never use the " character inside the text.
-Output as blocks separated by a blank line, each exactly 4 lines. Output ONLY this list, wrapped exactly like this and nothing else before or after: ###TEXT###the items here###TEXT_END###`,
-    1800
+Within each part, separate entries with a blank line. Output EXACTLY in this format, nothing before the first marker or after the last one: ###ITEMS### part 1 entries ###VECTORS### part 2 entries ###COMPANIES### part 3 entries (or nothing) ###END###`,
+    3000
   );
-  return extractField(raw, "TEXT").split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
-    const l = b.split("\n").map(x=>x.trim()).filter(Boolean);
-    return { who:l[0]||"", title:l[1]||"", text:l[2]||"", risk:l[3]||"" };
-  }).filter(it=>it.title && it.text);
+  const f = extractSequentialFields(raw, ["ITEMS","VECTORS","COMPANIES"]);
+  const blocks = t => (t||"").split(/\n\s*\n/).map(x=>x.trim()).filter(Boolean).map(x=>x.split("\n").map(y=>y.trim()).filter(Boolean));
+  const items = blocks(f.ITEMS).map(l=>({ who:l[0]||"", title:l[1]||"", text:l[2]||"", risk:l[3]||"" })).filter(it=>it.title && it.text);
+  const vectors = blocks(f.VECTORS).map(l=>({ name:l[0]||"", text:l[1]||"" })).filter(v=>v.name && v.text);
+  const companies = blocks(f.COMPANIES).map(l=>{
+    const d = (l[3]||"").toLowerCase();
+    const dir = /печел|gain|win/.test(d) ? "up" : /губ|los/.test(d) ? "down" : "unclear";
+    return { name:l[0]||"", what:l[1]||"", text:l[2]||"", dir };
+  }).filter(c=>c.name && c.text).slice(0,5);
+  return { items, vectors, companies };
 }
 
 // Prediction (news stories only): 3-4 distinct plausible ways the story could develop; the learner picks one and
@@ -2235,12 +2253,12 @@ function Aperture() {
     }
 
     if(isInvestmentItem(subsubItem)){
-      const EMPTY={investItems:[],investLevel:null,tunedInvest:false,unitConfused:false};
+      const EMPTY={investItems:[],investVectors:null,investCompanies:null,investLevel:null,tunedInvest:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
       const allKeys=await loadJSON("allNodeKeys",[]);
       if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
-      if(!cached.investItems||!cached.investItems.length) doLoadInvestment(id,sub,subLevel,cached);
+      if(!cached.investItems||!cached.investItems.length||!Array.isArray(cached.investVectors)) doLoadInvestment(id,sub,subLevel,cached);
       return;
     }
 
@@ -3094,8 +3112,8 @@ function Aperture() {
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = LEVELS.find(l=>l.level===subLevel);
-      const investItems = await genInvestment(currentTopic.prompt||currentTopic.name, sub, levelMeta);
-      const updated = {...base, investItems, investLevel:subLevel};
+      const {items:investItems, vectors:investVectors, companies:investCompanies} = await genInvestment(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const updated = {...base, investItems, investVectors, investCompanies, investLevel:subLevel};
       setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
@@ -3627,9 +3645,9 @@ function Aperture() {
               await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), experiments, experimentsLevel:subLevel, tunedExperiments:existing?.tunedExperiments||false});
             }
           } else if(isInvestmentItem(item)){
-            if(!existing?.investItems?.length){
-              const investItems = await genInvestment(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), investItems, investLevel:subLevel, tunedInvest:existing?.tunedInvest||false});
+            if(!existing?.investItems?.length || !Array.isArray(existing?.investVectors)){
+              const {items:investItems, vectors:investVectors, companies:investCompanies} = await genInvestment(topicPrompt, subItem.name, subLevelMeta);
+              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), investItems, investVectors, investCompanies, investLevel:subLevel, tunedInvest:existing?.tunedInvest||false});
             }
           } else if(isPredictionItem(item)){
             if(!existing?.predScenarios?.length){
@@ -4529,9 +4547,9 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           {unitConfused?"Неясно ✓":"Не разбирам"}
         </button>
       </div>
-      <p className="font-read text-stone-500 text-sm italic">Какви нужди и възможности за действие отваря тази новина. Не е финансов съвет — AI-то вижда само заглавието.</p>
+      <p className="font-read text-stone-500 text-sm italic">Какви нужди и възможности отваря тази новина, кои посоки може да ускори и кои компании може да засегне. Анализ, не финансов съвет — AI-то вижда само заглавието.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryInvestment}/>}
-      <InvestmentPanel loading={loadingLevels} items={nodeData?.investItems||[]} tuned={!!nodeData?.tunedInvest} onTune={onTuneInvestment}/>
+      <InvestmentPanel loading={loadingLevels} items={nodeData?.investItems||[]} vectors={nodeData?.investVectors||[]} companies={nodeData?.investCompanies||[]} tuned={!!nodeData?.tunedInvest} onTune={onTuneInvestment}/>
     </div>;
   }
 
@@ -5224,9 +5242,10 @@ function newsRelTime(ts){
 }
 
 const INV_WHO = {"Лично":"👤","Професионално":"💼","Бизнес":"🏢"};
-function InvestmentPanel({loading,items,tuned,onTune}){
+const INV_DIR = { up:{icon:"↑",label:"може да спечели",cls:"text-emerald-400 border-emerald-800/60"}, down:{icon:"↓",label:"може да загуби",cls:"text-red-400 border-red-800/60"}, unclear:{icon:"↕",label:"неясно",cls:"text-stone-400 border-stone-700"} };
+function InvestmentPanel({loading,items,vectors,companies,tuned,onTune}){
   if(loading) return <Spinner label="търся възможности за действие…"/>;
-  if(!items||!items.length) return <p className="font-read text-stone-500 text-sm py-6">Тази новина не отваря реални възможности за действие.</p>;
+  if(!items?.length && !vectors?.length && !companies?.length) return <p className="font-read text-stone-500 text-sm py-6">Тази новина не отваря реални възможности за действие.</p>;
   return <div className="space-y-4">
     <div className="space-y-3">
       {items.map((it,i)=>(
@@ -5238,6 +5257,30 @@ function InvestmentPanel({loading,items,tuned,onTune}){
         </div>
       ))}
     </div>
+    {vectors?.length>0 && <div className="space-y-2">
+      <div className="font-mono-cal text-[10px] uppercase tracking-wide text-green-500">🧭 Вектори на развитие</div>
+      {vectors.map((v,i)=>(
+        <div key={i} className="rounded border border-green-900/40 bg-green-950/5 px-4 py-3">
+          <div className="font-display text-green-100 font-bold text-sm">{v.name}</div>
+          <p className="font-read text-stone-300 text-sm leading-snug mt-0.5">{v.text}</p>
+        </div>
+      ))}
+    </div>}
+    {companies?.length>0 && <div className="space-y-2">
+      <div className="font-mono-cal text-[10px] uppercase tracking-wide text-green-500">🏷 Компании, които може да засегне</div>
+      {companies.map((c,i)=>{
+        const d = INV_DIR[c.dir]||INV_DIR.unclear;
+        return <div key={i} className="rounded border border-stone-800 bg-stone-900/40 px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-display text-stone-100 font-bold text-sm">{c.name}</span>
+            <span className={`shrink-0 font-mono-cal text-[10px] uppercase tracking-wide px-2 py-0.5 rounded border ${d.cls}`}>{d.icon} {d.label}</span>
+          </div>
+          {c.what && <div className="font-mono-cal text-[11px] text-stone-500 mt-0.5">{c.what}</div>}
+          <p className="font-read text-stone-300 text-sm leading-snug mt-1">{c.text}</p>
+        </div>;
+      })}
+      <p className="font-read text-stone-500 text-xs leading-snug">Не е препоръка за покупка или продажба. Информацията на AI-то за компаниите е до датата на обучението му — провери актуалното им състояние, преди да решаваш каквото и да е.</p>
+    </div>}
     <div><TuneButton tuned={tuned} onClick={onTune}/></div>
   </div>;
 }
