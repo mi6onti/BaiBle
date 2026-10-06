@@ -4044,6 +4044,99 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
   </div>;
 }
 
+// ── Скрипт за подкаст ── a plan's STRUCTURE (topics, their sections, what each section covers) as plain text for
+// Google NotebookLM or similar to turn into an episode. Built locally from the plan — no AI call, no generated content.
+const PODCAST_SECTIONS = {
+  isPreface:["Предговор","Кои предварителни понятия трябва да знае слушателят, за да разбере темата — представени кратко и в логичен ред."],
+  isGlossary:["Речник","Кратки, ясни обяснения на ключовите термини в темата."],
+  isOverview:["Общ преглед","Голямата картина: какво е темата, защо е важна и кои са основните идеи — разказвателно, с аналогии."],
+  isInvestment:["Инвестиция","Какви нужди и възможности за действие създава новината (лично, професионално, бизнес), кои посоки може да ускори и кои компании може да засегне. Анализ, не финансов съвет."],
+  isPrediction:["Prediction","3–4 възможни сценария как ще се развие историята и знаците, които да следим. Поканете слушателя сам да си избере прогноза."],
+  isExamples:["Практически примери","Конкретни, осезаеми примери от реалния живот или от практиката."],
+  isResources:["Ресурси","Къде слушателят може да научи повече: официална документация, статии, ръководства."],
+  isEncyclopedia:["Енциклопедия","Любопитен факт, кратка биография на ключов човек, история на идеята, произход на термин и една често срещана грешка."],
+  isBefore:["Преди откритието","Как е изглеждал светът, преди темата да съществува, и какво конкретно е променила — за да се усети стойността ѝ."],
+  isTimeline:["Timeline","Хронология на ключовите моменти в развитието на темата — само с дати, в които сте сигурни."],
+  isButterfly:["Butterfly Effect","Хипотетично: какво би било различно, ако това никога не се беше случило. Правдоподобни последици, ясно обявени като спекулация."],
+  isCompare:["Сравнения","Сравнение с 2–4 подхода, с които темата често се сравнява или бърка: ключовата разлика и кога кое да изберем."],
+  isQuotes:["Цитати","Реални, точно атрибутирани цитати на хора, свързани с темата. Без измислени цитати."],
+  isBooks:["Advice from books","Реални книги с идеи, приложими към темата, и накратко какво казват."],
+  isBible:["Learn from Bible","Библейски стихове, свързани с темата, и размисъл какво би направил Исус в подобна ситуация."],
+  isSocratic:["Сократически диалог","Поредица от насочващи въпроси, които водят слушателя сам до разбирането. Оставете кратка пауза за размисъл след всеки."],
+  isConfession:["Признание на AI","Честен разказ от гледната точка на AI за това как „вижда“ темата и къде са границите на разбирането му."],
+  isInterview:["Интервю","Водещият задава на госта лични въпроси за неговите виждания и опит по темата."],
+  isHumor:["Хумор","Леки, остроумни моменти по темата: абсурдна аналогия, саркастично определение, шеговита рецензия."],
+  isActionPlan:["Rework","Конкретен план за действие на етапи: какво да направи слушателят след епизода."],
+  isExperiments:["Експерименти","Безопасни домашни експерименти, с които слушателят сам да провери идеята: хипотеза, материали, стъпки, очакван резултат."],
+  isSimulation:["Симулация","Мисловна симулация: какво става, ако променим даден параметър, и как основните величини си влияят."],
+  isGames:["Игри","Кратка игра със слушателя: загадка, асоциации или въпроси с нарастваща трудност."],
+  isAppIdeas:["App Store","Идеи за малки приложения или формати, които биха помогнали темата да се учи по-лесно."],
+  isTest:["Тест","Няколко въпроса за самопроверка в края на темата, с отговорите след кратка пауза."],
+  isShopping:["Шопинг лист","Какви инструменти, материали или услуги трябват, за да се приложи темата на практика (без конкретни търговци)."],
+  isNext:["Приложение","Къде другаде се прилага тази концепция — неочаквани връзки с други области."],
+  isInception:["Inception","Какви въпроси би задал човек на AI, за да усвои темата възможно най-бързо."],
+};
+const PODCAST_DEFAULT_ORDER = ["isPreface","isGlossary","isOverview","isInvestment","isPrediction","isExamples","isResources","isEncyclopedia","isBefore","isTimeline","isButterfly","isCompare","isQuotes","isBooks","isBible","isSocratic","isConfession","isInterview","isHumor","isActionPlan","isExperiments","isSimulation","isGames","isAppIdeas","isTest","isShopping","isNext","isInception"];
+function podcastSectionKey(item){ return (item && typeof item==="object") ? Object.keys(PODCAST_SECTIONS).find(k=>item[k]) : null; }
+function buildPodcastScript(topic, hierarchy, level){
+  const L = [];
+  const lvl = LEVELS.find(l=>l.level===level);
+  const title = topicLabel(topic);
+  const isNews = (hierarchy||[]).some(s=>s.isNewsStory);
+  L.push(`ПОДКАСТ: ${title}`);
+  if(topic.prompt && topic.prompt!==title) L.push(`Контекст: ${topic.prompt}`);
+  if(lvl) L.push(`Ниво на обяснение: ${lvl.label} (${lvl.hint})`);
+  L.push("", "ИНСТРУКЦИИ ЗА ЕПИЗОДА",
+    "- Това е структурата на образователен подкаст. Използвай я като план на епизода — самото съдържание го създай ти.",
+    "- Мини през темите в посочения ред. Във всяка тема покрий сегментите в реда, в който са изброени. Какво съдържа всеки сегмент е описано в края.",
+    "- Нивото на обяснение определя дълбочината и стила. Епизодът е на езика, на който са темите.",
+    "- Интерактивните сегменти (игри, тестове, симулации, експерименти) превърни в устни упражнения за слушателя.",
+    "- Не измисляй цитати, книги, дати или имена — ако не си сигурен, пропусни.");
+  if(isNews) L.push("- Темите са реални заглавия от новините. Не измисляй факти, числа, имена или цитати за самите събития — опирай се на общоизвестния контекст около тях.");
+  L.push("", "ТЕМИ И СЕГМЕНТИ");
+  const used = [];
+  let n = 0;
+  (hierarchy||[]).forEach(sub=>{
+    if(isTrailerItem(sub)){ L.push("", "Въведение — кратко представете всички теми в епизода и защо са свързани."); return; }
+    n++;
+    L.push("", `Тема ${n}: ${sub.name}`);
+    if(sub.link) L.push(`Източник: ${[sub.source, sub.link].filter(Boolean).join(" — ")}`);
+    const list = getSubsubList(sub);
+    const keys = (list&&list.length)
+      ? list.map(podcastSectionKey).filter(Boolean)
+      : PODCAST_DEFAULT_ORDER.filter(k=>(k!=="isInvestment"&&k!=="isPrediction") || sub.isNewsStory);
+    const terms = (list||[]).find(x=>x&&x.isGlossary)?.terms;
+    keys.forEach((k,i)=>{
+      if(!used.includes(k)) used.push(k);
+      const extra = (k==="isGlossary" && terms && terms.length) ? ` — термини: ${terms.map(subName).filter(Boolean).join(", ")}` : "";
+      L.push(`  ${i+1}. ${PODCAST_SECTIONS[k][0]}${extra}`);
+    });
+  });
+  L.push("", "КАКВО СЪДЪРЖА ВСЕКИ СЕГМЕНТ");
+  used.forEach(k=>L.push(`- ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`));
+  return L.join("\n");
+}
+function PodcastExport({topic,hierarchy,level}){
+  const [copied,setCopied] = useState(false);
+  const cls = "flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit";
+  function download(){
+    const blob = new Blob([buildPodcastScript(topic,hierarchy,level)],{type:"text/plain;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${slugify(topicLabel(topic))}-podcast.txt`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  }
+  async function copy(){
+    try{ await navigator.clipboard.writeText(buildPodcastScript(topic,hierarchy,level)); setCopied(true); setTimeout(()=>setCopied(false),2000); }
+    catch(e){ alert("Копирането не успя — използвай „Скрипт за подкаст“, за да го изтеглиш."); }
+  }
+  return <>
+    <button onClick={download} className={cls}>🎙 Скрипт за подкаст</button>
+    <button onClick={copy} className={cls}>{copied?"Копирано ✓":"Копирай скрипта"}</button>
+  </>;
+}
+
 function NewsAreaPicker({topics,onPick,onBack,error}){
   const dayKey = localDayKey();
   return <div className="space-y-4">
@@ -4095,6 +4188,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
         <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
       </button>}
+      <PodcastExport topic={topic} hierarchy={hierarchy} level={currentLevel}/>
     </div>
 
     {onEvolve && <EvolvePlanButton onEvolve={onEvolve} evolving={evolving}/>}
