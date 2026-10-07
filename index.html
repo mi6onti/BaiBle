@@ -1837,20 +1837,28 @@ function Aperture() {
     const nowT = new Date();
     const name = `Новини: ${area.label} · ${newsDateLabel(dayKey)}${sameDay?`, ${String(nowT.getHours()).padStart(2,"0")}:${String(nowT.getMinutes()).padStart(2,"0")}`:""}`;
     const prompt = newsPlanPrompt(area, dayKey);
-    setCurrentTopic(null);
-    setTopicOverview({loading:true, levels:[], prompt, name});
+    setTopicOverview(null);
+    setCurrentTopic({id:"_news_loading", name, prompt}); // placeholder so the "building plan" spinner shows
+    setLoadingH(true);
     try{
       const stories = await fetchAreaStories(area);
       if(!stories.length) throw new Error("няма намерени новини за тази област днес.");
       const id = "news-"+slugify(area.label)+"-"+dayKey+"-"+Date.now().toString(36);
       const newTopic = {id,name,prompt,createdAt:Date.now(),newsKey};
-      setCurrentTopic(newTopic);
-      const levels = await genOverviewLevels(prompt, stories);
-      setTopicOverview({loading:false, levels, prompt, name, id, newTopic, learningProfile:null, newsStories:stories});
+      const level = 1; // news start at Аналогия — fastest way through what matters; the level can be raised later
+      const names = stories.map(st=>st.title);
+      const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
+      const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
+      const subtopics = [trailerItem, ...stories.map(newsStorySubtopic)];
+      const newPlan = {name, prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level, newsStories:stories};
+      await saveJSON(`plan:${id}`, newPlan);
+      const next=[newTopic,...topics.filter(t=>t.id!==newTopic.id)];
+      setTopics(next); await saveJSON("topics",next);
+      setCurrentTopic(newTopic); setPlanData(newPlan); setHierarchy(subtopics);
     }catch(e){
-      setTopicOverview(null); setCurrentTopic(null); setShowNewsAreas(true);
+      setCurrentTopic(null); setShowNewsAreas(true);
       setHomeError(`Грешка при зареждане на новините: ${e.message}`);
-    }
+    }finally{ setLoadingH(false); }
   }
 
   async function resumeTopic(topic){
@@ -1932,7 +1940,7 @@ function Aperture() {
       setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
 
       const levelMeta = LEVELS.find(l=>l.level===topicLevel);
-      const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const rawSubsubtopics = sub?.isNewsStory ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
       const resourcesItem = { name:"Ресурси", isResources:true };
@@ -1959,7 +1967,7 @@ function Aperture() {
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, ...(sub?.isNewsStory?[{ name:"Инвестиция", isInvestment:true },{ name:"Prediction", isPrediction:true }]:[]), examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const subsubtopics = sub?.isNewsStory ? await buildNewsStorySections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -2021,7 +2029,7 @@ function Aperture() {
     setSubtopicOverview(prev=>({...prev, confirming:true, error:null}));
     try{
       const levelMeta = LEVELS.find(l=>l.level===level);
-      const rawSubsubtopics = await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const rawSubsubtopics = sub?.isNewsStory ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
       const resourcesItem = { name:"Ресурси", isResources:true };
@@ -2048,7 +2056,7 @@ function Aperture() {
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
-      const subsubtopics = [prefaceItem, glossaryItem, overviewItem, ...(sub?.isNewsStory?[{ name:"Инвестиция", isInvestment:true },{ name:"Prediction", isPrediction:true }]:[]), examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const subsubtopics = sub?.isNewsStory ? await buildNewsStorySections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -3863,7 +3871,7 @@ function Aperture() {
             <NodeView
               topic={topicLabel(currentTopic)}
               subtopic={hierarchy[subtopicIdx].name}
-              subsub={subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              subsub={sectionTitle(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isOverview={isOverviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isPreface={isPrefaceItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isNext={isNextItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
@@ -4102,20 +4110,63 @@ function buildPodcastScript(topic, hierarchy, level){
     L.push("", `Тема ${n}: ${sub.name}`);
     if(sub.link) L.push(`Източник: ${[sub.source, sub.link].filter(Boolean).join(" — ")}`);
     const list = getSubsubList(sub);
-    const keys = (list&&list.length)
-      ? list.map(podcastSectionKey).filter(Boolean)
-      : PODCAST_DEFAULT_ORDER.filter(k=>(k!=="isInvestment"&&k!=="isPrediction") || sub.isNewsStory);
+    const entries = (list&&list.length)
+      ? list.map(it=>({k:podcastSectionKey(it), c:it.catchy||""})).filter(e=>e.k)
+      : (sub.isNewsStory
+          ? NEWS_SECTION_FALLBACK.slice(0, NEWS_SECTION_COUNT[level]||6)
+          : PODCAST_DEFAULT_ORDER.filter(k=>k!=="isInvestment"&&k!=="isPrediction")).map(k=>({k, c:""}));
     const terms = (list||[]).find(x=>x&&x.isGlossary)?.terms;
-    keys.forEach((k,i)=>{
+    entries.forEach(({k,c},i)=>{
       if(!used.includes(k)) used.push(k);
       const extra = (k==="isGlossary" && terms && terms.length) ? ` — термини: ${terms.map(subName).filter(Boolean).join(", ")}` : "";
-      L.push(`  ${i+1}. ${PODCAST_SECTIONS[k][0]}${extra}`);
+      L.push(`  ${i+1}. ${PODCAST_SECTIONS[k][0]}${c?` — „${c}“`:""}${extra}`);
     });
   });
   L.push("", "КАКВО СЪДЪРЖА ВСЕКИ СЕГМЕНТ");
   used.forEach(k=>L.push(`- ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`));
   return L.join("\n");
 }
+// News stories only: instead of the full fixed section list, the AI picks the sections that fit THIS story
+// (type of news + genuine relevance), more of them at higher levels, Общ преглед always first — and gives each a
+// catchy, honest title next to its fixed name. Falls back to a sensible default set if the call fails.
+const NEWS_SECTION_COUNT = {1:4, 2:6, 3:8, 4:10, 5:12};
+const NEWS_SECTION_FALLBACK = ["isOverview","isInvestment","isPrediction","isGlossary","isBefore","isTimeline","isCompare","isExamples","isButterfly","isEncyclopedia","isSocratic","isTest","isPreface","isActionPlan"];
+async function genNewsSectionPlan(topicLabel, headline, levelHint){
+  const lvl = levelHint?.level||1;
+  const n = NEWS_SECTION_COUNT[lvl]||6;
+  let picked = [];
+  try{
+    const menu = Object.entries(PODCAST_SECTIONS).map(([k,v])=>`${k} — ${v[0]}: ${v[1]}`).join("\n");
+    const raw = await callClaudeRaw(
+`A learner opens the news story with the headline "${headline}" (context: "${topicLabel}") at the "${levelHint?.label||"Аналогия"}" level (${levelHint?.hint||"everyday comparison"}).
+Choose exactly ${n} sections from the menu below that will help them understand THIS particular story best. Choose by the type of news and what is genuinely relevant to it — e.g. Prediction only if the story is still developing, Timeline only if it has a real history behind it, Инвестиция only if it has practical or economic consequences, Learn from Bible or App Store only if they truly fit. isOverview is mandatory and comes first. Order the rest by importance: at low levels the learner wants to get to what matters as fast as possible.
+For each chosen section also write a catchy, specific title (3-7 words) saying what that section will reveal about THIS story — intriguing but honest, no clickbait, and no facts, numbers or names that are not in the headline.
+Menu (KEY — name: what it contains):
+${menu}
+Write the titles in the SAME language as the headline (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Output exactly ${n} lines, each in the form KEY | catchy title, nothing else, wrapped exactly like this: ###PLAN###the lines here###PLAN_END###`, 900);
+    const seen = new Set();
+    for(const line of extractField(raw,"PLAN").split("\n")){
+      const m = line.match(/(is[A-Za-z]+)\s*\|\s*(.+)/);
+      if(!m) continue;
+      const k = m[1].trim(), t = m[2].trim().replace(/^[„“"']+|[“”"']+$/g,"");
+      if(!PODCAST_SECTIONS[k] || seen.has(k)) continue;
+      seen.add(k); picked.push({key:k, catchy:t});
+    }
+  }catch(e){ console.warn("news section planning failed — using the default set", e); }
+  const ov = picked.find(p=>p.key==="isOverview") || {key:"isOverview", catchy:""};
+  picked = [ov, ...picked.filter(p=>p.key!=="isOverview")];
+  for(const k of NEWS_SECTION_FALLBACK){ if(picked.length>=n) break; if(!picked.some(p=>p.key===k)) picked.push({key:k, catchy:""}); }
+  return picked.slice(0,n);
+}
+async function buildNewsStorySections(topicPrompt, sub, levelMeta){
+  const plan = await genNewsSectionPlan(topicPrompt, sub.name, levelMeta);
+  const terms = plan.some(p=>p.key==="isGlossary") ? await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta) : null;
+  return plan.map(p=>({ name:PODCAST_SECTIONS[p.key][0], [p.key]:true, ...(p.catchy?{catchy:p.catchy}:{}), ...(p.key==="isGlossary"?{terms}:{}) }));
+}
+// fixed name + catchy title, for headers
+function sectionTitle(item){ return item?.catchy ? `${subName(item)} · ${item.catchy}` : subName(item); }
+
 function PodcastExport({topic,hierarchy,level}){
   const [copied,setCopied] = useState(false);
   const cls = "flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit";
@@ -4344,7 +4395,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
           className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${colorClass}`}>
           <span className={`font-read flex items-center gap-2 ${textClass}`}>
             {(isPr||isGl||isOv||isEx||isRe||isSh||isEn||isBe||isCm||isTl||isBf||isXp||isIv||isInv||isPrd||isQu||isBo||isBi||isAP||isSo||isTe||isSi||isGa||isAI||isNe||isIn||isCo||isHu||isCu) && <Sparkles size={14}/>}
-            {subName(s)}
+            {s?.catchy ? <span className="flex flex-col leading-tight"><span className="font-mono-cal text-[10px] uppercase tracking-wide opacity-70">{subName(s)}</span><span>{s.catchy}</span></span> : subName(s)}
             {isCu && subtopic.curiosityQuestions?.length>0 && <span className="font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50">{subtopic.curiosityQuestions.length}</span>}
           </span>
           <span className={chevronClass}><ChevronRight size={16}/></span>
@@ -4559,7 +4610,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       <p className="font-read text-stone-500 text-sm italic">Как се съотнася с други подходи — за да разбереш кога точно да избереш този.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryCompare}/>}
-      <ComparePanel loading={loadingLevels} approaches={nodeData?.approaches||[]} subsub={subsub} tuned={!!nodeData?.tunedCompare} onTune={onTuneCompare}/>
+      <ComparePanel loading={loadingLevels} approaches={nodeData?.approaches||[]} subsub={subtopic} tuned={!!nodeData?.tunedCompare} onTune={onTuneCompare}/>
     </div>;
   }
 
