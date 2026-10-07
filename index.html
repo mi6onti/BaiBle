@@ -1537,8 +1537,16 @@ function isConfessionItem(item){ return typeof item==="object" && item!==null &&
 function isHumorItem(item){ return typeof item==="object" && item!==null && !!item.isHumor; }
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
+function hiddenByOtherLevel(subItem, it){
+  if(!subItem?.isNewsStory || !subItem.readSections) return false;
+  const k = podcastSectionKey(it);
+  if(!k || k==="isOverview") return false;
+  const lv = subItem.readSections[k];
+  return lv!=null && lv!==subItem.activeLevel;
+}
+function visibleSections(subItem){ return (getSubsubList(subItem)||[]).filter(it=>!hiddenByOtherLevel(subItem,it)); }
 function getDisplayList(subItem){
-  const base = getSubsubList(subItem) || [];
+  const base = visibleSections(subItem);
   if(subItem?.curiosityQuestions?.length){
     return [...base, { name:"Любопитно", isCurious:true }];
   }
@@ -1727,7 +1735,7 @@ function Aperture() {
         const names = pd.newsStories ? pd.newsStories.map(st=>st.title) : await genSubtopicNames(pd.prompt, null, levelMeta);
         const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
       const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
-      const subtopics = [trailerItem, ...(pd.newsStories ? pd.newsStories.map(newsStorySubtopic) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
+      const subtopics = [trailerItem, ...(pd.newsStories ? pd.newsStories.map(st=>{ const prev=Object.values(pd.byLevel||{}).flat().filter(x=>x&&x.name===st.title&&x.readSections); const rs=Object.assign({},...prev.map(x=>x.readSections)); return Object.keys(rs).length?{...newsStorySubtopic(st),readSections:rs}:newsStorySubtopic(st); }) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
         const updated = {...pd, byLevel:{...pd.byLevel, [level]:subtopics}, activeLevel:level};
         setPlanData(updated); setHierarchy(subtopics);
         await saveJSON(`plan:${id}`, updated);
@@ -2077,6 +2085,17 @@ function Aperture() {
     const subLevel=subItem.activeLevel;
     const subsubItem=getDisplayList(subItem)[ssIdx];
     const subsub=subName(subsubItem);
+    if(subItem?.isNewsStory){
+      const rk = podcastSectionKey(subsubItem);
+      if(rk && rk!=="isOverview" && subItem.readSections?.[rk]==null){
+        const updSub = {...subItem, readSections:{...(subItem.readSections||{}), [rk]:subLevel}};
+        const updH = hierarchy.map((s,idx)=>idx===subIdx?updSub:s);
+        setHierarchy(updH);
+        const updPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updH}};
+        setPlanData(updPlan);
+        saveJSON(`plan:${currentTopic.id}`, updPlan);
+      }
+    }
 
     if(isCuriousItem(subsubItem)){
       setNodeId(null);
@@ -3569,7 +3588,7 @@ function Aperture() {
       let curPlan = planData;
       const topicPrompt = currentTopic.prompt||currentTopic.name;
       let subItem = curHierarchy[subIdx];
-      let subsubList = getSubsubList(subItem);
+      let subsubList = visibleSections(subItem);
       const subLevel = subItem.activeLevel;
       const subLevelMeta = LEVELS.find(l=>l.level===subLevel);
 
@@ -4131,17 +4150,18 @@ function buildPodcastScript(topic, hierarchy, level){
 // catchy, honest title next to its fixed name. Falls back to a sensible default set if the call fails.
 const NEWS_SECTION_COUNT = {1:4, 2:6, 3:8, 4:10, 5:12};
 const NEWS_SECTION_FALLBACK = ["isOverview","isInvestment","isPrediction","isGlossary","isBefore","isTimeline","isCompare","isExamples","isButterfly","isEncyclopedia","isSocratic","isTest","isPreface","isActionPlan"];
-async function genNewsSectionPlan(topicLabel, headline, levelHint){
+async function genNewsSectionPlan(topicLabel, headline, levelHint, allowed){
   const lvl = levelHint?.level||1;
-  const n = NEWS_SECTION_COUNT[lvl]||6;
+  const pool = (allowed&&allowed.length) ? allowed : PODCAST_DEFAULT_ORDER;
+  const n = Math.min(NEWS_SECTION_COUNT[lvl]||6, pool.length);
   let picked = [];
   try{
-    const menu = Object.entries(PODCAST_SECTIONS).map(([k,v])=>`${k} — ${v[0]}: ${v[1]}`).join("\n");
+    const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
     const raw = await callClaudeRaw(
 `A learner opens the news story with the headline "${headline}" (context: "${topicLabel}") at the "${levelHint?.label||"Аналогия"}" level (${levelHint?.hint||"everyday comparison"}).
 Choose exactly ${n} sections from the menu below that will help them understand THIS particular story best. Choose by the type of news and what is genuinely relevant to it — e.g. Prediction only if the story is still developing, Timeline only if it has a real history behind it, Инвестиция only if it has practical or economic consequences, Learn from Bible or App Store only if they truly fit. isOverview is mandatory and comes first. Order the rest by importance: at low levels the learner wants to get to what matters as fast as possible.
 For each chosen section also write a catchy, specific title (3-7 words) saying what that section will reveal about THIS story — intriguing but honest, no clickbait, and no facts, numbers or names that are not in the headline.
-Menu (KEY — name: what it contains):
+Menu (KEY — name: what it contains) — choose ONLY from these:
 ${menu}
 Write the titles in the SAME language as the headline (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
 Output exactly ${n} lines, each in the form KEY | catchy title, nothing else, wrapped exactly like this: ###PLAN###the lines here###PLAN_END###`, 900);
@@ -4150,17 +4170,35 @@ Output exactly ${n} lines, each in the form KEY | catchy title, nothing else, wr
       const m = line.match(/(is[A-Za-z]+)\s*\|\s*(.+)/);
       if(!m) continue;
       const k = m[1].trim(), t = m[2].trim().replace(/^[„“"']+|[“”"']+$/g,"");
-      if(!PODCAST_SECTIONS[k] || seen.has(k)) continue;
+      if(!PODCAST_SECTIONS[k] || !pool.includes(k) || seen.has(k)) continue;
       seen.add(k); picked.push({key:k, catchy:t});
     }
   }catch(e){ console.warn("news section planning failed — using the default set", e); }
   const ov = picked.find(p=>p.key==="isOverview") || {key:"isOverview", catchy:""};
   picked = [ov, ...picked.filter(p=>p.key!=="isOverview")];
-  for(const k of NEWS_SECTION_FALLBACK){ if(picked.length>=n) break; if(!picked.some(p=>p.key===k)) picked.push({key:k, catchy:""}); }
+  for(const k of [...NEWS_SECTION_FALLBACK, ...PODCAST_DEFAULT_ORDER]){
+    if(picked.length>=n) break;
+    if(pool.includes(k) && !picked.some(p=>p.key===k)) picked.push({key:k, catchy:""});
+  }
   return picked.slice(0,n);
 }
+// which sections this level may offer: never one already read (at any level); preferably none already shown at
+// another level — those only come back if there aren't enough fresh ones left. Общ преглед is always allowed.
+function newsAllowedSections(sub, lvl){
+  const read = new Set(Object.keys(sub.readSections||{}).filter(k=>k!=="isOverview"));
+  const shown = new Set();
+  Object.entries(sub.byLevel||{}).forEach(([L,list])=>{
+    if(Number(L)===lvl) return;
+    (list||[]).forEach(it=>{ const k=podcastSectionKey(it); if(k && k!=="isOverview") shown.add(k); });
+  });
+  const fresh = PODCAST_DEFAULT_ORDER.filter(k=>k==="isOverview" || (!read.has(k) && !shown.has(k)));
+  const shownUnread = PODCAST_DEFAULT_ORDER.filter(k=>k!=="isOverview" && !read.has(k) && shown.has(k));
+  const need = NEWS_SECTION_COUNT[lvl]||6;
+  return fresh.length>=need ? fresh : [...fresh, ...shownUnread];
+}
 async function buildNewsStorySections(topicPrompt, sub, levelMeta){
-  const plan = await genNewsSectionPlan(topicPrompt, sub.name, levelMeta);
+  const lvl = levelMeta?.level||1;
+  const plan = await genNewsSectionPlan(topicPrompt, sub.name, levelMeta, newsAllowedSections(sub, lvl));
   const terms = plan.some(p=>p.key==="isGlossary") ? await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta) : null;
   return plan.map(p=>({ name:PODCAST_SECTIONS[p.key][0], [p.key]:true, ...(p.catchy?{catchy:p.catchy}:{}), ...(p.key==="isGlossary"?{terms}:{}) }));
 }
