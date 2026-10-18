@@ -1634,6 +1634,9 @@ function Aperture() {
   const canBlend = Object.keys(prefs.abstraction||{}).length>0;
   const topLevel = topPreferred(prefs.abstraction,null);
   const [showNewsAreas,setShowNewsAreas] = useState(false);
+  const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
+  const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
+  const [desktopError,setDesktopError] = useState(null);
   const activeTopics  = topics.filter(t=>!t.deletedAt);
   const deletedTopics = topics.filter(t=>t.deletedAt);
 
@@ -1659,6 +1662,7 @@ function Aperture() {
   }
 
   function goHome(){
+    setDesktopMode(false);setDesktopApp(null);setDesktopError(null);
     setShowNewsAreas(false);
     setCurrentTopic(null);setHierarchy(null);
     setSubtopicIdx(null);setSubsubIdx(null);
@@ -1831,6 +1835,51 @@ function Aperture() {
       return { name:s.name, overviewLevels:null, byLevel: hasList?{[level]:legacyList}:{}, activeLevel: hasList?level:null };
     });
     return { name:cached.name, prompt:cached.prompt, overviewLevels:null, byLevel:{[level]:subtopics}, activeLevel:level };
+  }
+
+  // Desktop: open section `key` for plan topic `subIdx` at `level` (default: the topic's current level). Builds the
+  // topic's section list for that level if it doesn't exist yet, and adds the section if that list lacks it.
+  async function openDesktopSection(subIdx, key, level){
+    const H0 = hierarchy, P0 = planData;
+    const sub = H0?.[subIdx];
+    if(!sub || !P0) return;
+    const L = level || sub.activeLevel || P0.activeLevel || 1;
+    const levelMeta = LEVELS.find(l=>l.level===L);
+    const topicPrompt = currentTopic.prompt||currentTopic.name;
+    setDesktopError(null);
+    let list = sub.byLevel?.[L];
+    const needsBuild = !(list && list.length);
+    const needsItem = needsBuild || !list.some(it=>podcastSectionKey(it)===key);
+    if(needsItem) setLoadingH(true);
+    try{
+      if(needsBuild) list = sub.isNewsStory ? await buildNewsStorySections(topicPrompt, sub, levelMeta) : await buildStandardSections(topicPrompt, sub, levelMeta);
+      if(!list.some(it=>podcastSectionKey(it)===key)){
+        const item = {name:PODCAST_SECTIONS[key][0], [key]:true};
+        if(key==="isGlossary") item.terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
+        list = [...list, item];
+      }
+      let updSub = {...sub, byLevel:{...(sub.byLevel||{}), [L]:list}, activeLevel:L};
+      // news: in Desktop a read section follows you to the level you are reading it at
+      if(updSub.isNewsStory && key!=="isOverview" && updSub.readSections?.[key]!=null && updSub.readSections[key]!==L){
+        updSub = {...updSub, readSections:{...updSub.readSections, [key]:L}};
+      }
+      const H = H0.map((x,i)=>i===subIdx?updSub:x);
+      const P = {...P0, byLevel:{...P0.byLevel, [P0.activeLevel]:H}};
+      setHierarchy(H); setPlanData(P);
+      await saveJSON(`plan:${currentTopic.id}`, P);
+      const idx = getDisplayList(updSub).findIndex(it=>podcastSectionKey(it)===key);
+      setLoadingH(false);
+      if(idx<0){ setDesktopError("Тази секция не можа да се отвори за тази тема."); return; }
+      setDesktopApp(key);
+      await openNode(subIdx, idx, H, P);
+    }catch(e){
+      setLoadingH(false);
+      setDesktopError(`Грешка: ${e.message}`);
+    }
+  }
+  function exitDesktopApp(){
+    setDesktopApp(null); setSubsubIdx(null); setSubtopicIdx(null);
+    setNodeId(null); setNodeData(null); setNodeError(null);
   }
 
   async function openNewsArea(area, forceNew){
@@ -2077,10 +2126,10 @@ function Aperture() {
     }
   }
 
-  async function openNode(subIdx,ssIdx){
+  async function openNode(subIdx,ssIdx,hOverride,pOverride){
     setSubtopicIdx(subIdx);setSubsubIdx(ssIdx);
     setTab("levels");setNodeError(null);
-    const subItem=hierarchy[subIdx];
+    const subItem=(hOverride||hierarchy)[subIdx];
     const sub=subItem.name;
     const subLevel=subItem.activeLevel;
     const subsubItem=getDisplayList(subItem)[ssIdx];
@@ -2089,9 +2138,10 @@ function Aperture() {
       const rk = podcastSectionKey(subsubItem);
       if(rk && rk!=="isOverview" && subItem.readSections?.[rk]==null){
         const updSub = {...subItem, readSections:{...(subItem.readSections||{}), [rk]:subLevel}};
-        const updH = hierarchy.map((s,idx)=>idx===subIdx?updSub:s);
+        const updH = (hOverride||hierarchy).map((s,idx)=>idx===subIdx?updSub:s);
         setHierarchy(updH);
-        const updPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updH}};
+        const P0 = pOverride||planData;
+        const updPlan = {...P0, byLevel:{...P0.byLevel, [P0.activeLevel]:updH}};
         setPlanData(updPlan);
         saveJSON(`plan:${currentTopic.id}`, updPlan);
       }
@@ -3862,7 +3912,10 @@ function Aperture() {
           ):loadingH?<Spinner label="изграждам учебен план…"/>
           :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>resumeTopic(currentTopic)}/>
           :subtopicIdx===null?(
-            <SubtopicList topic={currentTopic} hierarchy={hierarchy}
+            desktopMode ? <DesktopGrid topic={currentTopic} hierarchy={hierarchy} error={desktopError}
+              onOpen={k=>{ const first=hierarchy.findIndex(x=>!isTrailerItem(x)); if(first>=0) openDesktopSection(first,k); }}
+              onExit={()=>{setDesktopMode(false);setDesktopError(null);}}/> :
+            <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={()=>{setDesktopMode(true);setDesktopError(null);}}
               onPick={pickSubtopic}
               onLevelCheck={runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
@@ -3887,6 +3940,8 @@ function Aperture() {
               currentLevel={hierarchy[subtopicIdx].activeLevel}
               onGenerateAll={()=>generateAllContentForSubtopic(subtopicIdx)} generatingAll={generatingAll} genAllProgress={genAllProgress} genAllError={genAllError}/>
           ):(
+            <>{desktopApp && <DesktopBar appKey={desktopApp} hierarchy={hierarchy} subIdx={subtopicIdx} error={desktopError}
+              onPickTopic={i=>openDesktopSection(i,desktopApp)} onExit={exitDesktopApp}/>}
             <NodeView
               topic={topicLabel(currentTopic)}
               subtopic={hierarchy[subtopicIdx].name}
@@ -3920,7 +3975,7 @@ function Aperture() {
               isConfession={isConfessionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isHumor={isHumorItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              onBack={()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
+              onBack={desktopApp ? exitDesktopApp : ()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
@@ -4004,6 +4059,8 @@ function Aperture() {
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
               canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]))}/>
+            {desktopApp && <DesktopReadMore level={hierarchy[subtopicIdx]?.activeLevel}
+              onReadMore={()=>openDesktopSection(subtopicIdx, desktopApp, (hierarchy[subtopicIdx]?.activeLevel||1)+1)}/>}</>
           )}
       </main>
     </div>
@@ -4205,6 +4262,76 @@ async function buildNewsStorySections(topicPrompt, sub, levelMeta){
 // fixed name + catchy title, for headers
 function sectionTitle(item){ return item?.catchy ? `${subName(item)} · ${item.catchy}` : subName(item); }
 
+// ── Desktop режим ── every section is an "app"; inside an app you move through all the plan's topics,
+// and "Прочети още" takes the same section of the same topic one level deeper.
+const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
+// the regular (non-news) full section list, same items as the plan's own builder
+async function buildStandardSections(topicPrompt, sub, levelMeta){
+  const terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
+  return PODCAST_DEFAULT_ORDER.filter(k=>k!=="isInvestment"&&k!=="isPrediction")
+    .map(k=>({name:PODCAST_SECTIONS[k][0], [k]:true, ...(k==="isGlossary"?{terms}:{})}));
+}
+function DesktopGrid({topic,hierarchy,onOpen,onExit,error}){
+  const hasNews = (hierarchy||[]).some(x=>x.isNewsStory);
+  const apps = PODCAST_DEFAULT_ORDER.filter(k=>hasNews || (k!=="isInvestment" && k!=="isPrediction"));
+  const count = (hierarchy||[]).filter(x=>!isTrailerItem(x)).length;
+  return <div className="space-y-6">
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500">🖥 Desktop</div>
+        <h2 className="font-display text-xl font-bold text-stone-100">{topicLabel(topic)}</h2>
+        <p className="font-read text-stone-500 text-sm mt-0.5">{count} теми · отвори приложение и мини през всички теми в него</p>
+      </div>
+      <button onClick={onExit} className="shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400">☰ Списък</button>
+    </div>
+    {error&&<ErrorNote message={error}/>}
+    <div className="grid grid-cols-4 sm:grid-cols-5 gap-x-3 gap-y-5">
+      {apps.map(k=>(
+        <button key={k} onClick={()=>onOpen(k)} disabled={!count} className="flex flex-col items-center gap-1.5 group disabled:opacity-40">
+          <span className="w-14 h-14 rounded-2xl bg-gradient-to-br from-stone-700 to-stone-900 border border-stone-700 group-hover:border-amber-500 flex items-center justify-center text-2xl shadow-lg shadow-black/40 transition-colors">{DESKTOP_ICONS[k]||"•"}</span>
+          <span className="font-read text-[11px] leading-tight text-stone-300 text-center">{PODCAST_SECTIONS[k][0]}</span>
+        </button>
+      ))}
+    </div>
+  </div>;
+}
+function DesktopBar({appKey,hierarchy,subIdx,onPickTopic,onExit,error}){
+  const topics = (hierarchy||[]).map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x));
+  const pos = topics.findIndex(t=>t.i===subIdx);
+  const prev = pos>0 ? topics[pos-1] : null;
+  const next = pos>=0 && pos<topics.length-1 ? topics[pos+1] : null;
+  const arrow = "shrink-0 w-8 h-8 rounded-full border border-stone-700 text-stone-300 hover:border-amber-500 disabled:opacity-30 flex items-center justify-center";
+  return <div className="space-y-2 mb-5 pb-3 border-b border-stone-800">
+    <div className="flex items-center justify-between gap-2">
+      <button onClick={onExit} className="flex items-center gap-1 font-mono-cal text-xs text-stone-400 hover:text-amber-400"><ChevronLeft size={14}/> 🖥 Desktop</button>
+      <span className="font-mono-cal text-xs text-amber-400">{DESKTOP_ICONS[appKey]} {PODCAST_SECTIONS[appKey]?.[0]} · тема {pos+1} от {topics.length}</span>
+    </div>
+    <div className="flex items-center gap-2">
+      <button disabled={!prev} onClick={()=>prev&&onPickTopic(prev.i)} className={arrow}><ChevronLeft size={14}/></button>
+      <div className="flex-1 flex gap-1.5 overflow-x-auto">
+        {topics.map((t,n)=>(
+          <button key={t.i} onClick={()=>t.i!==subIdx&&onPickTopic(t.i)}
+            className={`shrink-0 max-w-[13rem] truncate px-2.5 py-1 rounded-full border text-xs font-read ${t.i===subIdx?"border-amber-500 text-amber-300 bg-amber-950/30":"border-stone-700 text-stone-400 hover:border-stone-500"}`}>
+            {n+1}. {t.x.name}
+          </button>
+        ))}
+      </div>
+      <button disabled={!next} onClick={()=>next&&onPickTopic(next.i)} className={arrow}><ChevronRight size={14}/></button>
+    </div>
+    {error&&<ErrorNote message={error}/>}
+  </div>;
+}
+function DesktopReadMore({level,onReadMore}){
+  const cur = LEVELS.find(l=>l.level===level);
+  const nxt = LEVELS.find(l=>l.level===(level||1)+1);
+  return <div className="mt-6 pt-4 border-t border-stone-800 flex items-center justify-between gap-3">
+    <span className="font-mono-cal text-[11px] text-stone-500">Ниво: {cur?.label||"—"}</span>
+    {nxt
+      ? <button onClick={onReadMore} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">Прочети още → {nxt.label}</button>
+      : <span className="font-mono-cal text-[11px] text-stone-500">Най-дълбокото ниво</span>}
+  </div>;
+}
+
 function PodcastExport({topic,hierarchy,level}){
   const [copied,setCopied] = useState(false);
   const cls = "flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit";
@@ -4254,7 +4381,7 @@ function NewsAreaPicker({topics,onPick,onBack,error}){
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving}){
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onDesktop}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -4277,6 +4404,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
         <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
       </button>}
+      {onDesktop && <button onClick={onDesktop} className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-400 hover:border-amber-500 w-fit">🖥 Desktop</button>}
       <PodcastExport topic={topic} hierarchy={hierarchy} level={currentLevel}/>
     </div>
 
