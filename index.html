@@ -1538,7 +1538,7 @@ function isHumorItem(item){ return typeof item==="object" && item!==null && !!it
 function isCuriousItem(item){ return typeof item==="object" && item!==null && !!item.isCurious; }
 function getSubsubList(subItem){ return (subItem?.activeLevel!=null && subItem?.byLevel) ? (subItem.byLevel[subItem.activeLevel]||null) : null; }
 function hiddenByOtherLevel(subItem, it){
-  if(!subItem?.isNewsStory || !subItem.readSections) return false;
+  if(!(subItem?.isNewsStory||subItem?.smart) || !subItem.readSections) return false;
   const k = podcastSectionKey(it);
   if(!k || k==="isOverview") return false;
   const lv = subItem.readSections[k];
@@ -1637,6 +1637,8 @@ function Aperture() {
   const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
   const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
   const [desktopError,setDesktopError] = useState(null);
+  const [shareMsg,setShareMsg] = useState(null);
+  const [guestPlanId,setGuestPlanId] = useState(null); // opened through a shared link
   const activeTopics  = topics.filter(t=>!t.deletedAt);
   const deletedTopics = topics.filter(t=>t.deletedAt);
 
@@ -1646,7 +1648,14 @@ function Aperture() {
       const t=await loadJSON("topics",[]);
       const p=await loadJSON("prefs",{abstraction:{},personality:{}});
       const seenIds=new Set();
-      setTopics((t||[]).filter(x=>x&&!seenIds.has(x.id)&&seenIds.add(x.id)));setPrefs(p);setBooting(false);
+      const clean=(t||[]).filter(x=>x&&!seenIds.has(x.id)&&seenIds.add(x.id));
+      setTopics(clean);setPrefs(p);setBooting(false);
+      const shared = new URLSearchParams(location.search).get("plan");
+      if(shared){
+        const st = clean.find(x=>x.id===shared && !x.deletedAt);
+        if(st){ setGuestPlanId(shared); resumeTopic(st); }
+        else setHomeError("Споделеният план не е намерен — може да е изтрит.");
+      }
     })();
   },[booting]);
 
@@ -1663,6 +1672,7 @@ function Aperture() {
 
   function goHome(){
     setDesktopMode(false);setDesktopApp(null);setDesktopError(null);
+    if(guestPlanId){ const gt=topics.find(x=>x.id===guestPlanId); if(gt){ resumeTopic(gt); return; } }
     setShowNewsAreas(false);
     setCurrentTopic(null);setHierarchy(null);
     setSubtopicIdx(null);setSubsubIdx(null);
@@ -1852,15 +1862,15 @@ function Aperture() {
     const needsItem = needsBuild || !list.some(it=>podcastSectionKey(it)===key);
     if(needsItem) setLoadingH(true);
     try{
-      if(needsBuild) list = sub.isNewsStory ? await buildNewsStorySections(topicPrompt, sub, levelMeta) : await buildStandardSections(topicPrompt, sub, levelMeta);
+      if(needsBuild) list = (sub.isNewsStory||P0.smartMode) ? await buildNewsStorySections(topicPrompt, sub, levelMeta) : await buildStandardSections(topicPrompt, sub, levelMeta);
       if(!list.some(it=>podcastSectionKey(it)===key)){
         const item = {name:PODCAST_SECTIONS[key][0], [key]:true};
         if(key==="isGlossary") item.terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
         list = [...list, item];
       }
-      let updSub = {...sub, byLevel:{...(sub.byLevel||{}), [L]:list}, activeLevel:L};
+      let updSub = {...sub, byLevel:{...(sub.byLevel||{}), [L]:list}, activeLevel:L, ...(needsBuild&&P0.smartMode&&!sub.isNewsStory?{smart:true}:{})};
       // news: in Desktop a read section follows you to the level you are reading it at
-      if(updSub.isNewsStory && key!=="isOverview" && updSub.readSections?.[key]!=null && updSub.readSections[key]!==L){
+      if((updSub.isNewsStory||updSub.smart) && key!=="isOverview" && updSub.readSections?.[key]!=null && updSub.readSections[key]!==L){
         updSub = {...updSub, readSections:{...updSub.readSections, [key]:L}};
       }
       const H = H0.map((x,i)=>i===subIdx?updSub:x);
@@ -1877,6 +1887,27 @@ function Aperture() {
       setDesktopError(`Грешка: ${e.message}`);
     }
   }
+  async function toggleSmartMode(){
+    if(!planData||!currentTopic) return;
+    const updated = {...planData, smartMode:!planData.smartMode};
+    setPlanData(updated);
+    await saveJSON(`plan:${currentTopic.id}`, updated);
+  }
+
+  // share: link that opens this plan directly ("guest" view — no home list, no delete)
+  async function sharePlan(){
+    if(!currentTopic) return;
+    const url = `${location.origin}${location.pathname}?plan=${encodeURIComponent(currentTopic.id)}`;
+    try{
+      if(navigator.share){ await navigator.share({title:topicLabel(currentTopic), url}); setShareMsg("Споделено ✓"); }
+      else { await navigator.clipboard.writeText(url); setShareMsg("Линкът е копиран ✓"); }
+    }catch(e){
+      if(e?.name==="AbortError") return;
+      try{ await navigator.clipboard.writeText(url); setShareMsg("Линкът е копиран ✓"); }catch{ setShareMsg(url); }
+    }
+    setTimeout(()=>setShareMsg(null), 4000);
+  }
+
   function exitDesktopApp(){
     setDesktopApp(null); setSubsubIdx(null); setSubtopicIdx(null);
     setNodeId(null); setNodeData(null); setNodeError(null);
@@ -1997,7 +2028,7 @@ function Aperture() {
       setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
 
       const levelMeta = LEVELS.find(l=>l.level===topicLevel);
-      const rawSubsubtopics = sub?.isNewsStory ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const rawSubsubtopics = (sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
       const resourcesItem = { name:"Ресурси", isResources:true };
@@ -2024,8 +2055,8 @@ function Aperture() {
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
-      const subsubtopics = sub?.isNewsStory ? await buildNewsStorySections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
-      const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel};
+      const subsubtopics = (sub?.isNewsStory||planData?.smartMode) ? await buildNewsStorySections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel, ...(planData?.smartMode&&!sub.isNewsStory?{smart:true}:{})};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
       const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
@@ -2086,7 +2117,7 @@ function Aperture() {
     setSubtopicOverview(prev=>({...prev, confirming:true, error:null}));
     try{
       const levelMeta = LEVELS.find(l=>l.level===level);
-      const rawSubsubtopics = sub?.isNewsStory ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const rawSubsubtopics = (sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
       const resourcesItem = { name:"Ресурси", isResources:true };
@@ -2113,8 +2144,8 @@ function Aperture() {
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
-      const subsubtopics = sub?.isNewsStory ? await buildNewsStorySections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
-      const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level};
+      const subsubtopics = (sub?.isNewsStory||planData?.smartMode) ? await buildNewsStorySections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level, ...(planData?.smartMode&&!sub.isNewsStory?{smart:true}:{})};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
       const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
@@ -2134,7 +2165,7 @@ function Aperture() {
     const subLevel=subItem.activeLevel;
     const subsubItem=getDisplayList(subItem)[ssIdx];
     const subsub=subName(subsubItem);
-    if(subItem?.isNewsStory){
+    if(subItem?.isNewsStory||subItem?.smart){
       const rk = podcastSectionKey(subsubItem);
       if(rk && rk!=="isOverview" && subItem.readSections?.[rk]==null){
         const updSub = {...subItem, readSections:{...(subItem.readSections||{}), [rk]:subLevel}};
@@ -3919,13 +3950,15 @@ function Aperture() {
               onPick={pickSubtopic}
               onLevelCheck={runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
-              onDelete={()=>softDeleteTopic(currentTopic.id)}
+              onDelete={guestPlanId?null:()=>softDeleteTopic(currentTopic.id)}
               onGenerateAdapted={generateAdaptedTopic} generatingAdapted={generatingAdapted}
               allTopics={topics}
               onNavigateTopic={t=>{resumeTopic(t);}}
               onChangeLevel={openTopicLevelPicker}
               currentLevel={planData?.activeLevel}
-              onEvolve={evolveTopicWithIdea} evolving={loadingH}/>
+              onEvolve={guestPlanId?null:evolveTopicWithIdea} evolving={loadingH}
+              smartMode={!!planData?.smartMode} onShare={sharePlan} shareMsg={shareMsg}
+              onToggleSmart={(hierarchy||[]).some(x=>x.isNewsStory)?null:toggleSmartMode}/>
           ):subtopicOverview&&subtopicOverview.subIdx===subtopicIdx?(
             <OverviewPicker title={hierarchy[subtopicIdx].name}
               levels={subtopicOverview.levels} loading={subtopicOverview.loading}
@@ -4207,7 +4240,7 @@ function buildPodcastScript(topic, hierarchy, level){
 // catchy, honest title next to its fixed name. Falls back to a sensible default set if the call fails.
 const NEWS_SECTION_COUNT = {1:4, 2:6, 3:8, 4:10, 5:12};
 const NEWS_SECTION_FALLBACK = ["isOverview","isInvestment","isPrediction","isGlossary","isBefore","isTimeline","isCompare","isExamples","isButterfly","isEncyclopedia","isSocratic","isTest","isPreface","isActionPlan"];
-async function genNewsSectionPlan(topicLabel, headline, levelHint, allowed){
+async function genNewsSectionPlan(topicLabel, headline, levelHint, allowed, isNews=true){
   const lvl = levelHint?.level||1;
   const pool = (allowed&&allowed.length) ? allowed : PODCAST_DEFAULT_ORDER;
   const n = Math.min(NEWS_SECTION_COUNT[lvl]||6, pool.length);
@@ -4215,12 +4248,12 @@ async function genNewsSectionPlan(topicLabel, headline, levelHint, allowed){
   try{
     const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
     const raw = await callClaudeRaw(
-`A learner opens the news story with the headline "${headline}" (context: "${topicLabel}") at the "${levelHint?.label||"Аналогия"}" level (${levelHint?.hint||"everyday comparison"}).
-Choose exactly ${n} sections from the menu below that will help them understand THIS particular story best. Choose by the type of news and what is genuinely relevant to it — e.g. Prediction only if the story is still developing, Timeline only if it has a real history behind it, Инвестиция only if it has practical or economic consequences, Learn from Bible or App Store only if they truly fit. isOverview is mandatory and comes first. Order the rest by importance: at low levels the learner wants to get to what matters as fast as possible.
-For each chosen section also write a catchy, specific title (3-7 words) saying what that section will reveal about THIS story — intriguing but honest, no clickbait, and no facts, numbers or names that are not in the headline.
+`A learner opens ${isNews?`the news story with the headline "${headline}"`:`the topic "${headline}"`} (context: "${topicLabel}") at the "${levelHint?.label||"Аналогия"}" level (${levelHint?.hint||"everyday comparison"}).
+Choose exactly ${n} sections from the menu below that will help them understand THIS particular ${isNews?"story":"topic"} best. ${isNews?"Choose by the type of news and what is genuinely relevant to it — e.g. Prediction only if the story is still developing, Timeline only if it has a real history behind it, Инвестиция only if it has practical or economic consequences, Learn from Bible or App Store only if they truly fit.":"Choose by the kind of subject and what is genuinely relevant to it — e.g. Timeline only if it has a real history, Експерименти only if it can be safely tried at home, Шопинг лист only if it needs physical things, Learn from Bible or App Store only if they truly fit."} isOverview is mandatory and comes first. Order the rest by importance: at low levels the learner wants to get to what matters as fast as possible.
+For each chosen section also write a catchy, specific title (3-7 words) saying what that section will reveal about THIS ${isNews?"story":"topic"} — intriguing but honest, no clickbait, and ${isNews?"no facts, numbers or names that are not in the headline":"no invented facts, numbers or names"}.
 Menu (KEY — name: what it contains) — choose ONLY from these:
 ${menu}
-Write the titles in the SAME language as the headline (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Write the titles in the SAME language as the ${isNews?"headline":"topic"} (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
 Output exactly ${n} lines, each in the form KEY | catchy title, nothing else, wrapped exactly like this: ###PLAN###the lines here###PLAN_END###`, 900);
     const seen = new Set();
     for(const line of extractField(raw,"PLAN").split("\n")){
@@ -4248,14 +4281,15 @@ function newsAllowedSections(sub, lvl){
     if(Number(L)===lvl) return;
     (list||[]).forEach(it=>{ const k=podcastSectionKey(it); if(k && k!=="isOverview") shown.add(k); });
   });
-  const fresh = PODCAST_DEFAULT_ORDER.filter(k=>k==="isOverview" || (!read.has(k) && !shown.has(k)));
-  const shownUnread = PODCAST_DEFAULT_ORDER.filter(k=>k!=="isOverview" && !read.has(k) && shown.has(k));
+  const base = PODCAST_DEFAULT_ORDER.filter(k=>sub.isNewsStory || (k!=="isInvestment" && k!=="isPrediction"));
+  const fresh = base.filter(k=>k==="isOverview" || (!read.has(k) && !shown.has(k)));
+  const shownUnread = base.filter(k=>k!=="isOverview" && !read.has(k) && shown.has(k));
   const need = NEWS_SECTION_COUNT[lvl]||6;
   return fresh.length>=need ? fresh : [...fresh, ...shownUnread];
 }
 async function buildNewsStorySections(topicPrompt, sub, levelMeta){
   const lvl = levelMeta?.level||1;
-  const plan = await genNewsSectionPlan(topicPrompt, sub.name, levelMeta, newsAllowedSections(sub, lvl));
+  const plan = await genNewsSectionPlan(topicPrompt, sub.name, levelMeta, newsAllowedSections(sub, lvl), !!sub.isNewsStory);
   const terms = plan.some(p=>p.key==="isGlossary") ? await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta) : null;
   return plan.map(p=>({ name:PODCAST_SECTIONS[p.key][0], [p.key]:true, ...(p.catchy?{catchy:p.catchy}:{}), ...(p.key==="isGlossary"?{terms}:{}) }));
 }
@@ -4381,7 +4415,7 @@ function NewsAreaPicker({topics,onPick,onBack,error}){
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onDesktop}){
+function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onDesktop,smartMode,onToggleSmart,onShare,shareMsg}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -4396,7 +4430,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
           <p className="font-read text-stone-400 text-sm mt-1 leading-relaxed">{topic.prompt}</p>
         )}
       </div>
-      <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>
+      {onDelete && <button onClick={onDelete} className="shrink-0 p-1.5 text-stone-600 hover:text-red-400 transition-colors mt-1"><Trash2 size={16}/></button>}
     </div>
 
     <div className="flex flex-wrap gap-2">
@@ -4404,6 +4438,11 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
         <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
       </button>}
+      {onToggleSmart && <button onClick={onToggleSmart} title="Само релевантните секции, броят им расте с нивото, с catchy заглавия; прочетена секция не се повтаря на други нива"
+        className={`flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border w-fit ${smartMode?"border-violet-500 text-violet-300 bg-violet-950/30":"border-stone-700 text-stone-400 hover:border-violet-500 hover:text-violet-300"}`}>
+        ✨ Умен режим: {smartMode?"вкл.":"изкл."}
+      </button>}
+      {onShare && <button onClick={onShare} className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-sky-500 hover:text-sky-300 w-fit">🔗 {shareMsg||"Сподели"}</button>}
       {onDesktop && <button onClick={onDesktop} className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-400 hover:border-amber-500 w-fit">🖥 Desktop</button>}
       <PodcastExport topic={topic} hierarchy={hierarchy} level={currentLevel}/>
     </div>
