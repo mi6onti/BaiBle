@@ -141,6 +141,41 @@ async function saveJSON(key, value) {
     try { return await legacySave(key, value); } catch(e2){ return {ok:false,detail:`${e2.name}: ${e2.message}`}; }
   }
 }
+// pick the plan level whose topics hold the most generated sections, and for each topic its richest level —
+// a plan switched to a level nobody opened yet would otherwise show the recipient nothing
+function guestPrepareSnapshot(snap){
+  const nodeKeys = Object.keys(snap.nodes||{});
+  const pl = snap.plan||{}, byL = pl.byLevel||{};
+  const nodesOf = slug => nodeKeys.filter(k=>k.split("/")[1]===slug);
+  let best = pl.activeLevel, bestN = -1;
+  for(const [L,list] of Object.entries(byL)){
+    const n = (list||[]).reduce((t,x)=>t+nodesOf(slugify(x?.name||"")).length, 0);
+    if(n>bestN || (n===bestN && Number(L)===pl.activeLevel)){ bestN=n; best=Number(L); }
+  }
+  const withRichestLevel = sub => {
+    const slug = slugify(sub?.name||"");
+    const levels = Object.keys(sub?.byLevel||{});
+    if(!levels.length) return sub;
+    let bl = sub.activeLevel, bn = -1;
+    for(const L of levels){
+      const n = nodesOf(slug).filter(k=>k.split("/")[2]===`L${L}`).length;
+      if(n>bn || (n===bn && Number(L)===sub.activeLevel)){ bn=n; bl=Number(L); }
+    }
+    return {...sub, activeLevel:bl};
+  };
+  const subs = (byL[best]||[]).map(withRichestLevel);
+  // topics that only exist under another plan level but have content are added too, so nothing shared is lost
+  const have = new Set(subs.map(x=>slugify(x?.name||"")));
+  for(const [L,list] of Object.entries(byL)){
+    if(Number(L)===best) continue;
+    for(const x of (list||[])){
+      const slug = slugify(x?.name||"");
+      if(!x || x.isTrailer || have.has(slug) || !nodesOf(slug).length) continue;
+      have.add(slug); subs.push(withRichestLevel(x));
+    }
+  }
+  return {...snap, plan:{...pl, activeLevel:best, byLevel:{...byL, [best]:subs}}};
+}
 async function fetchShareSnapshot(shareId){
   const key = `share:${shareId}`;
   let snap = null;
@@ -1605,7 +1640,7 @@ function topicLabel(t){
 }
 function Spinner({label}){return <div className="flex items-center gap-2 text-stone-400 text-sm py-6 justify-center"><Loader2 size={16} className="animate-spin"/><span className="font-mono-cal">{label}</span></div>;}
 function ErrorNote({message,onRetry}){return <div className="border border-red-900/50 bg-red-950/30 rounded p-3 text-sm text-red-200 flex items-center justify-between gap-3"><span className="break-all">{message}</span>{onRetry&&<button onClick={onRetry} className="text-amber-400 hover:text-amber-300 font-mono-cal text-xs shrink-0">Retry</button>}</div>;}
-function TuneButton({tuned,onClick}){return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
+function TuneButton({tuned,onClick}){if(GUEST)return null;return <button onClick={onClick} disabled={tuned} className={`font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors ${tuned?"border-amber-600/40 text-amber-500 bg-amber-950/30 cursor-default":"border-stone-600 text-stone-300 hover:border-amber-500 hover:text-amber-400"}`}>{tuned?"Харесва ✓":"Харесвам"}</button>;}
 
 function OverviewPicker({title,levels,loading,error,onPick,picking,onBack,existingLevels}){
   return <div className="space-y-4">
@@ -1690,7 +1725,7 @@ function Aperture() {
       if(shareId && !GUEST){
         const snap = await fetchShareSnapshot(shareId);
         if(!snap){ setGuestMissing(true); setBooting(false); return; }
-        GUEST = snap;
+        GUEST = guestPrepareSnapshot(snap);
       }
       const t=await loadJSON("topics",[]);
       const p=await loadJSON("prefs",{abstraction:{},personality:{}});
@@ -1958,7 +1993,7 @@ function Aperture() {
       const {shareId:_old, ...planCopy} = planData;
       const snap = {v:1, sharedAt:Date.now(), plan:planCopy, nodes,
         topic:{id:currentTopic.id, name:currentTopic.name, prompt:currentTopic.prompt, createdAt:currentTopic.createdAt}};
-      const r = await saveJSON(`share:${shareId}`, snap);
+      const r = await saveJSON(`share:${shareId}`, guestPrepareSnapshot(snap));
       if(!r.ok) throw new Error(r.detail||"неуспешен запис");
       if(planData.shareId!==shareId){ const up={...planData, shareId}; setPlanData(up); await saveJSON(`plan:${currentTopic.id}`, up); }
       const url = `${location.origin}${location.pathname}?share=${shareId}`;
@@ -4036,7 +4071,7 @@ function Aperture() {
             desktopMode ? <DesktopGrid topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
               onOpen={k=>{ const first=hierarchy.findIndex(x=>!isTrailerItem(x)); if(first>=0) openDesktopSection(first,k); }}
               onExit={()=>{setDesktopMode(false);setDesktopError(null);}}/> :
-            <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={()=>{setDesktopMode(true);setDesktopError(null);}}
+            <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:()=>{setDesktopMode(true);setDesktopError(null);}}
               onPick={pickSubtopic}
               onLevelCheck={guestPlanId?null:runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
@@ -4604,7 +4639,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
       </button>}
       {onShare && <button onClick={onShare} className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-sky-500 hover:text-sky-300 w-fit">🔗 {shareMsg||"Сподели"}</button>}
       {onDesktop && <button onClick={onDesktop} className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-400 hover:border-amber-500 w-fit">🖥 Desktop</button>}
-      <PodcastExport topic={topic} hierarchy={hierarchy} level={currentLevel}/>
+      {!guest && <PodcastExport topic={topic} hierarchy={hierarchy} level={currentLevel}/>}
     </div>
 
     {onEvolve && <EvolvePlanButton onEvolve={onEvolve} evolving={evolving}/>}
@@ -4655,12 +4690,14 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
       {hierarchy.map((s,i)=>{
         const isTr = isTrailerItem(s);
         if(isTr && (smartMode || hierarchy.some(x=>x.isNewsStory))) return null;
-        if(guest && !visibleSections(s).length) return null;
-        return <button key={i} onClick={()=>onPick(i)}
-          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isTr?"border-amber-700 bg-amber-950/20 hover:border-amber-400":"border-stone-800 hover:border-amber-600/50"}`}>
+        const empty = guest && !visibleSections(s).length;
+        if(empty && isTr) return null;
+        return <button key={i} onClick={()=>!empty&&onPick(i)} disabled={empty}
+          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${empty?"border-stone-800/60 opacity-40 cursor-default":isTr?"border-amber-700 bg-amber-950/20 hover:border-amber-400":"border-stone-800 hover:border-amber-600/50"}`}>
           <span className={`font-read flex items-center gap-2 ${isTr?"text-amber-300 font-medium":"text-stone-100"}`}>
             {isTr && <span>🎬</span>}
             {s.name}
+            {empty && <span className="font-mono-cal text-[10px] text-stone-500">· още не е разгледана</span>}
           </span>
           <span className={isTr?"text-amber-600 group-hover:text-amber-400":"text-stone-600 group-hover:text-amber-500"}><ChevronRight size={16}/></span>
         </button>;
@@ -4789,10 +4826,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-yellow-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Основополагащи теми — избери коя да разгърнеш в отделен план.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryPreface}/>}
@@ -4810,10 +4847,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-green-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Къде другаде се среща и използва това понятие — избери приложение да разгърнеш в отделен план.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryNext}/>}
@@ -4831,10 +4868,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-indigo-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">🌀 Inception</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Промптове, които AI би задал на себе си, за да усвои това знание максимално ефективно — избери един да разгърнеш в отделен план.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryInception}/>}
@@ -4852,10 +4889,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-lime-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryGlossary}/>}
       <GlossaryPanel loading={loadingLevels} terms={nodeData?.terms||[]} tuned={!!nodeData?.tunedGlossary} onTune={onTuneGlossary} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
@@ -4872,10 +4909,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-sky-600 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryEssay}/>}
       <EssayPanel loading={loadingLevels} essay={nodeData?.essay||""} tuned={!!nodeData?.tunedEssay} onTune={onTuneEssay} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
@@ -4892,10 +4929,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-emerald-600 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryExamples}/>}
       <ExamplesPanel loading={loadingLevels} examples={nodeData?.examples||""} tuned={!!nodeData?.tunedExamples} onTune={onTuneExamples} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
@@ -4912,10 +4949,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-blue-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Част от линковете са търсения вместо конкретни статии — AI-то не може да провери дали точна страница все още съществува.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryResources}/>}
@@ -4933,10 +4970,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-orange-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryEncyclopedia}/>}
       <EncyclopediaPanel loading={loadingLevels} entries={nodeData?.entries||[]} tuned={!!nodeData?.tunedEnc} onTune={onTuneEncyclopedia}/>
@@ -4953,10 +4990,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-slate-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Как е изглеждал светът преди — за да усетиш реалната стойност на това, което учиш.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryBefore}/>}
@@ -4974,10 +5011,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-zinc-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Как се съотнася с други подходи — за да разбереш кога точно да избереш този.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryCompare}/>}
@@ -4995,10 +5032,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-gray-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери годините преди да разчиташ на тях другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryTimeline}/>}
@@ -5016,10 +5053,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-slate-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">🦋 Хипотетично — какво щеше да е различно, ако това никога не се беше случило.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryButterfly}/>}
@@ -5037,10 +5074,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-emerald-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">🧪 Безопасни експерименти с домашни средства — за да провериш идеята сам, не само да я прочетеш.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryExperiments}/>}
@@ -5058,10 +5095,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-green-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Какви нужди и възможности отваря тази новина, кои посоки може да ускори и кои компании може да засегне. Анализ, не финансов съвет — AI-то вижда само заглавието.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryInvestment}/>}
@@ -5079,10 +5116,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-violet-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Как според теб ще се развие историята? Избери сценарий — прогнозата ти се запазва с датата, за да провериш по-късно дали си познал.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryPrediction}/>}
@@ -5100,10 +5137,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-fuchsia-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryInterview}/>}
       <InterviewPanel loading={loadingLevels} intro={nodeData?.interviewIntro||""} questions={nodeData?.interviewQuestions||[]} answers={nodeData?.interviewAnswers||{}} onAnswerChange={onInterviewAnswerChange} tuned={!!nodeData?.tunedInterview} onTune={onTuneInterview}/>
@@ -5120,10 +5157,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-pink-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
@@ -5141,10 +5178,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-blue-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери заглавието и автора преди да разчиташ на препоръката.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryBooks}/>}
@@ -5162,10 +5199,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-purple-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryBible}/>}
       <BiblePanel loading={loadingLevels} verses={nodeData?.verses||[]} wwjd={nodeData?.wwjd||[]} tuned={!!nodeData?.tunedBible} onTune={onTuneBible} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
@@ -5182,10 +5219,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-violet-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Нестандартни, предизвикателни подходи — не по учебник.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryActionPlan}/>}
@@ -5203,10 +5240,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-teal-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetrySocratic}/>}
       <SocraticPanel loading={loadingLevels} steps={nodeData?.steps||[]} tuned={!!nodeData?.tunedSocratic} onTune={onTuneSocratic} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
@@ -5223,10 +5260,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-rose-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Провери се — 6 въпроса от различен тип по тази тема.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryTest}/>}
@@ -5244,10 +5281,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-red-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Линковете водят към търсене (не конкретен продукт) — приоритет на български магазини, после чужбина.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryShopping}/>}
@@ -5265,10 +5302,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-cyan-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Интерактивна демонстрация — предварително скриптирано поведение, не истинска система.</p>
       {error&&<ErrorNote message={error} onRetry={onRetrySimulation}/>}
@@ -5286,10 +5323,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-amber-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onSelectCrossword}/>}
       <GamesPanel loading={loadingLevels} nodeData={nodeData} tuned={!!nodeData?.tunedGames} onTune={onTuneGames}
@@ -5309,10 +5346,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-cyan-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">📱 App Store</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Измислени идеи за нови начини на представяне на тази тема — вдъхновение, не реални приложения.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryAppIdeas}/>}
@@ -5330,10 +5367,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-fuchsia-500 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Честно споделяне от AI — какво не разбира или не може по тази тема.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryConfession}/>}
@@ -5351,10 +5388,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
           <div className="font-mono-cal text-xs text-orange-400 flex items-center gap-1"><Sparkles size={12}/> {topic} › {subtopic}</div>
           <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
         </div>
-        <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+        {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
           className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
           {unitConfused?"Неясно ✓":"Не разбирам"}
-        </button>
+        </button>}
       </div>
       <p className="font-read text-stone-500 text-sm italic">Изцяло измислено, за смях — последните две са фиктивен, комедиен глас на AI, не истински мнения или разговори.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryHumor}/>}
@@ -5387,10 +5424,10 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
         <div className="font-mono-cal text-xs text-stone-500">{topic} › {subtopic}</div>
         <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
       </div>
-      <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
+      {!GUEST && <button onClick={unitConfused?onUnitUnconfused:onUnitConfused}
         className={`shrink-0 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border transition-colors mt-1 ${unitConfused?"border-red-700 text-red-400 bg-red-950/30":"border-stone-700 text-stone-400 hover:border-red-700 hover:text-red-400"}`}>
         {unitConfused?"Неясно ✓":"Не разбирам"}
-      </button>
+      </button>}
     </div>
     <div className="flex gap-1 border-b border-stone-800">
       {TABS.map(t=>(
@@ -6777,3 +6814,4 @@ ReactDOM.createRoot(document.getElementById("root")).render(<Aperture/>);
 </script>
 </body>
 </html>
+
