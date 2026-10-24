@@ -91,6 +91,9 @@ const PERSONALITIES = [
 const KV_FN = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/kv";
 let GUEST = null;            // read-only snapshot of a shared plan (opened via ?share=…)
 let onOwnerAuthFail = null;  // set by the app: shows the owner-key screen
+let GUEST_NS = "";           // localStorage prefix for what the recipient generates while exploring a shared plan
+function guestOverlayGet(key){ try{ const r=localStorage.getItem(GUEST_NS+key); return r==null?undefined:JSON.parse(r); }catch{ return undefined; } }
+function guestOverlaySet(key,value){ try{ localStorage.setItem(GUEST_NS+key, JSON.stringify(value)); return {ok:true}; }catch(e){ return {ok:false, detail:e.message}; } }
 function ownerToken(){ try{ return localStorage.getItem("aperture:ownerToken")||""; }catch{ return ""; } }
 async function kvCall(body, asOwner=true){
   const headers = {"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`,"apikey":SUPABASE_KEY};
@@ -124,7 +127,7 @@ function guestGet(key, fallback){
   return fallback;
 }
 async function loadJSON(key, fallback) {
-  if (GUEST) return guestGet(key, fallback);
+  if (GUEST){ const o = guestOverlayGet(key); return o!==undefined ? o : guestGet(key, fallback); }
   if (USE_LOCAL) { try { const r=localStorage.getItem("aperture:"+key); return r?JSON.parse(r):fallback; } catch{return fallback;} }
   try { const d = await kvCall({op:"get",key}); return d.found ? d.value : fallback; }
   catch(e){
@@ -133,7 +136,7 @@ async function loadJSON(key, fallback) {
   }
 }
 async function saveJSON(key, value) {
-  if (GUEST) return {ok:true}; // shared plans are read-only
+  if (GUEST) return guestOverlaySet(key, value); // never written to the owner's data
   if (USE_LOCAL) { try{localStorage.setItem("aperture:"+key,JSON.stringify(value));return{ok:true};}catch(e){return{ok:false,detail:e.message};} }
   try { await kvCall({op:"set",key,value}); return {ok:true}; }
   catch(e){
@@ -163,7 +166,13 @@ function guestPrepareSnapshot(snap){
     }
     return {...sub, activeLevel:bl};
   };
-  const subs = (byL[best]||[]).map(withRichestLevel);
+  const toSmart = sub => {
+    if(!sub || sub.isTrailer) return sub;
+    const r = withRichestLevel(sub);
+    if(isSmartSub(r)) return r;
+    return {...r, byLevel:{}, activeLevel:null, guestLevel: r.activeLevel || best};
+  };
+  const subs = (byL[best]||[]).map(toSmart);
   // topics that only exist under another plan level but have content are added too, so nothing shared is lost
   const have = new Set(subs.map(x=>slugify(x?.name||"")));
   for(const [L,list] of Object.entries(byL)){
@@ -171,10 +180,10 @@ function guestPrepareSnapshot(snap){
     for(const x of (list||[])){
       const slug = slugify(x?.name||"");
       if(!x || x.isTrailer || have.has(slug) || !nodesOf(slug).length) continue;
-      have.add(slug); subs.push(withRichestLevel(x));
+      have.add(slug); subs.push(toSmart(x));
     }
   }
-  return {...snap, plan:{...pl, activeLevel:best, byLevel:{...byL, [best]:subs}}};
+  return {...snap, plan:{...pl, smartMode:true, activeLevel:best, byLevel:{...byL, [best]:subs}}};
 }
 async function fetchShareSnapshot(shareId){
   const key = `share:${shareId}`;
@@ -192,7 +201,6 @@ function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2
 
 /* ── Claude API ──────────────────────────────────────────────────────── */
 async function callClaude(user, maxTokens=600, attempt=0) {
-  if(GUEST) throw new Error("Споделеният план е само за четене.");
   let res;
   try {
     res = await fetch(CLAUDE_PROXY,{method:"POST",
@@ -496,7 +504,6 @@ Output EXACTLY five sections using these markers, nothing before the first marke
 
 // raw text call (no JSON) — safer for long prose that may contain quotes/punctuation
 async function callClaudeRaw(user, maxTokens=1500, attempt=0, cap=4000) {
-  if(GUEST) throw new Error("Споделеният план е само за четене.");
   let res;
   try {
     res = await fetch(CLAUDE_PROXY,{method:"POST",
@@ -1613,8 +1620,7 @@ function hiddenByOtherLevel(subItem, it){
 const GUEST_HIDDEN = ["isPreface","isNext","isInception"]; // they open other (not shared) plans
 function guestHasNode(subItem, it){
   if(!GUEST) return true;
-  if(GUEST_HIDDEN.some(k=>it&&it[k])) return false;
-  return !!GUEST.nodes?.[`${GUEST.topic.id}/${slugify(subItem.name)}/L${subItem.activeLevel}/${slugify(subName(it))}`];
+  return !GUEST_HIDDEN.some(k=>it&&it[k]);
 }
 function visibleSections(subItem){ return (getSubsubList(subItem)||[]).filter(it=>!hiddenByOtherLevel(subItem,it) && guestHasNode(subItem,it)); }
 function isSmartSub(sub){ return !!(sub && (sub.isNewsStory || sub.smart)); }
@@ -1726,6 +1732,13 @@ function Aperture() {
         const snap = await fetchShareSnapshot(shareId);
         if(!snap){ setGuestMissing(true); setBooting(false); return; }
         GUEST = guestPrepareSnapshot(snap);
+        GUEST_NS = `aperture:share:${shareId}:`;
+        try{ // the owner re-shared newer content → start the recipient's exploration over from it
+          if(localStorage.getItem(GUEST_NS+"_sharedAt")!==String(snap.sharedAt)){
+            Object.keys(localStorage).filter(k=>k.startsWith(GUEST_NS)).forEach(k=>localStorage.removeItem(k));
+            localStorage.setItem(GUEST_NS+"_sharedAt", String(snap.sharedAt));
+          }
+        }catch{}
       }
       const t=await loadJSON("topics",[]);
       const p=await loadJSON("prefs",{abstraction:{},personality:{}});
@@ -2118,7 +2131,7 @@ function Aperture() {
     setLevelCheck(null);
     setSubtopicIdx(i);
     const sub = hierarchy[i];
-    const topicLevel = planData?.activeLevel;
+    const topicLevel = (GUEST && sub.guestLevel) || planData?.activeLevel; // shared: start where the owner's content is
 
     // if content for the plan's level already exists (generated before), just make sure it's active and go straight in
     if(sub.byLevel && sub.byLevel[topicLevel] && sub.byLevel[topicLevel].length){
@@ -4098,7 +4111,7 @@ function Aperture() {
               onChangeLevel={(guestPlanId||isSmartSub(hierarchy[subtopicIdx]))?null:()=>openSubtopicLevelPicker(subtopicIdx)}
               currentLevel={hierarchy[subtopicIdx].activeLevel}
               onGenerateAll={guestPlanId?null:()=>generateAllContentForSubtopic(subtopicIdx)}
-              onReadMore={(!guestPlanId && isSmartSub(hierarchy[subtopicIdx]) && (hierarchy[subtopicIdx].activeLevel||1)<5)?()=>advanceSmartTopic(subtopicIdx):null} generatingAll={generatingAll} genAllProgress={genAllProgress} genAllError={genAllError}/>
+              onReadMore={(isSmartSub(hierarchy[subtopicIdx]) && (hierarchy[subtopicIdx].activeLevel||1)<5)?()=>advanceSmartTopic(subtopicIdx):null} generatingAll={generatingAll} genAllProgress={genAllProgress} genAllError={genAllError}/>
           ):(
             <>{desktopApp && <DesktopBar appKey={desktopApp} hierarchy={hierarchy} subIdx={subtopicIdx} error={desktopError}
               onPickTopic={i=>openDesktopSection(i,desktopApp)} onExit={exitDesktopApp}/>}
@@ -4690,14 +4703,11 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
       {hierarchy.map((s,i)=>{
         const isTr = isTrailerItem(s);
         if(isTr && (smartMode || hierarchy.some(x=>x.isNewsStory))) return null;
-        const empty = guest && !visibleSections(s).length;
-        if(empty && isTr) return null;
-        return <button key={i} onClick={()=>!empty&&onPick(i)} disabled={empty}
-          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${empty?"border-stone-800/60 opacity-40 cursor-default":isTr?"border-amber-700 bg-amber-950/20 hover:border-amber-400":"border-stone-800 hover:border-amber-600/50"}`}>
+        return <button key={i} onClick={()=>onPick(i)}
+          className={`w-full text-left px-3 py-3 rounded border flex items-center justify-between group ${isTr?"border-amber-700 bg-amber-950/20 hover:border-amber-400":"border-stone-800 hover:border-amber-600/50"}`}>
           <span className={`font-read flex items-center gap-2 ${isTr?"text-amber-300 font-medium":"text-stone-100"}`}>
             {isTr && <span>🎬</span>}
             {s.name}
-            {empty && <span className="font-mono-cal text-[10px] text-stone-500">· още не е разгледана</span>}
           </span>
           <span className={isTr?"text-amber-600 group-hover:text-amber-400":"text-stone-600 group-hover:text-amber-500"}><ChevronRight size={16}/></span>
         </button>;
@@ -6814,4 +6824,3 @@ ReactDOM.createRoot(document.getElementById("root")).render(<Aperture/>);
 </script>
 </body>
 </html>
-
