@@ -62,7 +62,7 @@ const AUTO_SELECT_LEVEL = true;
 
 // budget a section's word count as a share of the level's total reading-time budget (~180 wpm)
 function wb(level, share){
-  const meta = LEVELS.find(l=>l.level===level) || LEVELS[2];
+  const meta = lvMeta(level) || LEVELS[2];
   return Math.round(meta.minutes*180*share);
 }
 // scaled item/option counts for the Test section, by level
@@ -287,7 +287,7 @@ async function genAllPersonalities(topic, sub, subsub) {
 
 // T.4: blend only uses abstraction (levels) ratings
 async function genBlend(topic, sub, subsub, level) {
-  const lvl = LEVELS.find(l=>l.level===level);
+  const lvl = lvMeta(level);
   const raw = await callClaudeRaw(
     `Topic: "${topic}" > "${sub}" > "${subsub}". Write ONE explanation (90-130 words) in the style of "${lvl?.label}" (${lvl?.hint}). Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write it in the SAME language as the topic chain above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically). Output ONLY the explanation, wrapped exactly like this and nothing else before or after: ###TEXT###the explanation here###TEXT_END###`,
     800
@@ -296,6 +296,31 @@ async function genBlend(topic, sub, subsub, level) {
 }
 
 // overview: 5-level explanation of an ENTIRE subject (topic or subtopic), same length/style as a leaf-unit explanation
+// Level metadata. In a plan started in Умен режим the 5 levels are named after the learner's own goal
+// (plan.levelNames); generators then get that goal as the level label/hint. Depth/length still follow the base level.
+let PLAN_LEVELS = null;
+function lvMeta(level, custom){
+  const base = LEVELS.find(l=>l.level===level);
+  if(!base) return base;
+  const c = (custom||PLAN_LEVELS||[]).find(x=>x && x.level===level && x.name);
+  return c ? {...base, label:c.name, hint:`${c.why||c.name} — depth comparable to "${base.label}" (${base.hint})`, baseLabel:base.label} : base;
+}
+// Умен режим at the prompt: 5 depth levels made for THIS goal — what you will be able to do at each, and why stop there
+async function genGoalLevels(prompt){
+  const raw = await callClaudeRaw(
+`A learner wants to learn: "${prompt}". Instead of generic abstraction levels (analogy, example, mechanics, definition, depth), define 5 levels of DEPTH made for THIS specific subject and the purpose implied by the prompt — how deeply they want to learn it, and why.
+Level 1 is the lightest (quick, essential understanding — the fastest way to what matters), level 5 the deepest (expert command). Each level is named after what the learner will be able to DO or understand at that depth, never a generic label.
+For each level give: NAME (2-6 words, the outcome, e.g. "Да разбирам новините за нея", "Да го ползвам в работата си") and WHY (1-2 sentences: what you will understand or be able to do at this depth, and for whom or why it is enough).
+Write in the SAME language as the prompt (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Output EXACTLY in this format, nothing before the first marker or after the last one: ###N1### name ###W1### why ###N2### name ###W2### why ###N3### name ###W3### why ###N4### name ###W4### why ###N5### name ###W5### why ###END###`, 1200);
+  const f = extractSequentialFields(raw, ["N1","W1","N2","W2","N3","W3","N4","W4","N5","W5"]);
+  return LEVELS.map(m=>{
+    const name = (f[`N${m.level}`]||"").replace(/^[„“"']+|[“”"']+$/g,"").trim() || m.label;
+    const why = (f[`W${m.level}`]||"").trim();
+    return {level:m.level, name, why, text:why||name};
+  });
+}
+
 async function genOverviewLevels(subjectLabel, newsStories) {
   const levelDescs = LEVELS.map(m=>`Level ${m.level} ("${m.label}", ${m.hint})`).join("; ");
   // news plans: the overview must be about the ACTUAL headlines in the plan, not about "the news" in general
@@ -418,7 +443,7 @@ async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
 // (see AUTO_SELECT_LEVEL config) — replaces browsing all 5 abstraction levels per term.
 async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
   const lvl = levelHint?.level||3;
-  const meta = LEVELS.find(l=>l.level===lvl) || LEVELS[2];
+  const meta = lvMeta(lvl) || LEVELS[2];
   // fixed per-level targets: level1 = 2-3 sentences just to orient; level3 = ~10-15 sec read (~40-55 words)
   const ranges = {1:[15,25], 2:[25,40], 3:[40,55], 4:[55,75], 5:[75,100]};
   const [lo,hi] = ranges[lvl]||ranges[3];
@@ -477,7 +502,7 @@ async function genLevelCheck(topic, hierarchy, prefs, nodeDataMap) {
   }
 
   const avgLowLevel = lowLevelCount>0 ? Math.round(lowLevelSum/lowLevelCount) : null;
-  const topLvl=LEVELS.find(l=>l.level===Number(topPreferred(prefs.abstraction,null)))?.label;
+  const topLvl=lvMeta(Number(topPreferred(prefs.abstraction,null)))?.label;
   const raw=await callClaudeRaw(
     `Learner studying "${topic}". Subtopics: ${hierarchy.map(s=>s.name).join(", ")}.
 Understood adequately or solidly (level 3+ explanations liked — "Mechanics", "Definition", or "Depth"): ${solidUnits.join(", ")||"none yet"}.
@@ -1652,17 +1677,17 @@ function OverviewPicker({title,levels,loading,error,onPick,picking,onBack,existi
   return <div className="space-y-4">
     {onBack && <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal"><ChevronLeft size={16}/> назад</button>}
     <h2 className="font-display text-xl font-bold text-stone-100">{title}</h2>
-    <p className="font-read text-stone-400 text-sm">Избери нивото на обяснение, което ти допада — оттам ще изградим темите.</p>
+    <p className="font-read text-stone-400 text-sm">{levels.some(l=>l.name) ? "Колко задълбочено искаш да го научиш? Нивата са според целта ти — оттам ще изградим темите." : "Избери нивото на обяснение, което ти допада — оттам ще изградим темите."}</p>
     {loading && <Spinner label="генерирам 5 нива на обяснение…"/>}
     {error && <ErrorNote message={error}/>}
     {!loading && levels.length>0 && (
       <div className="space-y-3">
         {levels.map(lv=>{
-          const meta=LEVELS.find(l=>l.level===lv.level);
+          const meta=lvMeta(lv.level);
           const already = existingLevels && existingLevels.includes(lv.level);
           return <div key={lv.level} className={`rounded border p-4 ${already?"border-emerald-800 bg-emerald-950/10":"border-stone-800"}`}>
             <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2 flex items-center gap-2">
-              Ниво {lv.level} · {meta?.label}
+              Ниво {lv.level} · {lv.name||meta?.label}
               {already && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/50 text-emerald-500">вече генерирано</span>}
             </div>
             <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
@@ -1708,11 +1733,13 @@ function Aperture() {
   const [showTrash,setShowTrash]       = useState(false);
   const [topicOverview,setTopicOverview]       = useState(null); // {loading,levels,prompt,name,id,newTopic,learningProfile,existingPlanData}
   const [subtopicOverview,setSubtopicOverview] = useState(null); // {subIdx,loading,levels,error,confirming}
-  const [planData,setPlanData]                 = useState(null); // {name,prompt,overviewLevels,byLevel:{level:subtopicsArr},activeLevel}
+  const [planData,_setPlanData]                 = useState(null); // {name,prompt,overviewLevels,byLevel:{level:subtopicsArr},activeLevel}
 
   const canBlend = Object.keys(prefs.abstraction||{}).length>0;
   const topLevel = topPreferred(prefs.abstraction,null);
   const [showNewsAreas,setShowNewsAreas] = useState(false);
+  const [smartStart,setSmartStart] = useState(false); // Умен режим chosen at the prompt
+  const setPlanData = v => { PLAN_LEVELS = (v && v.levelNames) || null; _setPlanData(v); };
   const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
   const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
   const [desktopError,setDesktopError] = useState(null);
@@ -1804,8 +1831,8 @@ function Aperture() {
       const id=slugify(trimmed)+"-"+Date.now().toString(36);
       const newTopic={id,name,prompt:trimmed,createdAt:Date.now()};
       setCurrentTopic(newTopic);
-      const levels=await genOverviewLevels(trimmed);
-      setTopicOverview({loading:false, levels, prompt:trimmed, name, id, newTopic, learningProfile});
+      const levels = smartStart ? await genGoalLevels(trimmed) : await genOverviewLevels(trimmed);
+      setTopicOverview({loading:false, levels, prompt:trimmed, name, id, newTopic, learningProfile, smart:smartStart});
     }catch(e){
       setTopicOverview(null);
       setHomeError(`Грешка: ${e.message}`);
@@ -1834,7 +1861,7 @@ function Aperture() {
       setTopicOverview(null);
       setLoadingH(true);
       try{
-        const levelMeta = LEVELS.find(l=>l.level===level);
+        const levelMeta = lvMeta(level, pd.levelNames);
         // a news plan keeps its real headlines at every level — never swap them for AI-invented subtopics
         const names = pd.newsStories ? pd.newsStories.map(st=>st.title) : await genSubtopicNames(pd.prompt, null, levelMeta);
         const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
@@ -1850,7 +1877,7 @@ function Aperture() {
     }
 
     // CASE 2: brand-new topic OR resuming an existing topic that has no cached plan yet
-    const {prompt,name,id,newTopic,learningProfile,resumingExisting,newsStories} = topicOverview;
+    const {prompt,name,id,newTopic,learningProfile,resumingExisting,newsStories,smart} = topicOverview;
     if(newTopic && !resumingExisting){
       const next=[newTopic,...topics.filter(t=>t.id!==newTopic.id)];
       setTopics(next); await saveJSON("topics",next);
@@ -1859,12 +1886,12 @@ function Aperture() {
     setTopicOverview(null);
     setLoadingH(true);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===level);
+      const levelMeta = lvMeta(level, smart ? topicOverview.levels : null);
       const names = newsStories ? newsStories.map(st=>st.title) : await genSubtopicNames(prompt, learningProfile, levelMeta);
       const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
       const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
-      const subtopics = [trailerItem, ...(newsStories ? newsStories.map(newsStorySubtopic) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
-      const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level, ...(newsStories?{newsStories}:{})};
+      const subtopics = [...(smart?[]:[trailerItem]), ...(newsStories ? newsStories.map(newsStorySubtopic) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
+      const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level, ...(newsStories?{newsStories}:{}), ...(smart?{smartMode:true, levelNames:topicOverview.levels}:{})};
       setPlanData(newPlan); setHierarchy(subtopics);
       await saveJSON(`plan:${id}`, newPlan);
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
@@ -1879,7 +1906,7 @@ function Aperture() {
     setLoadingH(true);
     try{
       const level = planData.activeLevel;
-      const levelMeta = LEVELS.find(l=>l.level===level);
+      const levelMeta = lvMeta(level);
       const {name, prompt} = await genFusedTopic(currentTopic.prompt||currentTopic.name, idea, levelMeta);
 
       const updatedTopic = {...currentTopic, name, prompt, newsKey:undefined};
@@ -1944,7 +1971,7 @@ function Aperture() {
     const sub = H0?.[subIdx];
     if(!sub || !P0) return;
     const L = level || sub.activeLevel || P0.activeLevel || 1;
-    const levelMeta = LEVELS.find(l=>l.level===L);
+    const levelMeta = lvMeta(L);
     const topicPrompt = currentTopic.prompt||currentTopic.name;
     setDesktopError(null);
     let list = sub.byLevel?.[L];
@@ -2028,7 +2055,7 @@ function Aperture() {
     if(!sub || !planData) return;
     const L = (sub.activeLevel || planData.activeLevel || 1) + 1;
     if(L>5) return;
-    const levelMeta = LEVELS.find(l=>l.level===L);
+    const levelMeta = lvMeta(L);
     setGenAllError(null); setLoadingH(true);
     try{
       let list = sub.byLevel?.[L], smartPlan = sub.smartPlan;
@@ -2161,7 +2188,7 @@ function Aperture() {
       const updPrefs={...prefs, abstraction:{...prefs.abstraction,[topicLevel]:(prefs.abstraction?.[topicLevel]||0)+1}};
       setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
 
-      const levelMeta = LEVELS.find(l=>l.level===topicLevel);
+      const levelMeta = lvMeta(topicLevel);
       const rawSubsubtopics = (sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
@@ -2251,7 +2278,7 @@ function Aperture() {
 
     setSubtopicOverview(prev=>({...prev, confirming:true, error:null}));
     try{
-      const levelMeta = LEVELS.find(l=>l.level===level);
+      const levelMeta = lvMeta(level);
       const rawSubsubtopics = (sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
@@ -2618,7 +2645,7 @@ function Aperture() {
   async function doLoadGlossary(id, sub, subLevel, base, termNames){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const terms = await genGlossary(currentTopic.prompt||currentTopic.name, sub, termNames, levelMeta);
       const updated = {...base, terms, glossaryLevel:subLevel};
       setNodeData(updated);
@@ -2643,7 +2670,7 @@ function Aperture() {
   async function doLoadPreface(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const names = await genPrefaceTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const entries = names.map(n=>({name:n}));
       const updated = {...base, entries, prefaceLevel:subLevel};
@@ -2675,7 +2702,7 @@ function Aperture() {
 
     const subItem = hierarchy[subIdx];
     const level = subItem.activeLevel || planData.activeLevel || 3;
-    const levelMeta = LEVELS.find(l=>l.level===level);
+    const levelMeta = lvMeta(level);
 
     setLoadingH(true);
     try{
@@ -2752,7 +2779,7 @@ function Aperture() {
   async function doLoadNext(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const existingNames = hierarchy.map(s=>s.name);
       const names = await genNextTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta, existingNames);
       const entries = names.map(n=>({name:n}));
@@ -2785,7 +2812,7 @@ function Aperture() {
 
     const subItem = hierarchy[subIdx];
     const level = subItem.activeLevel || planData.activeLevel || 3;
-    const levelMeta = LEVELS.find(l=>l.level===level);
+    const levelMeta = lvMeta(level);
 
     setLoadingH(true);
     try{
@@ -2860,7 +2887,7 @@ function Aperture() {
   async function doLoadInception(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const names = await genInceptionPrompts(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const entries = names.map(n=>({name:n}));
       const updated = {...base, entries, inceptionLevel:subLevel};
@@ -2892,7 +2919,7 @@ function Aperture() {
 
     const subItem = hierarchy[subIdx];
     const level = subItem.activeLevel || planData.activeLevel || 3;
-    const levelMeta = LEVELS.find(l=>l.level===level);
+    const levelMeta = lvMeta(level);
 
     setLoadingH(true);
     try{
@@ -2967,7 +2994,7 @@ function Aperture() {
   async function doLoadEssay(id,sub,subLevel,base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const essay=await genSubtopicEssay(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated={...base, essay, essayLevel:subLevel};
       setNodeData(updated);
@@ -2980,7 +3007,7 @@ function Aperture() {
   async function doLoadExamples(id,sub,subLevel,base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const examples=await genSubtopicExamples(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated={...base, examples, examplesLevel:subLevel};
       setNodeData(updated);
@@ -3005,7 +3032,7 @@ function Aperture() {
   async function doLoadResources(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const resources = await genResources(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, resources, resourcesLevel:subLevel};
       setNodeData(updated);
@@ -3030,7 +3057,7 @@ function Aperture() {
   async function doLoadShopping(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const {items,innovations,services} = await genShoppingList(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, shopItems:items, shopInnovations:innovations, shopServices:services, shopLevel:subLevel};
       setNodeData(updated);
@@ -3055,7 +3082,7 @@ function Aperture() {
   async function doLoadActionPlan(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const stages = await genActionPlan(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, stages, actionPlanLevel:subLevel};
       setNodeData(updated);
@@ -3080,7 +3107,7 @@ function Aperture() {
   async function doLoadSocratic(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const steps = await genSocraticDialogue(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, steps, socraticLevel:subLevel};
       setNodeData(updated);
@@ -3105,7 +3132,7 @@ function Aperture() {
   async function doLoadTest(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const testQuestions = await genTestQuestions(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, testQuestions, testLevel:subLevel};
       setNodeData(updated);
@@ -3130,7 +3157,7 @@ function Aperture() {
   async function doLoadEncyclopedia(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const entries = await genEncyclopedia(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, entries, encLevel:subLevel};
       setNodeData(updated);
@@ -3155,7 +3182,7 @@ function Aperture() {
   async function doLoadQuotes(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const quotes = await genQuotes(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, quotes, quotesLevel:subLevel};
       setNodeData(updated);
@@ -3180,7 +3207,7 @@ function Aperture() {
   async function doLoadBooks(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const books = await genBookAdvice(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, books, booksLevel:subLevel};
       setNodeData(updated);
@@ -3205,7 +3232,7 @@ function Aperture() {
   async function doLoadBible(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const {verses,wwjd} = await genBibleSection(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, verses, wwjd, bibleLevel:subLevel};
       setNodeData(updated);
@@ -3230,7 +3257,7 @@ function Aperture() {
   async function doLoadBefore(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const {before,comparisons} = await genBeforeDiscovery(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, beforeText:before, beforeComparisons:comparisons, beforeLevel:subLevel};
       setNodeData(updated);
@@ -3255,7 +3282,7 @@ function Aperture() {
   async function doLoadCompare(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const approaches = await genApproachComparisons(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, approaches, compareLevel:subLevel};
       setNodeData(updated);
@@ -3280,7 +3307,7 @@ function Aperture() {
   async function doLoadTimeline(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const milestones = await genTimeline(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, milestones, timelineLevel:subLevel};
       setNodeData(updated);
@@ -3305,7 +3332,7 @@ function Aperture() {
   async function doLoadButterfly(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const {scenario,ripples} = await genButterflyEffect(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, butterflyScenario:scenario, butterflyRipples:ripples, butterflyLevel:subLevel};
       setNodeData(updated);
@@ -3330,7 +3357,7 @@ function Aperture() {
   async function doLoadExperiments(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const experiments = await genExperiments(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, experiments, experimentsLevel:subLevel};
       setNodeData(updated);
@@ -3355,7 +3382,7 @@ function Aperture() {
   async function doLoadInvestment(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const {items:investItems, vectors:investVectors, companies:investCompanies} = await genInvestment(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, investItems, investVectors, investCompanies, investLevel:subLevel};
       setNodeData(updated);
@@ -3380,7 +3407,7 @@ function Aperture() {
   async function doLoadPrediction(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const predScenarios = await genPrediction(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, predScenarios, predChoice:null, predAt:null, predLevel:subLevel};
       setNodeData(updated);
@@ -3412,7 +3439,7 @@ function Aperture() {
   async function doLoadInterview(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const {intro,questions} = await genInterview(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, interviewIntro:intro, interviewQuestions:questions, interviewLevel:subLevel};
       setNodeData(updated);
@@ -3437,7 +3464,7 @@ function Aperture() {
   async function doLoadSimulation(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const simHtml = await genSimulation(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, simHtml, simLevel:subLevel};
       setNodeData(updated);
@@ -3467,7 +3494,7 @@ function Aperture() {
     }
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const words = await genCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const puzzle = buildCrossword(words);
       const updated = {...base, gameType:"crossword", crosswordWords:words, crosswordPuzzle:puzzle, gamesLevel:subLevel};
@@ -3486,7 +3513,7 @@ function Aperture() {
     }
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const words = await genCrypticCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const puzzle = buildCrossword(words);
       const updated = {...base, gameType:"cryptic", crypticWords:words, crypticPuzzle:puzzle, gamesLevel:subLevel};
@@ -3505,7 +3532,7 @@ function Aperture() {
     }
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const words = await genOppositesCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const puzzle = buildCrossword(words);
       const updated = {...base, gameType:"opposites", oppositesWords:words, oppositesPuzzle:puzzle, gamesLevel:subLevel};
@@ -3524,7 +3551,7 @@ function Aperture() {
     }
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const groups = await genConnections(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, gameType:"connections", connectionsGroups:groups, gamesLevel:subLevel};
       setNodeData(updated);
@@ -3542,7 +3569,7 @@ function Aperture() {
     }
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const questions = await genMillionaireQuestions(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, gameType:"millionaire", millionaireQuestions:questions, gamesLevel:subLevel};
       setNodeData(updated);
@@ -3574,7 +3601,7 @@ function Aperture() {
   async function doLoadAppIdeas(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const appIdeas = await genAppIdeas(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, appIdeas, appIdeasLevel:subLevel};
       setNodeData(updated);
@@ -3606,7 +3633,7 @@ function Aperture() {
   async function doLoadConfession(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const confession = await genAiConfession(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, confession, confessionLevel:subLevel};
       setNodeData(updated);
@@ -3631,7 +3658,7 @@ function Aperture() {
   async function doLoadHumor(id, sub, subLevel, base){
     setLoadingL(true);setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subLevel);
+      const levelMeta = lvMeta(subLevel);
       const humorEntries = await genHumor(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, humorEntries, humorLevel:subLevel};
       setNodeData(updated);
@@ -3675,7 +3702,7 @@ function Aperture() {
 
     setLoadingL(true); setNodeError(null);
     try{
-      const levelMeta = LEVELS.find(l=>l.level===subItem.activeLevel);
+      const levelMeta = lvMeta(subItem.activeLevel);
       const items = unansweredIdx.map(i=>{
         const q = qs[i];
         const parent = q.parentId ? qs.find(p=>p.id===q.parentId) : null;
@@ -3807,7 +3834,7 @@ function Aperture() {
       let subItem = curHierarchy[subIdx];
       let subsubList = visibleSections(subItem);
       const subLevel = subItem.activeLevel;
-      const subLevelMeta = LEVELS.find(l=>l.level===subLevel);
+      const subLevelMeta = lvMeta(subLevel);
 
       if(!subsubList || !subsubList.length) return; // subtopic must already have a chosen level/units
 
@@ -4002,7 +4029,7 @@ function Aperture() {
       // No difficulty escalation: keep target at the SAME level the learner already showed comfort with
       // (never higher) — the goal is to clarify what confused them and reinforce what's shaky, not push harder.
       const currentTopLevel = topPreferred(prefs.abstraction, null);
-      const currentTopLvlLabel = currentTopLevel ? LEVELS.find(l=>l.level===Number(currentTopLevel))?.label : null;
+      const currentTopLvlLabel = currentTopLevel ? lvMeta(Number(currentTopLevel))?.label : null;
 
       const confusedHint = (levelCheck.missing)
         ? ` Prioritize re-explaining, from a genuinely different angle (different analogy, filling a likely missing prerequisite, or simpler language), the specific things the learner found confusing or unclear: ${levelCheck.missing}.`
@@ -4026,7 +4053,7 @@ function Aperture() {
       // generate at the learner's current comfort level (no extra screen — continuity, not escalation)
       setLoadingH(true);
       const level = Number(currentTopLevel) || 3;
-      const levelMeta = LEVELS.find(l=>l.level===level);
+      const levelMeta = lvMeta(level);
       const overviewLevels = await genOverviewLevels(adaptedPrompt);
       const names = await genSubtopicNames(adaptedPrompt, null, levelMeta);
       const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
@@ -4074,7 +4101,7 @@ function Aperture() {
               onBack={()=>{setShowNewsAreas(false);setHomeError(null);}}/>
           ):!currentTopic?(
             <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
-              onStart={()=>startTopic(topicInput)} topics={activeTopics} deletedTopics={deletedTopics}
+              onStart={()=>startTopic(topicInput)} smartStart={smartStart} onToggleSmartStart={()=>setSmartStart(v=>!v)} topics={activeTopics} deletedTopics={deletedTopics}
               onResume={resumeTopic} onOpenNews={()=>{setHomeError(null);setShowNewsAreas(true);}} error={homeError}
               onDelete={softDeleteTopic} onRestore={restoreTopic}
               showTrash={showTrash} setShowTrash={setShowTrash}/>
@@ -4241,7 +4268,7 @@ function Aperture() {
 }
 
 /* ── Screens ─────────────────────────────────────────────────────────── */
-function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,onOpenNews,error,onDelete,onRestore,showTrash,setShowTrash}){
+function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,onOpenNews,smartStart,onToggleSmartStart,error,onDelete,onRestore,showTrash,setShowTrash}){
   return <div className="space-y-8">
     <div>
       <h1 className="font-display text-2xl font-bold text-stone-100 mb-1">Какво искаш да научиш?</h1>
@@ -4254,6 +4281,11 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
         className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read placeholder:text-stone-500 focus:outline-none focus:border-amber-600"/>
       <button onClick={onStart} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 rounded">Старт</button>
     </div>
+    {onToggleSmartStart && <button onClick={onToggleSmartStart}
+      className={`-mt-5 flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border w-fit ${smartStart?"border-violet-500 text-violet-300 bg-violet-950/30":"border-stone-700 text-stone-400 hover:border-violet-500 hover:text-violet-300"}`}>
+      ✨ Умен режим: {smartStart?"вкл.":"изкл."}
+      <span className="normal-case tracking-normal text-[10px] text-stone-500">{smartStart?"нивата ще са според целта ти":"класически нива"}</span>
+    </button>}
     {error&&<ErrorNote message={error}/>}
     <button onClick={onOpenNews}
       className="w-full text-left px-4 py-3 rounded border border-sky-700/60 bg-sky-950/20 hover:border-sky-400 flex items-center justify-between group">
@@ -4337,7 +4369,7 @@ const PODCAST_DEFAULT_ORDER = ["isPreface","isGlossary","isOverview","isInvestme
 function podcastSectionKey(item){ return (item && typeof item==="object") ? Object.keys(PODCAST_SECTIONS).find(k=>item[k]) : null; }
 function buildPodcastScript(topic, hierarchy, level){
   const L = [];
-  const lvl = LEVELS.find(l=>l.level===level);
+  const lvl = lvMeta(level);
   const title = topicLabel(topic);
   const isNews = (hierarchy||[]).some(s=>s.isNewsStory);
   L.push(`ПОДКАСТ: ${title}`);
@@ -4553,8 +4585,8 @@ function DesktopBar({appKey,hierarchy,subIdx,onPickTopic,onExit,error}){
   </div>;
 }
 function DesktopReadMore({level,onReadMore}){
-  const cur = LEVELS.find(l=>l.level===level);
-  const nxt = LEVELS.find(l=>l.level===(level||1)+1);
+  const cur = lvMeta(level);
+  const nxt = lvMeta((level||1)+1);
   return <div className="mt-6 pt-4 border-t border-stone-800 flex items-center justify-between gap-3">
     <span className="font-mono-cal text-[11px] text-stone-500">Ниво: {cur?.label||"—"}</span>
     {nxt
@@ -4628,7 +4660,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
   const originTopic = topic.originTopicId ? allTopics.find(t=>t.id===topic.originTopicId) : null;
-  const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
+  const currentLevelMeta = currentLevel ? lvMeta(currentLevel) : null;
 
   return <div className="space-y-4">
     <div className="flex items-start justify-between gap-2">
@@ -4718,7 +4750,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
 
 function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress,genAllError,onReadMore}){
   const list = getDisplayList(subtopic) || [];
-  const currentLevelMeta = currentLevel ? LEVELS.find(l=>l.level===currentLevel) : null;
+  const currentLevelMeta = currentLevel ? lvMeta(currentLevel) : null;
   return <div className="space-y-4">
     <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
       <ChevronLeft size={16}/> {topicLabel(topic)}
@@ -4818,7 +4850,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
     </div>
     {onReadMore && <div className="pt-4 border-t border-stone-800 flex items-center justify-between gap-3">
       <span className="font-mono-cal text-[11px] text-stone-500">Ниво: {currentLevelMeta?.label||"—"}</span>
-      <button onClick={onReadMore} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">Прочети още → {LEVELS.find(l=>l.level===(currentLevel||1)+1)?.label}</button>
+      <button onClick={onReadMore} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">Прочети още → {lvMeta((currentLevel||1)+1)?.label}</button>
     </div>}
   </div>;
 }
@@ -6795,7 +6827,7 @@ function LevelsPanel({loading,levels,tuned,onTune,topLevel}){
     </div>
     <div className="space-y-3">
       {levels.map(lv=>{
-        const meta=LEVELS.find(l=>l.level===lv.level),isTuned=tuned.includes(lv.level);
+        const meta=lvMeta(lv.level),isTuned=tuned.includes(lv.level);
         return <div key={lv.level} className={`rounded border p-4 ${isTuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
           <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {lv.level} · {meta?.label}</div>
           <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
@@ -6810,7 +6842,7 @@ function BlendPanel({canBlend,blend,loading,onGenerate,tuned,onTune}){
   if(!canBlend)return <p className="font-read text-stone-500 text-sm py-6">Оцени поне едно ниво от таб Нива — миксът се изгражда на база харесаните обяснения.</p>;
   if(loading)return <Spinner label="смесвам обяснението…"/>;
   if(!blend)return <button onClick={onGenerate} className="flex items-center gap-2 font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded"><Sparkles size={16}/> Генерирай микс</button>;
-  const lvl=LEVELS.find(l=>l.level===blend.level);
+  const lvl=lvMeta(blend.level);
   return <div className={`rounded border p-4 ${tuned?"border-amber-600/50 bg-amber-950/10":"border-stone-800"}`}>
     <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2">Ниво {blend.level} · {lvl?.label}</div>
     <p className="font-read text-stone-200 leading-relaxed text-lg">{blend.text}</p>
