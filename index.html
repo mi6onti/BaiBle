@@ -303,21 +303,28 @@ function lvMeta(level, custom){
   const base = LEVELS.find(l=>l.level===level);
   if(!base) return base;
   const c = (custom||PLAN_LEVELS||[]).find(x=>x && x.level===level && x.name);
-  return c ? {...base, label:c.name, hint:`${c.why||c.name} — depth comparable to "${base.label}" (${base.hint})`, baseLabel:base.label} : base;
+  return c ? {...base, hero:c.hero||null, time:c.time||null, label:c.name, hint:`${c.why||c.name} — depth comparable to "${base.label}" (${base.hint})`, baseLabel:base.label} : base;
 }
 // Умен режим at the prompt: 5 depth levels made for THIS goal — what you will be able to do at each, and why stop there
 async function genGoalLevels(prompt){
   const raw = await callClaudeRaw(
 `A learner wants to learn: "${prompt}". Instead of generic abstraction levels (analogy, example, mechanics, definition, depth), define 5 levels of DEPTH made for THIS specific subject and the purpose implied by the prompt — how deeply they want to learn it, and why.
 Level 1 is the lightest (quick, essential understanding — the fastest way to what matters), level 5 the deepest (expert command). Each level is named after what the learner will be able to DO or understand at that depth, never a generic label.
-For each level give: NAME (2-6 words, the outcome, e.g. "Да разбирам новините за нея", "Да го ползвам в работата си") and WHY (1-2 sentences: what you will understand or be able to do at this depth, and for whom or why it is enough).
+For each level give:
+- HERO: a one-word hero/role title for someone at this depth, fitting the subject and growing in mastery from 1 to 5 (in the spirit of Пътешественик, Изследовател, Откривател, Майстор, Мъдрец — but invent titles that suit THIS subject; all 5 distinct). Capitalised, no article.
+- NAME (2-6 words, the outcome, e.g. "Да разбирам новините за нея", "Да го ползвам в работата си").
+- WHY (1-2 sentences: what you will understand or be able to do at this depth, and for whom or why it is enough).
+- TIME: a realistic, approximate total time to go through the WHOLE plan at this depth (all its topics), short, e.g. "≈ 30 мин", "≈ 2 часа", "≈ 6–8 часа". Must grow from level 1 to 5.
 Write in the SAME language as the prompt (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
-Output EXACTLY in this format, nothing before the first marker or after the last one: ###N1### name ###W1### why ###N2### name ###W2### why ###N3### name ###W3### why ###N4### name ###W4### why ###N5### name ###W5### why ###END###`, 1200);
-  const f = extractSequentialFields(raw, ["N1","W1","N2","W2","N3","W3","N4","W4","N5","W5"]);
+Output EXACTLY in this format, nothing before the first marker or after the last one: ###H1### hero ###N1### name ###W1### why ###T1### time ###H2### hero ###N2### name ###W2### why ###T2### time ###H3### hero ###N3### name ###W3### why ###T3### time ###H4### hero ###N4### name ###W4### why ###T4### time ###H5### hero ###N5### name ###W5### why ###T5### time ###END###`, 1600);
+  const f = extractSequentialFields(raw, [1,2,3,4,5].flatMap(n=>[`H${n}`,`N${n}`,`W${n}`,`T${n}`]));
+  const clean = t => (t||"").replace(/^[„“"']+|[“”"']+$/g,"").trim();
   return LEVELS.map(m=>{
     const name = (f[`N${m.level}`]||"").replace(/^[„“"']+|[“”"']+$/g,"").trim() || m.label;
     const why = (f[`W${m.level}`]||"").trim();
-    return {level:m.level, name, why, text:why||name};
+    const hero = clean(f[`H${m.level}`]).split(/\s+/).slice(0,3).join(" ") || null;
+    const time = clean(f[`T${m.level}`]) || null;
+    return {level:m.level, hero, name, why, time, text:why||name};
   });
 }
 
@@ -1687,7 +1694,8 @@ function OverviewPicker({title,levels,loading,error,onPick,picking,onBack,existi
           const already = existingLevels && existingLevels.includes(lv.level);
           return <div key={lv.level} className={`rounded border p-4 ${already?"border-emerald-800 bg-emerald-950/10":"border-stone-800"}`}>
             <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-400 mb-2 flex items-center gap-2">
-              Ниво {lv.level} · {lv.name||meta?.label}
+              {lv.hero ? <span className="text-violet-300">{lv.hero}</span> : <>Ниво {lv.level}</>} · {lv.name||meta?.label}
+              {lv.time && <span className="normal-case tracking-normal text-[11px] px-1.5 py-0.5 rounded bg-stone-800 text-amber-400">⏱ {lv.time}</span>}
               {already && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/50 text-emerald-500">вече генерирано</span>}
             </div>
             <p className="font-read text-stone-200 leading-relaxed text-lg">{lv.text}</p>
@@ -4588,7 +4596,7 @@ function DesktopReadMore({level,onReadMore}){
   const cur = lvMeta(level);
   const nxt = lvMeta((level||1)+1);
   return <div className="mt-6 pt-4 border-t border-stone-800 flex items-center justify-between gap-3">
-    <span className="font-mono-cal text-[11px] text-stone-500">Ниво: {cur?.label||"—"}</span>
+    <span className="font-mono-cal text-[11px] text-stone-500">{cur?.hero ? <>{cur.hero} · {cur.label}{cur.time?` · ⏱ ${cur.time}`:""}</> : <>Ниво: {cur?.label||"—"}</>}</span>
     {nxt
       ? <button onClick={onReadMore} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">Прочети още → {nxt.label}</button>
       : <span className="font-mono-cal text-[11px] text-stone-500">Най-дълбокото ниво</span>}
@@ -4676,7 +4684,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     <div className="flex flex-wrap gap-2">
       {onChangeLevel && <button onClick={onChangeLevel}
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
-        <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
+        <Sparkles size={12}/> {currentLevelMeta?.hero ? <>{currentLevelMeta.hero} · {currentLevelMeta.label}{currentLevelMeta.time?` · ⏱ ${currentLevelMeta.time}`:""}</> : <>Ниво: {currentLevelMeta?.label||"—"}</>} · смени
       </button>}
       {onToggleSmart && <button onClick={onToggleSmart} title="Само релевантните секции, броят им расте с нивото, с catchy заглавия; прочетена секция не се повтаря на други нива"
         className={`flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border w-fit ${smartMode?"border-violet-500 text-violet-300 bg-violet-950/30":"border-stone-700 text-stone-400 hover:border-violet-500 hover:text-violet-300"}`}>
@@ -4763,7 +4771,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
     <div className="flex flex-wrap gap-2">
       {onChangeLevel && <button onClick={onChangeLevel}
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-400 w-fit">
-        <Sparkles size={12}/> Ниво: {currentLevelMeta?.label||"—"} · смени
+        <Sparkles size={12}/> {currentLevelMeta?.hero ? <>{currentLevelMeta.hero} · {currentLevelMeta.label}{currentLevelMeta.time?` · ⏱ ${currentLevelMeta.time}`:""}</> : <>Ниво: {currentLevelMeta?.label||"—"}</>} · смени
       </button>}
       {onGenerateAll && <button onClick={onGenerateAll} disabled={generatingAll}
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-500 hover:border-amber-500 disabled:opacity-60 w-fit">
@@ -4849,7 +4857,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
       })}
     </div>
     {onReadMore && <div className="pt-4 border-t border-stone-800 flex items-center justify-between gap-3">
-      <span className="font-mono-cal text-[11px] text-stone-500">Ниво: {currentLevelMeta?.label||"—"}</span>
+      <span className="font-mono-cal text-[11px] text-stone-500">{currentLevelMeta?.hero ? <>{currentLevelMeta.hero} · {currentLevelMeta.label}{currentLevelMeta.time?` · ⏱ ${currentLevelMeta.time}`:""}</> : <>Ниво: {currentLevelMeta?.label||"—"}</>}</span>
       <button onClick={onReadMore} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">Прочети още → {lvMeta((currentLevel||1)+1)?.label}</button>
     </div>}
   </div>;
