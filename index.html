@@ -1654,7 +1654,9 @@ function guestHasNode(subItem, it){
   if(!GUEST) return true;
   return !GUEST_HIDDEN.some(k=>it&&it[k]);
 }
-function visibleSections(subItem){ return (getSubsubList(subItem)||[]).filter(it=>!hiddenByOtherLevel(subItem,it) && guestHasNode(subItem,it)); }
+function visibleSections(subItem){ return (getSubsubList(subItem)||[]).filter(it=>!hiddenByOtherLevel(subItem,it) && guestHasNode(subItem,it) && (!it.more || subItem.showMore)); }
+// Умен режим (non-news): extra relevant sections kept behind "Прочети още" — how many are still hidden
+function hiddenMoreCount(subItem){ return subItem?.showMore ? 0 : (getSubsubList(subItem)||[]).filter(it=>it.more && guestHasNode(subItem,it) && !hiddenByOtherLevel(subItem,it)).length; }
 function isSmartSub(sub){ return !!(sub && (sub.isNewsStory || sub.smart)); }
 function getDisplayList(subItem){
   const base = visibleSections(subItem);
@@ -2003,6 +2005,7 @@ function Aperture() {
       if((updSub.isNewsStory||updSub.smart) && key!=="isOverview" && updSub.readSections?.[key]!=null && updSub.readSections[key]!==L){
         updSub = {...updSub, readSections:{...updSub.readSections, [key]:L}};
       }
+      if(!updSub.showMore && (list||[]).some(it=>it.more && podcastSectionKey(it)===key)) updSub = {...updSub, showMore:true};
       const H = H0.map((x,i)=>i===subIdx?updSub:x);
       const P = {...P0, byLevel:{...P0.byLevel, [P0.activeLevel]:H}};
       setHierarchy(H); setPlanData(P);
@@ -2075,6 +2078,16 @@ function Aperture() {
       await saveJSON(`plan:${currentTopic.id}`, P);
     }catch(e){ setGenAllError(`Грешка: ${e.message}`); }
     finally{ setLoadingH(false); }
+  }
+
+  // Умен режим (regular plans): "Прочети още" shows the remaining relevant sections at the same level
+  async function revealMoreSections(subIdx){
+    const sub = hierarchy?.[subIdx];
+    if(!sub || !planData) return;
+    const H = hierarchy.map((x,i)=>i===subIdx?{...sub, showMore:true}:x);
+    const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
+    setHierarchy(H); setPlanData(P);
+    try{ await saveJSON(`plan:${currentTopic.id}`, P); }catch(e){ console.warn(e); }
   }
 
   function exitDesktopApp(){
@@ -2170,7 +2183,7 @@ function Aperture() {
 
     // if content for the plan's level already exists (generated before), just make sure it's active and go straight in
     if(sub.byLevel && sub.byLevel[topicLevel] && sub.byLevel[topicLevel].length){
-      if(sub.activeLevel !== topicLevel && !(isSmartSub(sub) && (sub.activeLevel||0) > topicLevel)){
+      if(sub.activeLevel !== topicLevel && !(sub.isNewsStory && (sub.activeLevel||0) > topicLevel)){
         const updatedSub = {...sub, activeLevel:topicLevel};
         const updatedHierarchy = hierarchy.map((s,idx)=>idx===i?updatedSub:s);
         setHierarchy(updatedHierarchy);
@@ -4146,7 +4159,10 @@ function Aperture() {
               onChangeLevel={(guestPlanId||isSmartSub(hierarchy[subtopicIdx]))?null:()=>openSubtopicLevelPicker(subtopicIdx)}
               currentLevel={hierarchy[subtopicIdx].activeLevel}
               onGenerateAll={guestPlanId?null:()=>generateAllContentForSubtopic(subtopicIdx)}
-              onReadMore={(isSmartSub(hierarchy[subtopicIdx]) && (hierarchy[subtopicIdx].activeLevel||1)<5)?()=>advanceSmartTopic(subtopicIdx):null} generatingAll={generatingAll} genAllProgress={genAllProgress} genAllError={genAllError}/>
+              onReadMore={hierarchy[subtopicIdx]?.isNewsStory
+                ? ((hierarchy[subtopicIdx].activeLevel||1)<5 ? ()=>advanceSmartTopic(subtopicIdx) : null)
+                : (isSmartSub(hierarchy[subtopicIdx]) && hiddenMoreCount(hierarchy[subtopicIdx])>0 ? ()=>revealMoreSections(subtopicIdx) : null)}
+              readMoreLabel={hierarchy[subtopicIdx]?.isNewsStory ? null : `Прочети още · ${hiddenMoreCount(hierarchy[subtopicIdx])} секции`} generatingAll={generatingAll} genAllProgress={genAllProgress} genAllError={genAllError}/>
           ):(
             <>{desktopApp && <DesktopBar appKey={desktopApp} hierarchy={hierarchy} subIdx={subtopicIdx} error={desktopError}
               onPickTopic={i=>openDesktopSection(i,desktopApp)} onExit={exitDesktopApp}/>}
@@ -4522,8 +4538,50 @@ Output one line per entry in the form LEVEL | KEY | catchy title, nothing else, 
   }
   return plan;
 }
+// Умен режим for regular plans: the topic stays at the plan's level. One call keeps only the relevant sections,
+// orders them by relevance (Общ преглед always first) and splits them into CORE — enough to really learn the
+// material on the first screen — and MORE, revealed by "Прочети още".
+async function genSmartFocusPlan(topicLabel, name, levelMeta, pool){
+  let core = [], more = [];
+  const seen = new Set();
+  try{
+    const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
+    const raw = await callClaudeRaw(
+`A learner studies the topic "${name}" (part of the plan "${topicLabel}") at the level "${levelMeta?.label||"Аналогия"}" (${levelMeta?.hint||"everyday comparison"}).
+From the menu, keep ONLY the sections that are genuinely relevant and useful for THIS topic — leave out every section that does not truly fit (leaving many out is fine and expected). Order the kept sections by relevance, the most important first. isOverview is mandatory and always first.
+Split them into two groups:
+- CORE: the sections that, read together, are ENOUGH to really learn and absorb this topic at this level — typically 3 to 6 including isOverview. Someone who reads only these should have learned the material.
+- MORE: the remaining relevant sections, for those who want to go further (by relevance; may be empty).
+For each entry write a catchy, specific title (3-7 words) saying what that section will reveal about THIS topic — intriguing but honest, no clickbait, no invented facts, numbers or names.
+Menu (KEY — name: what it contains) — choose ONLY from these:
+${menu}
+Write the titles in the SAME language as the topic (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Output one line per entry in the form GROUP | KEY | catchy title (GROUP is CORE or MORE), CORE lines first, nothing else, wrapped exactly like this: ###PLAN###the lines here###PLAN_END###`, 1400);
+    for(const line of extractField(raw,"PLAN").split("\n")){
+      const m = line.match(/(CORE|MORE)\s*\|\s*(is[A-Za-z]+)\s*\|\s*(.+)/i);
+      if(!m) continue;
+      const g = m[1].toUpperCase(), k = m[2].trim(), t = m[3].trim().replace(/^[„“"']+|[“”"']+$/g,"");
+      if(!PODCAST_SECTIONS[k] || !(pool.includes(k)||k==="isOverview") || seen.has(k)) continue;
+      seen.add(k); (g==="CORE"||k==="isOverview" ? core : more).push({key:k, catchy:t});
+    }
+  }catch(e){ console.warn("smart focus planning failed — using a default set", e); }
+  if(core.length<=1 && !more.length){
+    const fb = [...NEWS_SECTION_FALLBACK, ...PODCAST_DEFAULT_ORDER].filter((k,i,a)=>a.indexOf(k)===i && k!=="isOverview" && pool.includes(k) && !seen.has(k));
+    fb.slice(0,4).forEach(k=>core.push({key:k,catchy:""}));
+    fb.slice(4,10).forEach(k=>more.push({key:k,catchy:""}));
+  }
+  const ov = core.find(p=>p.key==="isOverview") || {key:"isOverview", catchy:""};
+  core = [ov, ...core.filter(p=>p.key!=="isOverview")];
+  return [...core, ...more.map(p=>({...p, more:true}))];
+}
 async function buildSmartSections(topicPrompt, sub, levelMeta){
   const L = levelMeta?.level||1;
+  if(!sub.isNewsStory){
+    const entries = await genSmartFocusPlan(topicPrompt, sub.name, levelMeta, smartAllowedSections({...sub, byLevel:{}}));
+    const terms = entries.some(p=>p.key==="isGlossary") ? await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta) : null;
+    return { smartPlan:{...(sub.smartPlan||{}), [L]:entries},
+      list: entries.map(p=>({ name:PODCAST_SECTIONS[p.key][0], [p.key]:true, ...(p.catchy?{catchy:p.catchy}:{}), ...(p.more?{more:true}:{}), ...(p.key==="isGlossary"?{terms}:{}) })) };
+  }
   let smartPlan = sub.smartPlan;
   if(!smartPlan || !smartPlan[L]) smartPlan = await genSmartSectionPlan(topicPrompt, sub.name, L, smartAllowedSections(sub), !!sub.isNewsStory);
   const entries = smartPlan[L] || [{key:"isOverview", catchy:""}];
@@ -4756,7 +4814,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
   </div>;
 }
 
-function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress,genAllError,onReadMore}){
+function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onGenerateAll,generatingAll,genAllProgress,genAllError,onReadMore,readMoreLabel}){
   const list = getDisplayList(subtopic) || [];
   const currentLevelMeta = currentLevel ? lvMeta(currentLevel) : null;
   return <div className="space-y-4">
@@ -4858,7 +4916,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
     </div>
     {onReadMore && <div className="pt-4 border-t border-stone-800 flex items-center justify-between gap-3">
       <span className="font-mono-cal text-[11px] text-stone-500">{currentLevelMeta?.hero ? <>{currentLevelMeta.hero} · {currentLevelMeta.label}{currentLevelMeta.time?` · ⏱ ${currentLevelMeta.time}`:""}</> : <>Ниво: {currentLevelMeta?.label||"—"}</>}</span>
-      <button onClick={onReadMore} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">Прочети още → {lvMeta((currentLevel||1)+1)?.label}</button>
+      <button onClick={onReadMore} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 py-2 rounded">{readMoreLabel || <>Прочети още → {lvMeta((currentLevel||1)+1)?.label}</>}</button>
     </div>}
   </div>;
 }
