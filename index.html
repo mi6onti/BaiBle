@@ -199,13 +199,56 @@ function topPreferred(m,fb){const e=Object.entries(m||{});if(!e.length)return fb
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 
+/* ── План по текст ── a pasted article / book excerpt: the whole plan is built ONLY on it ─────────── */
+let SOURCE_TEXT = null; // full text of the open "по текст" plan (all added parts), or null
+const SOURCE_MAX = 160000;
+function sourceJoin(parts){ return (parts||[]).map((p,i)=>`[Част ${i+1}${p.title?`: ${p.title}`:""}]\n${p.text}`).join("\n\n"); }
+function withSource(user){
+  if(!SOURCE_TEXT) return user;
+  const txt = SOURCE_TEXT.length>SOURCE_MAX ? SOURCE_TEXT.slice(0,SOURCE_MAX)+"\n[…]" : SOURCE_TEXT;
+  return `SOURCE TEXT — this whole study plan is built ENTIRELY on the text below (an article or a book excerpt the learner pasted). Base every explanation, example, term, question and claim on what this text actually says. You may explain, rephrase and illustrate its ideas, but never present outside facts as if they were in the text, and never contradict it. Any QUOTES must be exact, verbatim passages from this text — never quotes from other people or other sources.
+<<<SOURCE
+${txt}
+SOURCE>>>
+
+${user}`;
+}
+// pasted text vs a prompt: long, multi-sentence or multi-paragraph input is treated as a source text
+function looksLikeSourceText(t){
+  const s=(t||"").trim();
+  if(s.length<400) return false;
+  const sentences=(s.match(/[.!?…]["»“”']?(\s|$)/g)||[]).length;
+  const paras=s.split(/\n+/).filter(x=>x.trim().length>40).length;
+  return s.length>=1000 || sentences>=6 || paras>=3;
+}
+// title + one-line description of a pasted text (description becomes the plan's prompt)
+async function genSourceMeta(){
+  const raw = await callClaudeRaw(
+`Look at the SOURCE TEXT above. Give: a short title for a study plan based on it (under 8 words — if it is a book excerpt or chapter and you can tell which, name it), a 1-2 sentence description of what the text is about, and a short title for this part of the text (under 6 words).
+Write in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Output EXACTLY: ###NAME### title ###DESC### description ###PART### part title ###END###`, 500);
+  const f = extractSequentialFields(raw, ["NAME","DESC","PART"]);
+  return { name:(f.NAME||"").trim()||"План по текст", desc:(f.DESC||"").trim(), part:(f.PART||"").trim() };
+}
+// topics that follow the text's own structure — as many as it genuinely needs, even just one
+async function genSourceTopicNames(levelHint, partNo, existing){
+  const scope = partNo ? `ONLY for Part ${partNo} of the source (the part just added). The plan already has these topics for the earlier parts — do not repeat them: ${(existing||[]).join("; ")}.` : "for the whole source text.";
+  const raw = await callClaudeRaw(
+`Split the SOURCE TEXT into study topics ${scope}
+Follow the text's own structure and flow. Use exactly as many topics as the text genuinely needs to be learned well — no more. A short or single-idea text can be ONE topic; never pad, never split for the sake of splitting, never add topics the text does not cover.${levelHint?` The learner studies it at the "${levelHint.label}" level (${levelHint.hint}).`:""}
+Topic names under 6 words, in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Output one topic per line, in the text's order, nothing else, wrapped exactly like this: ###TOPICS###the lines###TOPICS_END###`, 600);
+  const names = extractField(raw,"TOPICS").split("\n").map(l=>l.replace(/^\s*[-*\d.)]+\s*/,"").trim()).filter(Boolean);
+  return names.length ? names.slice(0,15) : ["Основните идеи на текста"];
+}
+
 /* ── Claude API ──────────────────────────────────────────────────────── */
 async function callClaude(user, maxTokens=600, attempt=0) {
   let res;
   try {
     res = await fetch(CLAUDE_PROXY,{method:"POST",
       headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`},
-      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:`${JSON_SYS}\n\n${user}`}]})});
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:withSource(`${JSON_SYS}\n\n${user}`)}]})});
   } catch(e) {
     if(attempt<3){await sleep(700*(attempt+1));return callClaude(user,maxTokens,attempt+1);}
     throw new Error(`[fetch] ${e.message}`);
@@ -540,7 +583,7 @@ async function callClaudeRaw(user, maxTokens=1500, attempt=0, cap=4000) {
   try {
     res = await fetch(CLAUDE_PROXY,{method:"POST",
       headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`},
-      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:user}]})});
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:withSource(user)}]})});
   } catch(e) {
     if(attempt<3){await sleep(700*(attempt+1));return callClaudeRaw(user,maxTokens,attempt+1,cap);}
     throw new Error(`[fetch] ${e.message}`);
@@ -747,6 +790,17 @@ Output EXACTLY in this format, nothing before the first marker or after the last
 
 // Цитати: only quotes the model is genuinely confident are real and accurately attributed — better fewer than fabricated
 async function genQuotes(topicLabel, subtopicName, levelHint) {
+  if(SOURCE_TEXT){
+    const raw = await callClaudeRaw(
+`Pick between 2 and 5 quotes for the topic "${subtopicName}" — taken ONLY from the SOURCE TEXT above, copied EXACTLY word for word (you may shorten with … but never reword). No quotes from anywhere else. Choose the passages that best capture this topic's key ideas.
+For each: the exact passage (under 40 words), who says it in the text (the author, a character or a person quoted there; if unclear, write the text's author or "Из текста"), and one short line on why this passage matters for the topic, in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian).
+Never use the " character.
+Output as blocks separated by a blank line, each block exactly 3 lines: quote, who, why it matters. Wrapped exactly like this and nothing else: ###TEXT###the quotes here###TEXT_END###`, 1400);
+    return extractField(raw, "TEXT").split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
+      const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
+      return { quote: (lines[0]||"").replace(/^[„“"']+|[“”"']+$/g,""), author: lines[1]||"Из текста", role: lines[2]||"", speculative:false };
+    }).filter(q=>q.quote);
+  }
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
     `Give between 2 and 5 REAL quotes from real, named, identifiable people (scientists, philosophers, inventors, practitioners, writers, industry figures) meaningfully related to "${subtopicName}" (within the broader context of "${topicLabel}"). Do not include Steve Jobs.
@@ -1749,7 +1803,8 @@ function Aperture() {
   const topLevel = topPreferred(prefs.abstraction,null);
   const [showNewsAreas,setShowNewsAreas] = useState(false);
   const [smartStart,setSmartStart] = useState(false); // Умен режим chosen at the prompt
-  const setPlanData = v => { PLAN_LEVELS = (v && v.levelNames) || null; _setPlanData(v); };
+  const [sourceOverride,setSourceOverride] = useState(null); // null = auto-detect pasted text, true/false = user choice
+  const setPlanData = v => { PLAN_LEVELS = (v && v.levelNames) || null; SOURCE_TEXT = (v && v.isSource) ? sourceJoin(v.sourceParts) : null; _setPlanData(v); };
   const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
   const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
   const [desktopError,setDesktopError] = useState(null);
@@ -1818,11 +1873,36 @@ function Aperture() {
     finally{USE_LOCAL=wasLocal;setDbTesting(false);}
   }
 
-  async function startTopic(prompt) {
-    const trimmed=prompt.trim();if(!trimmed)return;
+  // План по текст: the pasted article / excerpt is the plan's only source
+  async function startSourceTopic(text){
     setHomeError(null);setHierarchy(null);setPlanData(null);
     setSubtopicIdx(null);setSubsubIdx(null);
-    setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");
+    setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");setSourceOverride(null);
+    setCurrentTopic(null);setSubtopicOverview(null);
+    setTopicOverview({loading:true, levels:[], prompt:"текст"});
+    SOURCE_TEXT = text;
+    try{
+      const meta = await genSourceMeta();
+      const label = meta.desc || meta.name;
+      const id = slugify(meta.name)+"-"+Date.now().toString(36);
+      const newTopic = {id, name:meta.name, prompt:label, createdAt:Date.now(), isSource:true};
+      setCurrentTopic(newTopic);
+      const levels = smartStart ? await genGoalLevels(meta.name) : await genOverviewLevels(label);
+      setTopicOverview({loading:false, levels, prompt:label, name:meta.name, id, newTopic, learningProfile:null, smart:smartStart,
+        source:[{title:meta.part||meta.name, text, addedAt:Date.now()}]});
+    }catch(e){
+      SOURCE_TEXT = null;
+      setTopicOverview(null);
+      setHomeError(`Грешка: ${e.message}`);
+    }
+  }
+
+  async function startTopic(prompt, asSource) {
+    const trimmed=prompt.trim();if(!trimmed)return;
+    if(asSource) return startSourceTopic(trimmed);
+    setHomeError(null);setHierarchy(null);setPlanData(null);
+    setSubtopicIdx(null);setSubsubIdx(null);
+    setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");setSourceOverride(null);
     setCurrentTopic(null);setSubtopicOverview(null);
 
     setTopicOverview({loading:true, levels:[], prompt:trimmed});
@@ -1887,7 +1967,8 @@ function Aperture() {
     }
 
     // CASE 2: brand-new topic OR resuming an existing topic that has no cached plan yet
-    const {prompt,name,id,newTopic,learningProfile,resumingExisting,newsStories,smart} = topicOverview;
+    const {prompt,name,id,newTopic,learningProfile,resumingExisting,newsStories,smart,source} = topicOverview;
+    if(source) SOURCE_TEXT = sourceJoin(source);
     if(newTopic && !resumingExisting){
       const next=[newTopic,...topics.filter(t=>t.id!==newTopic.id)];
       setTopics(next); await saveJSON("topics",next);
@@ -1897,11 +1978,11 @@ function Aperture() {
     setLoadingH(true);
     try{
       const levelMeta = lvMeta(level, smart ? topicOverview.levels : null);
-      const names = newsStories ? newsStories.map(st=>st.title) : await genSubtopicNames(prompt, learningProfile, levelMeta);
+      const names = newsStories ? newsStories.map(st=>st.title) : source ? await genSourceTopicNames(levelMeta) : await genSubtopicNames(prompt, learningProfile, levelMeta);
       const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
       const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
-      const subtopics = [...(smart?[]:[trailerItem]), ...(newsStories ? newsStories.map(newsStorySubtopic) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
-      const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level, ...(newsStories?{newsStories}:{}), ...(smart?{smartMode:true, levelNames:topicOverview.levels}:{})};
+      const subtopics = [...((smart||source)?[]:[trailerItem]), ...(newsStories ? newsStories.map(newsStorySubtopic) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
+      const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level, ...(newsStories?{newsStories}:{}), ...(smart?{smartMode:true, levelNames:topicOverview.levels}:{}), ...(source?{isSource:true, sourceParts:source}:{})};
       setPlanData(newPlan); setHierarchy(subtopics);
       await saveJSON(`plan:${id}`, newPlan);
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
@@ -1910,9 +1991,31 @@ function Aperture() {
 
   // Надгради плана: fuse the current plan's own theme + a new raw idea into one combined topic,
   // update this SAME topic in place (name/prompt change), then regenerate fresh content at the same level
+  async function addSourceText(text){
+    const P0 = planData;
+    const parts = [...(P0.sourceParts||[]), {title:"", text, addedAt:Date.now()}];
+    SOURCE_TEXT = sourceJoin(parts);
+    setLoadingH(true);
+    try{
+      const level = P0.activeLevel, levelMeta = lvMeta(level);
+      const existing = (hierarchy||[]).filter(x=>!isTrailerItem(x)).map(x=>x.name);
+      const names = await genSourceTopicNames(levelMeta, parts.length, existing);
+      const fresh = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null, sourcePart:parts.length}));
+      const byLevel = {};
+      Object.entries(P0.byLevel||{}).forEach(([L,list])=>{ byLevel[L] = [...(list||[]), ...fresh]; });
+      const P = {...P0, sourceParts:parts, byLevel};
+      setPlanData(P); setHierarchy(byLevel[level]);
+      await saveJSON(`plan:${currentTopic.id}`, P);
+    }catch(e){
+      SOURCE_TEXT = sourceJoin(P0.sourceParts);
+      setHomeError(`Грешка: ${e.message}`);
+    }finally{ setLoadingH(false); }
+  }
+
   async function evolveTopicWithIdea(newIdea){
     const idea = (newIdea||"").trim();
     if(!idea || !currentTopic || !planData) return;
+    if(planData.isSource) return addSourceText(idea);
     setLoadingH(true);
     try{
       const level = planData.activeLevel;
@@ -4122,7 +4225,7 @@ function Aperture() {
               onBack={()=>{setShowNewsAreas(false);setHomeError(null);}}/>
           ):!currentTopic?(
             <HomeScreen topicInput={topicInput} setTopicInput={setTopicInput}
-              onStart={()=>startTopic(topicInput)} smartStart={smartStart} onToggleSmartStart={()=>setSmartStart(v=>!v)} topics={activeTopics} deletedTopics={deletedTopics}
+              onStart={()=>startTopic(topicInput, sourceOverride ?? looksLikeSourceText(topicInput))} smartStart={smartStart} onToggleSmartStart={()=>setSmartStart(v=>!v)} asSource={sourceOverride ?? looksLikeSourceText(topicInput)} onToggleSource={()=>setSourceOverride(!(sourceOverride ?? looksLikeSourceText(topicInput)))} topics={activeTopics} deletedTopics={deletedTopics}
               onResume={resumeTopic} onOpenNews={()=>{setHomeError(null);setShowNewsAreas(true);}} error={homeError}
               onDelete={softDeleteTopic} onRestore={restoreTopic}
               showTrash={showTrash} setShowTrash={setShowTrash}/>
@@ -4292,19 +4395,25 @@ function Aperture() {
 }
 
 /* ── Screens ─────────────────────────────────────────────────────────── */
-function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,onOpenNews,smartStart,onToggleSmartStart,error,onDelete,onRestore,showTrash,setShowTrash}){
+function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onResume,onOpenNews,smartStart,onToggleSmartStart,asSource,onToggleSource,error,onDelete,onRestore,showTrash,setShowTrash}){
   return <div className="space-y-8">
     <div>
       <h1 className="font-display text-2xl font-bold text-stone-100 mb-1">Какво искаш да научиш?</h1>
       <p className="font-read text-stone-400 text-sm">Напиши тема или въпрос — Aperture ще генерира учебен план и ще открие кой стил на обяснение ти пасва.</p>
     </div>
     <div className="flex gap-2">
-      <input value={topicInput} onChange={e=>setTopicInput(e.target.value)}
-        onKeyDown={e=>{if(e.key==="Enter")onStart();}}
-        placeholder="напр. Как работи логистичната регресия?"
-        className="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read placeholder:text-stone-500 focus:outline-none focus:border-amber-600"/>
+      <textarea value={topicInput} onChange={e=>setTopicInput(e.target.value)}
+        onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();onStart();}}}
+        rows={topicInput.length>120||topicInput.includes("\n") ? 6 : 1}
+        placeholder="напр. Как работи логистичната регресия? — или постави статия / откъс от книга"
+        className="flex-1 resize-y bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read placeholder:text-stone-500 focus:outline-none focus:border-amber-600"/>
       <button onClick={onStart} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 rounded">Старт</button>
     </div>
+    {onToggleSource && topicInput.trim().length>=150 && <button onClick={onToggleSource}
+      className={`-mt-5 flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border w-fit ${asSource?"border-emerald-600 text-emerald-300 bg-emerald-950/30":"border-stone-700 text-stone-400 hover:border-emerald-600"}`}>
+      {asSource ? "📄 Текст — планът ще е изцяло по него" : "✍️ Промпт"}
+      <span className="normal-case tracking-normal text-[10px] text-stone-500">{asSource ? "натисни, ако е промпт" : "натисни, ако е поставен текст"}</span>
+    </button>}
     {onToggleSmartStart && <button onClick={onToggleSmartStart}
       className={`-mt-5 flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border w-fit ${smartStart?"border-violet-500 text-violet-300 bg-violet-950/30":"border-stone-700 text-stone-400 hover:border-violet-500 hover:text-violet-300"}`}>
       ✨ Умен режим: {smartStart?"вкл.":"изкл."}
@@ -4329,7 +4438,7 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
           <div key={t.id} className="flex items-center gap-2 group">
             <button onClick={()=>onResume(t)} className="flex-1 text-left px-3 py-2 rounded border border-stone-800 hover:border-stone-600 flex items-center justify-between">
               <div>
-                <div className="font-read text-stone-200">{topicLabel(t)}</div>
+                <div className="font-read text-stone-200">{t.isSource&&<span className="mr-1.5 font-mono-cal text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-800 text-emerald-400 align-middle">📄 текст</span>}{topicLabel(t)}</div>
                 {t.name&&t.prompt&&t.name!==t.prompt&&<div className="font-mono-cal text-[10px] text-stone-500 mt-0.5 truncate max-w-xs">{t.prompt}</div>}
                 {t.parentId&&<div className="font-mono-cal text-[10px] text-stone-500">↳ адаптиран план</div>}
                 {t.childId&&<div className="font-mono-cal text-[10px] text-sky-600">→ има адаптация</div>}
@@ -4732,6 +4841,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
     <div className="flex items-start justify-between gap-2">
       <div>
         <h2 className="font-display text-xl font-bold text-stone-100">{topicLabel(topic)}</h2>
+        {topic.isSource && <div className="mt-1 inline-flex items-center gap-1 font-mono-cal text-[10px] uppercase tracking-wide px-2 py-0.5 rounded bg-emerald-950/40 border border-emerald-800 text-emerald-400">📄 План по текст{hierarchy?.length?` · ${hierarchy.filter(x=>!isTrailerItem(x)).length} ${hierarchy.filter(x=>!isTrailerItem(x)).length===1?"тема":"теми"}`:""}</div>}
         {topic.prompt&&(topic.name||topic.title)&&topic.prompt!==(topic.name||topic.title)&&(
           <p className="font-read text-stone-400 text-sm mt-1 leading-relaxed">{topic.prompt}</p>
         )}
@@ -4753,7 +4863,7 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
       {!guest && <PodcastExport topic={topic} hierarchy={hierarchy} level={currentLevel}/>}
     </div>
 
-    {onEvolve && <EvolvePlanButton onEvolve={onEvolve} evolving={evolving}/>}
+    {onEvolve && <EvolvePlanButton onEvolve={onEvolve} evolving={evolving} source={!!topic.isSource}/>}
 
     {/* T.6: related topic links */}
     {(parentTopic||childTopic||originTopic)&&<div className="space-y-1">
@@ -6845,7 +6955,7 @@ function ReplyInput({onSubmit}){
   </div>;
 }
 
-function EvolvePlanButton({onEvolve,evolving}){
+function EvolvePlanButton({onEvolve,evolving,source}){
   const [open,setOpen]=useState(false);
   const [val,setVal]=useState("");
   function submit(){
@@ -6855,6 +6965,21 @@ function EvolvePlanButton({onEvolve,evolving}){
     setVal(""); setOpen(false);
   }
   if(evolving) return <div className="flex items-center gap-2 text-emerald-400 text-sm font-mono-cal"><Loader2 size={14} className="animate-spin"/> Надграждам плана…</div>;
+  if(source){
+    if(!open) return <button onClick={()=>setOpen(true)}
+      className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-emerald-800 text-emerald-500 hover:border-emerald-500 hover:text-emerald-400 w-fit">
+      <Sparkles size={12}/> Надгради с още текст
+    </button>;
+    return <div className="space-y-2">
+      <p className="font-read text-stone-500 text-xs">Постави следващата част (напр. нова глава) — ще добавя теми за нея, без да пипам досегашните.</p>
+      <textarea value={val} onChange={e=>setVal(e.target.value)} autoFocus rows={6} placeholder="Постави текста тук…"
+        className="w-full bg-stone-900 border border-emerald-800 rounded px-3 py-2 text-stone-100 font-read text-sm placeholder:text-stone-500 focus:outline-none focus:border-emerald-500"/>
+      <div className="flex gap-2">
+        <button onClick={submit} className="font-mono-cal text-xs uppercase tracking-wide bg-emerald-700 hover:bg-emerald-600 text-white font-medium px-3 py-1.5 rounded">Добави към плана</button>
+        <button onClick={()=>{setOpen(false);setVal("");}} className="font-mono-cal text-xs text-stone-500 hover:text-stone-300 px-2">отказ</button>
+      </div>
+    </div>;
+  }
   if(!open) return <button onClick={()=>setOpen(true)}
     className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-emerald-800 text-emerald-500 hover:border-emerald-500 hover:text-emerald-400 w-fit">
     <Sparkles size={12}/> Надгради с нова идея
