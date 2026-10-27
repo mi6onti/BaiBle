@@ -1804,7 +1804,7 @@ function Aperture() {
   const [showNewsAreas,setShowNewsAreas] = useState(false);
   const [smartStart,setSmartStart] = useState(false); // Умен режим chosen at the prompt
   const [sourceOverride,setSourceOverride] = useState(null); // null = auto-detect pasted text, true/false = user choice
-  const setPlanData = v => { PLAN_LEVELS = (v && v.levelNames) || null; SOURCE_TEXT = (v && v.isSource) ? sourceJoin(v.sourceParts) : null; _setPlanData(v); };
+  const setPlanData = v => { if(v && !GUEST) setDesktopMode(!!v.desktopMode); PLAN_LEVELS = (v && v.levelNames) || null; SOURCE_TEXT = (v && v.isSource) ? sourceJoin(v.sourceParts) : null; _setPlanData(v); };
   const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
   const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
   const [desktopError,setDesktopError] = useState(null);
@@ -2079,6 +2079,47 @@ function Aperture() {
 
   // Desktop: open section `key` for plan topic `subIdx` at `level` (default: the topic's current level). Builds the
   // topic's section list for that level if it doesn't exist yet, and adds the section if that list lacks it.
+  // Desktop: one topic ahead — the next topic's section list (if it has none yet) is built off-screen and kept
+  // here until you get there; its content for the open section is generated and cached in the background.
+  const prefetchRef = useRef({lists:{}, inflight:{}});
+  const prefetchListKey = (sub, L) => `${currentTopic?.id}|${sub.name}|${L}`;
+  function nodeIdFor(sub, L, item){ return `${currentTopic.id}/${slugify(sub.name)}/L${L}/${slugify(subName(item))}`; }
+  async function prefetchDesktopNext(subIdx, key, H, P){
+    try{
+      if(!H || !P || !currentTopic) return;
+      let ni = -1;
+      for(let i=subIdx+1;i<H.length;i++){ if(!isTrailerItem(H[i])){ ni=i; break; } }
+      if(ni<0) return;
+      const sub = H[ni];
+      const L = sub.activeLevel || P.activeLevel || 1;
+      const levelMeta = lvMeta(L);
+      const topicPrompt = currentTopic.prompt||currentTopic.name;
+      const smart = !!(sub.isNewsStory || sub.smart || P.smartMode);
+      const lk = prefetchListKey(sub, L);
+      let list = sub.byLevel?.[L];
+      if(!(list && list.length)) list = prefetchRef.current.lists[lk]?.list;
+      if(!(list && list.length)){
+        if(prefetchRef.current.inflight[lk]) return;
+        prefetchRef.current.inflight[lk] = true;
+        try{
+          const built = smart ? await buildSmartSections(topicPrompt, sub, levelMeta) : {list: await buildStandardSections(topicPrompt, sub, levelMeta), smartPlan:null};
+          prefetchRef.current.lists[lk] = built; list = built.list;
+        } finally { delete prefetchRef.current.inflight[lk]; }
+      }
+      let item = (list||[]).find(it=>podcastSectionKey(it)===key);
+      if(!item){ if(smart || key==="isGlossary") return; item = {name:PODCAST_SECTIONS[key][0], [key]:true}; }
+      if(isCuriousItem(item) || isSimulationItem(item)) return;
+      const id = nodeIdFor(sub, L, item);
+      if(prefetchRef.current.inflight[id]) return;
+      const job = (async()=>{
+        await genSectionContent({id, item, subItem:sub, subLevel:L, subLevelMeta:levelMeta, topicPrompt, subsubList:list, curHierarchy:H});
+        const keys = await loadJSON("allNodeKeys", []);
+        if(!keys.includes(id)) await saveJSON("allNodeKeys", [...keys, id]);
+      })().catch(e=>console.warn("desktop prefetch failed", e)).finally(()=>{ delete prefetchRef.current.inflight[id]; });
+      prefetchRef.current.inflight[id] = job;
+    }catch(e){ console.warn("desktop prefetch failed", e); }
+  }
+
   async function openDesktopSection(subIdx, key, level){
     const H0 = hierarchy, P0 = planData;
     const sub = H0?.[subIdx];
@@ -2095,7 +2136,9 @@ function Aperture() {
       const smart = !!(sub.isNewsStory || sub.smart || P0.smartMode);
       let newSmartPlan = null;
       if(needsBuild){
-        if(smart){ const r = await buildSmartSections(topicPrompt, sub, levelMeta); list = r.list; newSmartPlan = r.smartPlan; }
+        const pre = prefetchRef.current.lists[prefetchListKey(sub, L)];
+        if(pre && pre.list && pre.list.length){ list = pre.list; newSmartPlan = pre.smartPlan||null; delete prefetchRef.current.lists[prefetchListKey(sub, L)]; }
+        else if(smart){ const r = await buildSmartSections(topicPrompt, sub, levelMeta); list = r.list; newSmartPlan = r.smartPlan; }
         else list = await buildStandardSections(topicPrompt, sub, levelMeta);
       }
       if(!smart && !list.some(it=>podcastSectionKey(it)===key)){
@@ -2117,11 +2160,21 @@ function Aperture() {
       setLoadingH(false);
       if(idx<0){ setDesktopError(smart ? `„${PODCAST_SECTIONS[key][0]}“ не е включена за тази тема — в умен режим се показват само релевантните секции, всяка на едно ниво.` : "Тази секция не можа да се отвори за тази тема."); return; }
       setDesktopApp(key);
+      const pending = prefetchRef.current.inflight[nodeIdFor(updSub, L, getDisplayList(updSub)[idx])];
+      if(pending && pending.then){ setLoadingH(true); try{ await pending; } finally { setLoadingH(false); } }
       await openNode(subIdx, idx, H, P);
+      prefetchDesktopNext(subIdx, key, H, P); // background, not awaited
     }catch(e){
       setLoadingH(false);
       setDesktopError(`Грешка: ${e.message}`);
     }
+  }
+  async function toggleDesktopMode(){
+    if(!planData||!currentTopic) return;
+    const updated = {...planData, desktopMode:!planData.desktopMode};
+    setDesktopError(null);
+    setPlanData(updated);
+    await saveJSON(`plan:${currentTopic.id}`, updated);
   }
   async function toggleSmartMode(){
     if(!planData||!currentTopic) return;
@@ -3947,6 +4000,165 @@ function Aperture() {
   }
 
   // T.5: generate adapted topic
+  // generate + cache one section's content for a topic without touching the screen (used by "generate all"
+  // and by the Desktop prefetch of the next topic)
+  async function genSectionContent({id, item, subItem, subLevel, subLevelMeta, topicPrompt, subsubList, curHierarchy}){
+    const uName = subName(item);
+    const existing = await loadJSON(`node:${id}`, null);
+
+    if(isOverviewItem(item)){
+      if(!existing?.essay){
+        const essay = await genSubtopicEssay(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), essay, essayLevel:subLevel, tunedEssay:existing?.tunedEssay||false});
+      }
+    } else if(isExamplesItem(item)){
+      if(!existing?.examples){
+        const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
+      }
+    } else if(isResourcesItem(item)){
+      if(!existing?.resources?.length){
+        const resources = await genResources(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), resources, resourcesLevel:subLevel, tunedResources:existing?.tunedResources||false});
+      }
+    } else if(isShoppingItem(item)){
+      if(!existing?.shopItems?.length){
+        const {items,innovations,services} = await genShoppingList(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), shopItems:items, shopInnovations:innovations, shopServices:services, shopLevel:subLevel, tunedShopping:existing?.tunedShopping||false});
+      }
+    } else if(isGamesItem(item)){
+      if(!existing?.crosswordPuzzle){
+        const cwWords = await genCrosswordWords(topicPrompt, subItem.name, subLevelMeta);
+        const cwPuzzle = buildCrossword(cwWords);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), gameType:"crossword", crosswordWords:cwWords, crosswordPuzzle:cwPuzzle, gamesLevel:subLevel, tunedGames:existing?.tunedGames||false});
+      }
+    } else if(isAppIdeasItem(item)){
+      if(!existing?.appIdeas?.length){
+        const appIdeas = await genAppIdeas(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), appIdeas, appIdeasLevel:subLevel, tunedAppIdeas:existing?.tunedAppIdeas||false});
+      }
+    } else if(isEncyclopediaItem(item)){
+      if(!existing?.entries?.length){
+        const entries = await genEncyclopedia(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, encLevel:subLevel, tunedEnc:existing?.tunedEnc||false});
+      }
+    } else if(isBeforeItem(item)){
+      if(!existing?.beforeText){
+        const {before,comparisons} = await genBeforeDiscovery(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), beforeText:before, beforeComparisons:comparisons, beforeLevel:subLevel, tunedBefore:existing?.tunedBefore||false});
+      }
+    } else if(isCompareItem(item)){
+      if(!existing?.approaches?.length){
+        const approaches = await genApproachComparisons(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), approaches, compareLevel:subLevel, tunedCompare:existing?.tunedCompare||false});
+      }
+    } else if(isTimelineItem(item)){
+      if(!existing?.milestones?.length){
+        const milestones = await genTimeline(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), milestones, timelineLevel:subLevel, tunedTimeline:existing?.tunedTimeline||false});
+      }
+    } else if(isButterflyItem(item)){
+      if(!existing?.butterflyScenario){
+        const {scenario,ripples} = await genButterflyEffect(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), butterflyScenario:scenario, butterflyRipples:ripples, butterflyLevel:subLevel, tunedButterfly:existing?.tunedButterfly||false});
+      }
+    } else if(isExperimentsItem(item)){
+      if(!existing?.experiments?.length){
+        const experiments = await genExperiments(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), experiments, experimentsLevel:subLevel, tunedExperiments:existing?.tunedExperiments||false});
+      }
+    } else if(isInvestmentItem(item)){
+      if(!existing?.investItems?.length || !Array.isArray(existing?.investVectors)){
+        const {items:investItems, vectors:investVectors, companies:investCompanies} = await genInvestment(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), investItems, investVectors, investCompanies, investLevel:subLevel, tunedInvest:existing?.tunedInvest||false});
+      }
+    } else if(isPredictionItem(item)){
+      if(!existing?.predScenarios?.length){
+        const predScenarios = await genPrediction(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), predScenarios, predChoice:null, predAt:null, predLevel:subLevel, tunedPred:existing?.tunedPred||false});
+      }
+    } else if(isInterviewItem(item)){
+      if(!existing?.interviewQuestions?.length){
+        const {intro,questions} = await genInterview(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), interviewIntro:intro, interviewQuestions:questions, interviewAnswers:existing?.interviewAnswers||{}, interviewLevel:subLevel, tunedInterview:existing?.tunedInterview||false});
+      }
+    } else if(isQuotesItem(item)){
+      if(!existing?.quotes?.length){
+        const quotes = await genQuotes(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), quotes, quotesLevel:subLevel, tunedQuotes:existing?.tunedQuotes||false});
+      }
+    } else if(isBooksItem(item)){
+      if(!existing?.books?.length){
+        const books = await genBookAdvice(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), books, booksLevel:subLevel, tunedBooks:existing?.tunedBooks||false});
+      }
+    } else if(isBibleItem(item)){
+      if(!existing?.verses?.length){
+        const {verses,wwjd} = await genBibleSection(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), verses, wwjd, bibleLevel:subLevel, tunedBible:existing?.tunedBible||false});
+      }
+    } else if(isActionPlanItem(item)){
+      if(!existing?.stages?.length){
+        const stages = await genActionPlan(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), stages, actionPlanLevel:subLevel, tunedActionPlan:existing?.tunedActionPlan||false});
+      }
+    } else if(isSocraticItem(item)){
+      if(!existing?.steps?.length){
+        const steps = await genSocraticDialogue(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), steps, socraticLevel:subLevel, tunedSocratic:existing?.tunedSocratic||false});
+      }
+    } else if(isTestItem(item)){
+      if(!existing?.testQuestions?.length){
+        const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
+      }
+    } else if(isSimulationItem(item)){
+      if(!existing?.simHtml){
+        const simHtml = await genSimulation(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), simHtml, simLevel:subLevel, tunedSim:existing?.tunedSim||false});
+      }
+    } else if(isPrefaceItem(item)){
+      if(!existing?.entries?.length){
+        const names = await genPrefaceTopics(topicPrompt, subItem.name, subLevelMeta);
+        const entries = names.map(n=>({name:n}));
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, prefaceLevel:subLevel, tunedPreface:existing?.tunedPreface||false});
+      }
+    } else if(isNextItem(item)){
+      if(!existing?.entries?.length){
+        const existingNames = curHierarchy.map(s=>s.name);
+        const names = await genNextTopics(topicPrompt, subItem.name, subLevelMeta, existingNames);
+        const entries = names.map(n=>({name:n}));
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, nextLevel:subLevel, tunedNext:existing?.tunedNext||false});
+      }
+    } else if(isInceptionItem(item)){
+      if(!existing?.entries?.length){
+        const names = await genInceptionPrompts(topicPrompt, subItem.name, subLevelMeta);
+        const entries = names.map(n=>({name:n}));
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, inceptionLevel:subLevel, tunedInception:existing?.tunedInception||false});
+      }
+    } else if(isGlossaryItem(item)){
+      if(!existing?.terms?.length){
+        const terms = await genGlossary(topicPrompt, subItem.name, item.terms||[], subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), terms, glossaryLevel:subLevel, tunedGlossary:existing?.tunedGlossary||false});
+      }
+    } else if(isConfessionItem(item)){
+      if(!existing?.confession){
+        const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
+      }
+    } else if(isHumorItem(item)){
+      if(!existing?.humorEntries?.length){
+        const humorEntries = await genHumor(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), humorEntries, humorLevel:subLevel, tunedHumor:existing?.tunedHumor||false});
+      }
+    } else {
+      if(!existing?.abstraction?.length){
+        const abstraction = await genAbstraction(topicPrompt, subItem.name, uName, subLevel, regularUnitCount(subsubList));
+        await saveJSON(`node:${id}`, {...(existing||{personality:[],blend:null,tunedPersonality:[],tunedBlendKey:null,unitConfused:false}), abstraction, tunedAbstraction:existing?.tunedAbstraction||[]});
+      }
+    }
+  }
+
   async function generateAllContentForSubtopic(subIdx){
     if(!currentTopic||!planData) return;
     setGenAll(true); setGenAllProgress(""); setGenAllError(null);
@@ -3976,159 +4188,7 @@ function Aperture() {
 
         // each unit gets its own try/catch — one failure must not abort the rest of the batch
         try{
-          const existing = await loadJSON(`node:${id}`, null);
-
-          if(isOverviewItem(item)){
-            if(!existing?.essay){
-              const essay = await genSubtopicEssay(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), essay, essayLevel:subLevel, tunedEssay:existing?.tunedEssay||false});
-            }
-          } else if(isExamplesItem(item)){
-            if(!existing?.examples){
-              const examples = await genSubtopicExamples(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), examples, examplesLevel:subLevel, tunedExamples:existing?.tunedExamples||false});
-            }
-          } else if(isResourcesItem(item)){
-            if(!existing?.resources?.length){
-              const resources = await genResources(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), resources, resourcesLevel:subLevel, tunedResources:existing?.tunedResources||false});
-            }
-          } else if(isShoppingItem(item)){
-            if(!existing?.shopItems?.length){
-              const {items,innovations,services} = await genShoppingList(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), shopItems:items, shopInnovations:innovations, shopServices:services, shopLevel:subLevel, tunedShopping:existing?.tunedShopping||false});
-            }
-          } else if(isGamesItem(item)){
-            if(!existing?.crosswordPuzzle){
-              const cwWords = await genCrosswordWords(topicPrompt, subItem.name, subLevelMeta);
-              const cwPuzzle = buildCrossword(cwWords);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), gameType:"crossword", crosswordWords:cwWords, crosswordPuzzle:cwPuzzle, gamesLevel:subLevel, tunedGames:existing?.tunedGames||false});
-            }
-          } else if(isAppIdeasItem(item)){
-            if(!existing?.appIdeas?.length){
-              const appIdeas = await genAppIdeas(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), appIdeas, appIdeasLevel:subLevel, tunedAppIdeas:existing?.tunedAppIdeas||false});
-            }
-          } else if(isEncyclopediaItem(item)){
-            if(!existing?.entries?.length){
-              const entries = await genEncyclopedia(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, encLevel:subLevel, tunedEnc:existing?.tunedEnc||false});
-            }
-          } else if(isBeforeItem(item)){
-            if(!existing?.beforeText){
-              const {before,comparisons} = await genBeforeDiscovery(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), beforeText:before, beforeComparisons:comparisons, beforeLevel:subLevel, tunedBefore:existing?.tunedBefore||false});
-            }
-          } else if(isCompareItem(item)){
-            if(!existing?.approaches?.length){
-              const approaches = await genApproachComparisons(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), approaches, compareLevel:subLevel, tunedCompare:existing?.tunedCompare||false});
-            }
-          } else if(isTimelineItem(item)){
-            if(!existing?.milestones?.length){
-              const milestones = await genTimeline(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), milestones, timelineLevel:subLevel, tunedTimeline:existing?.tunedTimeline||false});
-            }
-          } else if(isButterflyItem(item)){
-            if(!existing?.butterflyScenario){
-              const {scenario,ripples} = await genButterflyEffect(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), butterflyScenario:scenario, butterflyRipples:ripples, butterflyLevel:subLevel, tunedButterfly:existing?.tunedButterfly||false});
-            }
-          } else if(isExperimentsItem(item)){
-            if(!existing?.experiments?.length){
-              const experiments = await genExperiments(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), experiments, experimentsLevel:subLevel, tunedExperiments:existing?.tunedExperiments||false});
-            }
-          } else if(isInvestmentItem(item)){
-            if(!existing?.investItems?.length || !Array.isArray(existing?.investVectors)){
-              const {items:investItems, vectors:investVectors, companies:investCompanies} = await genInvestment(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), investItems, investVectors, investCompanies, investLevel:subLevel, tunedInvest:existing?.tunedInvest||false});
-            }
-          } else if(isPredictionItem(item)){
-            if(!existing?.predScenarios?.length){
-              const predScenarios = await genPrediction(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), predScenarios, predChoice:null, predAt:null, predLevel:subLevel, tunedPred:existing?.tunedPred||false});
-            }
-          } else if(isInterviewItem(item)){
-            if(!existing?.interviewQuestions?.length){
-              const {intro,questions} = await genInterview(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), interviewIntro:intro, interviewQuestions:questions, interviewAnswers:existing?.interviewAnswers||{}, interviewLevel:subLevel, tunedInterview:existing?.tunedInterview||false});
-            }
-          } else if(isQuotesItem(item)){
-            if(!existing?.quotes?.length){
-              const quotes = await genQuotes(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), quotes, quotesLevel:subLevel, tunedQuotes:existing?.tunedQuotes||false});
-            }
-          } else if(isBooksItem(item)){
-            if(!existing?.books?.length){
-              const books = await genBookAdvice(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), books, booksLevel:subLevel, tunedBooks:existing?.tunedBooks||false});
-            }
-          } else if(isBibleItem(item)){
-            if(!existing?.verses?.length){
-              const {verses,wwjd} = await genBibleSection(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), verses, wwjd, bibleLevel:subLevel, tunedBible:existing?.tunedBible||false});
-            }
-          } else if(isActionPlanItem(item)){
-            if(!existing?.stages?.length){
-              const stages = await genActionPlan(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), stages, actionPlanLevel:subLevel, tunedActionPlan:existing?.tunedActionPlan||false});
-            }
-          } else if(isSocraticItem(item)){
-            if(!existing?.steps?.length){
-              const steps = await genSocraticDialogue(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), steps, socraticLevel:subLevel, tunedSocratic:existing?.tunedSocratic||false});
-            }
-          } else if(isTestItem(item)){
-            if(!existing?.testQuestions?.length){
-              const testQuestions = await genTestQuestions(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), testQuestions, testLevel:subLevel, tunedTest:existing?.tunedTest||false});
-            }
-          } else if(isSimulationItem(item)){
-            if(!existing?.simHtml){
-              const simHtml = await genSimulation(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), simHtml, simLevel:subLevel, tunedSim:existing?.tunedSim||false});
-            }
-          } else if(isPrefaceItem(item)){
-            if(!existing?.entries?.length){
-              const names = await genPrefaceTopics(topicPrompt, subItem.name, subLevelMeta);
-              const entries = names.map(n=>({name:n}));
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, prefaceLevel:subLevel, tunedPreface:existing?.tunedPreface||false});
-            }
-          } else if(isNextItem(item)){
-            if(!existing?.entries?.length){
-              const existingNames = curHierarchy.map(s=>s.name);
-              const names = await genNextTopics(topicPrompt, subItem.name, subLevelMeta, existingNames);
-              const entries = names.map(n=>({name:n}));
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, nextLevel:subLevel, tunedNext:existing?.tunedNext||false});
-            }
-          } else if(isInceptionItem(item)){
-            if(!existing?.entries?.length){
-              const names = await genInceptionPrompts(topicPrompt, subItem.name, subLevelMeta);
-              const entries = names.map(n=>({name:n}));
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), entries, inceptionLevel:subLevel, tunedInception:existing?.tunedInception||false});
-            }
-          } else if(isGlossaryItem(item)){
-            if(!existing?.terms?.length){
-              const terms = await genGlossary(topicPrompt, subItem.name, item.terms||[], subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), terms, glossaryLevel:subLevel, tunedGlossary:existing?.tunedGlossary||false});
-            }
-          } else if(isConfessionItem(item)){
-            if(!existing?.confession){
-              const confession = await genAiConfession(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), confession, confessionLevel:subLevel, tunedConfession:existing?.tunedConfession||false});
-            }
-          } else if(isHumorItem(item)){
-            if(!existing?.humorEntries?.length){
-              const humorEntries = await genHumor(topicPrompt, subItem.name, subLevelMeta);
-              await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), humorEntries, humorLevel:subLevel, tunedHumor:existing?.tunedHumor||false});
-            }
-          } else {
-            if(!existing?.abstraction?.length){
-              const abstraction = await genAbstraction(topicPrompt, subItem.name, uName, subLevel, regularUnitCount(subsubList));
-              await saveJSON(`node:${id}`, {...(existing||{personality:[],blend:null,tunedPersonality:[],tunedBlendKey:null,unitConfused:false}), abstraction, tunedAbstraction:existing?.tunedAbstraction||[]});
-            }
-          }
+          await genSectionContent({id, item, subItem, subLevel, subLevelMeta, topicPrompt, subsubList, curHierarchy});
           if(!keysUpdated.includes(id)){ keysUpdated=[...keysUpdated,id]; await saveJSON("allNodeKeys", keysUpdated); }
         }catch(itemErr){
           failures.push(uName);
@@ -4232,10 +4292,9 @@ function Aperture() {
           ):loadingH?<Spinner label="изграждам учебен план…"/>
           :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>resumeTopic(currentTopic)}/>
           :subtopicIdx===null?(
-            desktopMode ? <DesktopGrid topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
-              onOpen={k=>{ const first=hierarchy.findIndex(x=>!isTrailerItem(x)); if(first>=0) openDesktopSection(first,k); }}
-              onExit={()=>{setDesktopMode(false);setDesktopError(null);}}/> :
-            <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:()=>{setDesktopMode(true);setDesktopError(null);}}
+            <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:toggleDesktopMode} desktopOn={desktopMode}
+              desktopSlot={desktopMode ? <DesktopGrid embedded topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
+                onOpen={k=>{ const first=hierarchy.findIndex(x=>!isTrailerItem(x)); if(first>=0) openDesktopSection(first,k); }}/> : null}
               onPick={pickSubtopic}
               onLevelCheck={guestPlanId?null:runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
@@ -4709,10 +4768,22 @@ async function buildStandardSections(topicPrompt, sub, levelMeta){
   return PODCAST_DEFAULT_ORDER.filter(k=>k!=="isInvestment"&&k!=="isPrediction")
     .map(k=>({name:PODCAST_SECTIONS[k][0], [k]:true, ...(k==="isGlossary"?{terms}:{})}));
 }
-function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart}){
+function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded}){
   const hasNews = (hierarchy||[]).some(x=>x.isNewsStory);
   const apps = PODCAST_DEFAULT_ORDER.filter(k=>(hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !((smart||hasNews) && SMART_EXCLUDED.includes(k)));
   const count = (hierarchy||[]).filter(x=>!isTrailerItem(x)).length;
+  if(embedded) return <div className="space-y-3 rounded-lg border border-amber-900/50 bg-stone-900/40 p-4">
+    <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500">🖥 Desktop · отвори приложение и мини през всички {count} теми в него</div>
+    {error&&<ErrorNote message={error}/>}
+    <div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-5">
+      {apps.map(k=>(
+        <button key={k} onClick={()=>onOpen(k)} disabled={!count} className="flex flex-col items-center gap-1.5 group disabled:opacity-40">
+          <span className="w-14 h-14 rounded-2xl bg-gradient-to-br from-stone-700 to-stone-900 border border-stone-700 group-hover:border-amber-500 flex items-center justify-center text-2xl shadow-lg shadow-black/40 transition-colors">{DESKTOP_ICONS[k]||"•"}</span>
+          <span className="font-read text-[11px] leading-tight text-stone-300 text-center">{PODCAST_SECTIONS[k][0]}</span>
+        </button>
+      ))}
+    </div>
+  </div>;
   return <div className="space-y-6">
     <div className="flex items-start justify-between gap-3">
       <div>
@@ -4830,7 +4901,7 @@ function NewsAreaPicker({topics,onPick,onBack,error}){
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onDesktop,smartMode,onToggleSmart,onShare,shareMsg,guest}){
+function SubtopicList({topic,hierarchy,desktopSlot,desktopOn,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onDesktop,smartMode,onToggleSmart,onShare,shareMsg,guest}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -4859,11 +4930,13 @@ function SubtopicList({topic,hierarchy,onPick,onLevelCheck,loadingLevelCheck,lev
         ✨ Умен режим: {smartMode?"вкл.":"изкл."}
       </button>}
       {onShare && <button onClick={onShare} className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-400 hover:border-sky-500 hover:text-sky-300 w-fit">🔗 {shareMsg||"Сподели"}</button>}
-      {onDesktop && <button onClick={onDesktop} className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-amber-800 text-amber-400 hover:border-amber-500 w-fit">🖥 Desktop</button>}
+      {onDesktop && <button onClick={onDesktop} className={`flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border w-fit ${desktopOn?"border-amber-500 text-amber-300 bg-amber-950/30":"border-amber-800 text-amber-400 hover:border-amber-500"}`}>🖥 Desktop: {desktopOn?"вкл.":"изкл."}</button>}
       {!guest && <PodcastExport topic={topic} hierarchy={hierarchy} level={currentLevel}/>}
     </div>
 
     {onEvolve && <EvolvePlanButton onEvolve={onEvolve} evolving={evolving} source={!!topic.isSource}/>}
+
+    {desktopSlot}
 
     {/* T.6: related topic links */}
     {(parentTopic||childTopic||originTopic)&&<div className="space-y-1">
