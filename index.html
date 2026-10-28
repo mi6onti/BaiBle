@@ -817,6 +817,41 @@ Output as blocks separated by a blank line, each block exactly 3 lines: quote te
   }).filter(q=>q.quote && q.author && !/джобс|jobs/i.test(q.author));
 }
 
+// Poetry: a poem tied to the topic — a REAL one only when it is public domain and the exact text is known,
+// otherwise an original poem written for the topic (clearly labelled as such).
+async function genPoetry(topicLabel, subtopicName, levelHint) {
+  const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
+  const raw = await callClaudeRaw(
+`Offer ONE poem connected to "${subtopicName}" (within the broader context of "${topicLabel}") — something that makes the idea felt, not only understood.${levelPart}
+Prefer a REAL poem, but ONLY if (a) it is in the public domain (first published before 1929, or its author died more than 70 years ago) AND (b) you know its exact wording with confidence. Then give it exactly as written (a short poem in full, or one or two complete stanzas of a longer one), with the real title and author — in its original language if that is the topic's language, otherwise in an existing faithful translation you know, or your own faithful translation clearly marked as such.
+If no such real poem genuinely fits, WRITE an original poem for this topic instead (8-20 lines, with rhythm and imagery, not a rhymed lecture) and mark it ORIGINAL. Never present an invented poem as real, and never reproduce a poem still under copyright.
+Then add a short note (2-3 sentences) on how the poem connects to the topic.
+Write in the SAME language as the topic (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Output EXACTLY: ###KIND### REAL or ORIGINAL ###TITLE### title ###AUTHOR### author (for ORIGINAL write: Авторски стих, създаден от AI) ###POEM### the poem, line by line ###NOTE### the note ###END###`, 1400);
+  const f = extractSequentialFields(raw, ["KIND","TITLE","AUTHOR","POEM","NOTE"]);
+  const real = /REAL/i.test(f.KIND||"") && !/ORIGINAL/i.test(f.KIND||"");
+  return { real, title:(f.TITLE||"").trim(), author:(f.AUTHOR||"").trim()||(real?"":"Авторски стих, създаден от AI"), poem:(f.POEM||"").trim(), note:(f.NOTE||"").trim() };
+}
+
+// Reminders: a chosen quote / verse turned into a short message + one concrete habit tied to a real moment
+async function genReminder(topicLabel, subtopicName, quote, ref) {
+  const raw = await callClaudeRaw(
+`The learner studies "${subtopicName}" (within "${topicLabel}") and picked this quote to keep as a reminder:
+QUOTE: ${quote}
+SOURCE / REFERENCE: ${ref||"—"}
+Write in BULGARIAN a short message in exactly this structure:
+CITAT — the chosen quote, quoted exactly (in Bulgarian; if it is a Bible verse use the standard Bulgarian wording you know), followed by " – " and its reference / author.
+MESSAGE — 2-3 sentences that connect the quote with the topic and with one concrete, real moment in life (name the moment vividly).
+HABIT — one concrete, small, doable habit tied to exactly that moment. Say precisely what, when and how (a trigger, a physical action, a short phrase or note, how long it takes). Do not tie it to the morning unless the moment really is in the morning. No generic advice like "помоли се", "прочети Библията", "медитирай" or "бъди благодарен".
+Example of the style (do not reuse it):
+CITAT: „Хвърлете върху Него всичките си грижи, защото Той се грижи за вас.“ – 1 Петрово 5:7
+MESSAGE: Когато стресът те стисне – просрочен срок, неприятно обаждане, прекалено много неща наведнъж – грижата започва да изглежда като твоя лична тежест, която трябва да носиш сам. Стихът те кани да я оставиш, защото има Някой, който наистина я поема. Облекчението не идва, като проблемът изчезне, а като престанеш да го стискаш в юмрук.
+HABIT: В момента, в който усетиш стрес (стегнати рамене, ускорено дишане, мисъл „няма да успея“), направи физически жест на оставяне: стисни двата юмрука за 3 секунди, после бавно ги отвори с дланите нагоре и изкажи на глас или наум една кратка фраза: „Това го оставям.“ След това запиши една-единствена следваща малка стъпка, която зависи от теб (например „изпращам имейла до 14:00“), и се хвани само с нея. Целият навик отнема под минута.
+Output EXACTLY: ###CIT### the quote with reference ###MSG### the message ###HABIT### the habit ###END###`, 900);
+  const f = extractSequentialFields(raw, ["CIT","MSG","HABIT"]);
+  return { citat:(f.CIT||"").trim() || `„${quote}“${ref?` – ${ref}`:""}`, message:(f.MSG||"").trim(), habit:(f.HABIT||"").trim() };
+}
+
 // Advice from books: real books with real authors, only when genuinely confident — never a fabricated title/author.
 async function genBookAdvice(topicLabel, subtopicName, levelHint) {
   const lvl = levelHint?.level||3;
@@ -1677,6 +1712,8 @@ function isBeforeItem(item){ return typeof item==="object" && item!==null && !!i
 function isCompareItem(item){ return typeof item==="object" && item!==null && !!item.isCompare; }
 function isTimelineItem(item){ return typeof item==="object" && item!==null && !!item.isTimeline; }
 function isButterflyItem(item){ return typeof item==="object" && item!==null && !!item.isButterfly; }
+function isPoetryItem(item){ return typeof item==="object" && item!==null && !!item.isPoetry; }
+function isRemindersItem(item){ return typeof item==="object" && item!==null && !!item.isReminders; }
 function isExperimentsItem(item){ return typeof item==="object" && item!==null && !!item.isExperiments; }
 function isInterviewItem(item){ return typeof item==="object" && item!==null && !!item.isInterview; }
 function isInvestmentItem(item){ return typeof item==="object" && item!==null && !!item.isInvestment; }
@@ -1714,10 +1751,10 @@ function hiddenMoreCount(subItem){ return subItem?.showMore ? 0 : (getSubsubList
 function isSmartSub(sub){ return !!(sub && (sub.isNewsStory || sub.smart)); }
 function getDisplayList(subItem){
   const base = visibleSections(subItem);
-  if(subItem?.curiosityQuestions?.length && !GUEST){
-    return [...base, { name:"Любопитно", isCurious:true }];
-  }
-  return base;
+  const extra = [];
+  if(subItem?.curiosityQuestions?.length && !GUEST) extra.push({ name:"Любопитно", isCurious:true });
+  if(subItem?.reminders?.length) extra.push({ name:"Reminders", isReminders:true });
+  return [...base, ...extra];
 }
 function regularUnitCount(subsubList){
   return (subsubList||[]).filter(it=>
@@ -1808,6 +1845,8 @@ function Aperture() {
   const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
   const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
   const [desktopError,setDesktopError] = useState(null);
+  const [desktopPreparing,setDesktopPreparing] = useState(false);
+  const deskPrepRef = useRef(null);
   const [shareMsg,setShareMsg] = useState(null);
   const [guestPlanId,setGuestPlanId] = useState(null); // opened through a shared link (read-only)
   const [guestMissing,setGuestMissing] = useState(false);
@@ -2084,11 +2123,40 @@ function Aperture() {
   const prefetchRef = useRef({lists:{}, inflight:{}});
   const prefetchListKey = (sub, L) => `${currentTopic?.id}|${sub.name}|${L}`;
   function nodeIdFor(sub, L, item){ return `${currentTopic.id}/${slugify(sub.name)}/L${L}/${slugify(subName(item))}`; }
+  // Desktop + smart/news: build the missing per-topic section lists (relevance decided by AI) so that only
+  // apps relevant to some topic are shown. Runs once per plan/level; the lists are saved with the plan.
+  useEffect(()=>{
+    const P = planData, H = hierarchy;
+    if(!desktopMode || !P || !H || !currentTopic || GUEST || subtopicIdx!==null) return;
+    const smartDesk = !!P.smartMode || H.some(x=>x.isNewsStory);
+    if(!smartDesk) return;
+    const missing = H.map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && !(deskList(t.x, P.activeLevel)||[]).length);
+    if(!missing.length) return;
+    const tag = `${currentTopic.id}|${P.activeLevel}`;
+    if(deskPrepRef.current===tag) return;
+    deskPrepRef.current = tag;
+    setDesktopPreparing(true);
+    (async()=>{
+      const topicPrompt = currentTopic.prompt||currentTopic.name;
+      const built = {};
+      let q = [...missing];
+      const worker = async()=>{ while(q.length){ const {x,i} = q.shift(); const L = deskLevel(x, P.activeLevel);
+        try{ built[i] = {L, ...(await buildSmartSections(topicPrompt, x, lvMeta(L)))}; }catch(e){ console.warn("desktop relevance failed", x.name, e); } } };
+      await Promise.all([worker(), worker(), worker()]);
+      const H2 = H.map((x,i)=>{ const b = built[i]; if(!b) return x;
+        return {...x, byLevel:{...(x.byLevel||{}), [b.L]:b.list}, activeLevel:b.L, ...(b.smartPlan?{smartPlan:b.smartPlan}:{}), ...(P.smartMode&&!x.isNewsStory?{smart:true}:{})}; });
+      const P2 = {...P, byLevel:{...P.byLevel, [P.activeLevel]:H2}};
+      setHierarchy(H2); setPlanData(P2);
+      try{ await saveJSON(`plan:${currentTopic.id}`, P2); }catch(e){ console.warn(e); }
+    })().finally(()=>setDesktopPreparing(false));
+  }, [desktopMode, planData?.smartMode, planData?.activeLevel, currentTopic?.id, subtopicIdx, hierarchy]);
+
   async function prefetchDesktopNext(subIdx, key, H, P){
     try{
       if(!H || !P || !currentTopic) return;
       let ni = -1;
-      for(let i=subIdx+1;i<H.length;i++){ if(!isTrailerItem(H[i])){ ni=i; break; } }
+      const smartP = !!P.smartMode;
+      for(let i=subIdx+1;i<H.length;i++){ if(!isTrailerItem(H[i]) && (!(smartP||H[i].isNewsStory) || deskHasKey(H[i], key, P.activeLevel))){ ni=i; break; } }
       if(ni<0) return;
       const sub = H[ni];
       const L = sub.activeLevel || P.activeLevel || 1;
@@ -2385,6 +2453,7 @@ function Aperture() {
       const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
+      const poetryItem = { name:"Poetry", isPoetry:true };
       const booksItem = { name:"Advice from books", isBooks:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
       const beforeItem = { name:"Преди откритието", isBefore:true };
@@ -2394,7 +2463,7 @@ function Aperture() {
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
       const smartBuild = (sub?.isNewsStory||planData?.smartMode) ? await buildSmartSections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : null;
-      const subsubtopics = smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const subsubtopics = smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel, ...(smartBuild?{smartPlan:smartBuild.smartPlan, ...(sub.isNewsStory?{}:{smart:true})}:{})};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -2475,6 +2544,7 @@ function Aperture() {
       const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
       const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
       const quotesItem = { name:"Цитати", isQuotes:true };
+      const poetryItem = { name:"Poetry", isPoetry:true };
       const booksItem = { name:"Advice from books", isBooks:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
       const beforeItem = { name:"Преди откритието", isBefore:true };
@@ -2484,7 +2554,7 @@ function Aperture() {
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
       const smartBuild = (sub?.isNewsStory||planData?.smartMode) ? await buildSmartSections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : null;
-      const subsubtopics = smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const subsubtopics = smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level, ...(smartBuild?{smartPlan:smartBuild.smartPlan, ...(sub.isNewsStory?{}:{smart:true})}:{})};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -2527,8 +2597,20 @@ function Aperture() {
       return;
     }
 
+    if(isRemindersItem(subsubItem)){ setNodeId(null); setNodeData({}); return; }
+
     const id=`${currentTopic.id}/${slugify(sub)}/L${subLevel}/${slugify(subsub)}`;
     setNodeId(id);
+
+    if(isPoetryItem(subsubItem)){
+      const EMPTY={poemText:"",poemLevel:null,tunedPoetry:false,unitConfused:false};
+      const cached=await loadJSON(`node:${id}`,EMPTY);
+      setNodeData(cached);
+      const allKeys=await loadJSON("allNodeKeys",[]);
+      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      if(!cached.poemText) doLoadPoetry(id,sub,subLevel,cached);
+      return;
+    }
 
     if(isPrefaceItem(subsubItem)){
       const EMPTY={entries:[],prefaceLevel:null,tunedPreface:false,prefaceTopicId:null,unitConfused:false};
@@ -2912,6 +2994,7 @@ function Aperture() {
         const resourcesItem = { name:"Ресурси", isResources:true };
         const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
         const quotesItem = { name:"Цитати", isQuotes:true };
+      const poetryItem = { name:"Poetry", isPoetry:true };
       const booksItem = { name:"Advice from books", isBooks:true };
       const bibleItem = { name:"Learn from Bible", isBible:true };
       const beforeItem = { name:"Преди откритието", isBefore:true };
@@ -2933,7 +3016,7 @@ function Aperture() {
       const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -3020,6 +3103,7 @@ function Aperture() {
         const resourcesItem = { name:"Ресурси", isResources:true };
         const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
         const quotesItem = { name:"Цитати", isQuotes:true };
+      const poetryItem = { name:"Poetry", isPoetry:true };
       const booksItem = { name:"Advice from books", isBooks:true };
         const bibleItem = { name:"Learn from Bible", isBible:true };
       const beforeItem = { name:"Преди откритието", isBefore:true };
@@ -3041,7 +3125,7 @@ function Aperture() {
       const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -3127,6 +3211,7 @@ function Aperture() {
         const resourcesItem = { name:"Ресурси", isResources:true };
         const encyclopediaItem = { name:"Енциклопедия", isEncyclopedia:true };
         const quotesItem = { name:"Цитати", isQuotes:true };
+      const poetryItem = { name:"Poetry", isPoetry:true };
         const booksItem = { name:"Advice from books", isBooks:true };
         const bibleItem = { name:"Learn from Bible", isBible:true };
       const beforeItem = { name:"Преди откритието", isBefore:true };
@@ -3148,7 +3233,7 @@ function Aperture() {
         const appIdeasItem = { name:"App Store", isAppIdeas:true };
         const glossaryItem = { name:"Речник", isGlossary:true, terms:rawSubsubtopics };
         const prefaceItem = { name:"Предговор", isPreface:true };
-        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+        const subsubtopics = [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
 
         subEntry = { ...subEntry, byLevel:{...subEntry.byLevel, [level]:subsubtopics}, activeLevel:level };
         metaHierarchy = metaHierarchy.map((s,i)=> i===entryIdx ? subEntry : s);
@@ -3529,6 +3614,57 @@ function Aperture() {
       const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
       setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
     }
+  }
+
+  async function doLoadPoetry(id, sub, subLevel, base){
+    setLoadingL(true);setNodeError(null);
+    try{
+      const p = await genPoetry(currentTopic.prompt||currentTopic.name, sub, lvMeta(subLevel));
+      if(!p.poem) throw new Error("не успях да генерирам стих");
+      const updated = {...base, poemText:p.poem, poemTitle:p.title, poemAuthor:p.author, poemReal:p.real, poemNote:p.note, poemLevel:subLevel};
+      setNodeData(updated);
+      const r=await saveJSON(`node:${id}`,updated);
+      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){setNodeError(`Грешка: ${e.message}`);}
+    finally{setLoadingL(false);}
+  }
+  async function tunePoetry(){
+    if(!nodeData||nodeData.tunedPoetry)return;
+    const level = nodeData.poemLevel;
+    const updNode={...nodeData,tunedPoetry:true};
+    setNodeData(updNode);
+    await saveJSON(`node:${nodeId}`,updNode);
+    if(level){
+      const updPrefs={...prefs,abstraction:{...prefs.abstraction,[level]:(prefs.abstraction?.[level]||0)+1}};
+      setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
+    }
+  }
+  // Reminders: turn a chosen quote / verse into message + habit, kept on the topic (shown as its own section)
+  const [remindBusy,setRemindBusy] = useState(null);
+  async function addReminder(subIdx, quote, ref){
+    const sub = hierarchy?.[subIdx];
+    if(!sub || !planData || remindBusy) return;
+    setRemindBusy(quote); setNodeError(null);
+    try{
+      const r = await genReminder(currentTopic.prompt||currentTopic.name, sub.name, quote, ref);
+      const item = {id:uid(), quote, ref:ref||"", ...r, createdAt:Date.now()};
+      const updSub = {...sub, reminders:[...(sub.reminders||[]), item]};
+      const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
+      const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
+      setHierarchy(H); setPlanData(P);
+      await saveJSON(`plan:${currentTopic.id}`, P);
+    }catch(e){ setNodeError(`Грешка при Reminder: ${e.message}`); }
+    finally{ setRemindBusy(null); }
+  }
+  async function deleteReminder(subIdx, rid){
+    const sub = hierarchy?.[subIdx];
+    if(!sub || !planData) return;
+    const updSub = {...sub, reminders:(sub.reminders||[]).filter(r=>r.id!==rid)};
+    const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
+    const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
+    setHierarchy(H); setPlanData(P);
+    await saveJSON(`plan:${currentTopic.id}`, P);
+    if(!updSub.reminders.length){ setSubsubIdx(null); setNodeData(null); }
   }
 
   async function doLoadExperiments(id, sub, subLevel, base){
@@ -4062,6 +4198,13 @@ function Aperture() {
         const {scenario,ripples} = await genButterflyEffect(topicPrompt, subItem.name, subLevelMeta);
         await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), butterflyScenario:scenario, butterflyRipples:ripples, butterflyLevel:subLevel, tunedButterfly:existing?.tunedButterfly||false});
       }
+    } else if(isPoetryItem(item)){
+      if(!existing?.poemText){
+        const p = await genPoetry(topicPrompt, subItem.name, subLevelMeta);
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), poemText:p.poem, poemTitle:p.title, poemAuthor:p.author, poemReal:p.real, poemNote:p.note, poemLevel:subLevel, tunedPoetry:existing?.tunedPoetry||false});
+      }
+    } else if(isRemindersItem(item)){
+      // nothing to generate — reminders are added by hand from quotes
     } else if(isExperimentsItem(item)){
       if(!existing?.experiments?.length){
         const experiments = await genExperiments(topicPrompt, subItem.name, subLevelMeta);
@@ -4294,7 +4437,8 @@ function Aperture() {
           :subtopicIdx===null?(
             <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:toggleDesktopMode} desktopOn={desktopMode}
               desktopSlot={desktopMode ? <DesktopGrid embedded topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
-                onOpen={k=>{ const first=hierarchy.findIndex(x=>!isTrailerItem(x)); if(first>=0) openDesktopSection(first,k); }}/> : null}
+                preparing={desktopPreparing} planLevel={planData?.activeLevel}
+                onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel))); if(first>=0) openDesktopSection(first,k); }}/> : null}
               onPick={pickSubtopic}
               onLevelCheck={guestPlanId?null:runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
@@ -4326,7 +4470,7 @@ function Aperture() {
                 : (isSmartSub(hierarchy[subtopicIdx]) && hiddenMoreCount(hierarchy[subtopicIdx])>0 ? ()=>revealMoreSections(subtopicIdx) : null)}
               readMoreLabel={hierarchy[subtopicIdx]?.isNewsStory ? null : `Прочети още · ${hiddenMoreCount(hierarchy[subtopicIdx])} секции`} generatingAll={generatingAll} genAllProgress={genAllProgress} genAllError={genAllError}/>
           ):(
-            <>{desktopApp && <DesktopBar appKey={desktopApp} hierarchy={hierarchy} subIdx={subtopicIdx} error={desktopError}
+            <>{desktopApp && <DesktopBar appKey={desktopApp} hierarchy={hierarchy} subIdx={subtopicIdx} error={desktopError} smart={!!planData?.smartMode} planLevel={planData?.activeLevel}
               onPickTopic={i=>openDesktopSection(i,desktopApp)} onExit={exitDesktopApp}/>}
             <NodeView
               topic={topicLabel(currentTopic)}
@@ -4346,6 +4490,12 @@ function Aperture() {
               isTimeline={isTimelineItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isButterfly={isButterflyItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isExperiments={isExperimentsItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isPoetry={isPoetryItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              isReminders={isRemindersItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              reminders={hierarchy[subtopicIdx].reminders||[]}
+              onRemind={guestPlanId?null:(q,ref)=>addReminder(subtopicIdx,q,ref)} remindBusy={remindBusy}
+              onDeleteReminder={guestPlanId?null:(rid)=>deleteReminder(subtopicIdx,rid)}
+              onRetryPoetry={()=>doLoadPoetry(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)} onTunePoetry={tunePoetry}
               isInterview={isInterviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isInvestment={isInvestmentItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
               isPrediction={isPredictionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
@@ -4541,6 +4691,7 @@ const PODCAST_SECTIONS = {
   isButterfly:["Butterfly Effect","Хипотетично: какво би било различно, ако това никога не се беше случило. Правдоподобни последици, ясно обявени като спекулация."],
   isCompare:["Сравнения","Сравнение с 2–4 подхода, с които темата често се сравнява или бърка: ключовата разлика и кога кое да изберем."],
   isQuotes:["Цитати","Реални, точно атрибутирани цитати на хора, свързани с темата. Без измислени цитати."],
+  isPoetry:["Poetry","Стихотворение, свързано с темата — реално (от обществено достояние), а ако няма подходящо — авторско, създадено за темата — с кратка бележка за връзката."],
   isBooks:["Advice from books","Реални книги с идеи, приложими към темата, и накратко какво казват."],
   isBible:["Learn from Bible","Библейски стихове, свързани с темата, и размисъл какво би направил Исус в подобна ситуация."],
   isSocratic:["Сократически диалог","Поредица от насочващи въпроси, които водят слушателя сам до разбирането. Оставете кратка пауза за размисъл след всеки."],
@@ -4557,7 +4708,7 @@ const PODCAST_SECTIONS = {
   isNext:["Приложение","Къде другаде се прилага тази концепция — неочаквани връзки с други области."],
   isInception:["Inception","Какви въпроси би задал човек на AI, за да усвои темата възможно най-бързо."],
 };
-const PODCAST_DEFAULT_ORDER = ["isPreface","isGlossary","isOverview","isInvestment","isPrediction","isExamples","isResources","isEncyclopedia","isBefore","isTimeline","isButterfly","isCompare","isQuotes","isBooks","isBible","isSocratic","isConfession","isInterview","isHumor","isActionPlan","isExperiments","isSimulation","isGames","isAppIdeas","isTest","isShopping","isNext","isInception"];
+const PODCAST_DEFAULT_ORDER = ["isPreface","isGlossary","isOverview","isInvestment","isPrediction","isExamples","isResources","isEncyclopedia","isBefore","isTimeline","isButterfly","isCompare","isQuotes","isPoetry","isBooks","isBible","isSocratic","isConfession","isInterview","isHumor","isActionPlan","isExperiments","isSimulation","isGames","isAppIdeas","isTest","isShopping","isNext","isInception"];
 function podcastSectionKey(item){ return (item && typeof item==="object") ? Object.keys(PODCAST_SECTIONS).find(k=>item[k]) : null; }
 function buildPodcastScript(topic, hierarchy, level){
   const L = [];
@@ -4761,28 +4912,38 @@ function sectionTitle(item){ return item?.catchy ? `${subName(item)} · ${item.c
 
 // ── Desktop режим ── every section is an "app"; inside an app you move through all the plan's topics,
 // and "Прочети още" takes the same section of the same topic one level deeper.
-const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
+const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
 // the regular (non-news) full section list, same items as the plan's own builder
 async function buildStandardSections(topicPrompt, sub, levelMeta){
   const terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
   return PODCAST_DEFAULT_ORDER.filter(k=>k!=="isInvestment"&&k!=="isPrediction")
     .map(k=>({name:PODCAST_SECTIONS[k][0], [k]:true, ...(k==="isGlossary"?{terms}:{})}));
 }
-function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded}){
+// Desktop + Умен режим / news: a section "app" exists only for the topics whose own (relevant) section list has it
+function deskLevel(sub, planLevel){ return sub?.activeLevel || planLevel || 1; }
+function deskList(sub, planLevel){ return sub?.byLevel?.[deskLevel(sub, planLevel)] || null; }
+function deskHasKey(sub, key, planLevel){ const l = deskList(sub, planLevel); return !l || l.some(it=>podcastSectionKey(it)===key); }
+function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,preparing,planLevel}){
   const hasNews = (hierarchy||[]).some(x=>x.isNewsStory);
-  const apps = PODCAST_DEFAULT_ORDER.filter(k=>(hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !((smart||hasNews) && SMART_EXCLUDED.includes(k)));
-  const count = (hierarchy||[]).filter(x=>!isTrailerItem(x)).length;
+  const realTopics = (hierarchy||[]).filter(x=>!isTrailerItem(x));
+  const count = realTopics.length;
+  const smartDesk = smart || hasNews;
+  // in smart/news plans: only apps that are relevant to at least one topic, with how many topics have them
+  const relCount = k => realTopics.filter(x=>{ const l=deskList(x, planLevel); return l && l.some(it=>podcastSectionKey(it)===k); }).length;
+  const apps = PODCAST_DEFAULT_ORDER.filter(k=>(hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || relCount(k)>0));
   if(embedded) return <div className="space-y-3 rounded-lg border border-amber-900/50 bg-stone-900/40 p-4">
-    <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500">🖥 Desktop · отвори приложение и мини през всички {count} теми в него</div>
+    <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500">🖥 Desktop · {smartDesk?"само релевантните приложения — във всяко минаваш през темите, за които е подходящо":`отвори приложение и мини през всички ${count} теми в него`}</div>
     {error&&<ErrorNote message={error}/>}
+    {preparing ? <Spinner label="подбирам релевантните приложения за всяка тема…"/> :
     <div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-5">
       {apps.map(k=>(
-        <button key={k} onClick={()=>onOpen(k)} disabled={!count} className="flex flex-col items-center gap-1.5 group disabled:opacity-40">
+        <button key={k} onClick={()=>onOpen(k)} disabled={!count} className="relative flex flex-col items-center gap-1.5 group disabled:opacity-40">
+          {smartDesk && relCount(k)<count && <span className="absolute -top-1 right-1 font-mono-cal text-[10px] px-1 rounded-full bg-amber-600 text-stone-950">{relCount(k)}</span>}
           <span className="w-14 h-14 rounded-2xl bg-gradient-to-br from-stone-700 to-stone-900 border border-stone-700 group-hover:border-amber-500 flex items-center justify-center text-2xl shadow-lg shadow-black/40 transition-colors">{DESKTOP_ICONS[k]||"•"}</span>
           <span className="font-read text-[11px] leading-tight text-stone-300 text-center">{PODCAST_SECTIONS[k][0]}</span>
         </button>
       ))}
-    </div>
+    </div>}
   </div>;
   return <div className="space-y-6">
     <div className="flex items-start justify-between gap-3">
@@ -4804,8 +4965,8 @@ function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded}){
     </div>
   </div>;
 }
-function DesktopBar({appKey,hierarchy,subIdx,onPickTopic,onExit,error}){
-  const topics = (hierarchy||[]).map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x));
+function DesktopBar({appKey,hierarchy,subIdx,onPickTopic,onExit,error,smart,planLevel}){
+  const topics = (hierarchy||[]).map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && (!(smart||t.x.isNewsStory) || t.i===subIdx || deskHasKey(t.x, appKey, planLevel)));
   const pos = topics.findIndex(t=>t.i===subIdx);
   const prev = pos>0 ? topics[pos-1] : null;
   const next = pos>=0 && pos<topics.length-1 ? topics[pos+1] : null;
@@ -5104,7 +5265,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -5355,6 +5516,33 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
     </div>;
   }
 
+  const head = (color) => <>
+    <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
+      <ChevronLeft size={16}/> {subtopic}
+    </button>
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <div className={`font-mono-cal text-xs ${color} flex items-center gap-1`}><Sparkles size={12}/> {topic} › {subtopic}</div>
+        <h2 className="font-display text-xl font-bold text-stone-100">{subsub}</h2>
+      </div>
+    </div>
+  </>;
+  if(isPoetry){
+    return <div className="space-y-5">
+      {head("text-rose-300")}
+      {error&&<ErrorNote message={error} onRetry={onRetryPoetry}/>}
+      <PoetryPanel loading={loadingLevels} data={nodeData} tuned={!!nodeData?.tunedPoetry} onTune={onTunePoetry}/>
+    </div>;
+  }
+  if(isReminders){
+    return <div className="space-y-5">
+      {head("text-amber-300")}
+      <p className="font-read text-stone-500 text-sm italic">🔔 Цитати, които си избрал да пазиш — с послание и малък навик за конкретен момент.</p>
+      {error&&<ErrorNote message={error}/>}
+      <RemindersPanel reminders={reminders||[]} onDelete={onDeleteReminder}/>
+    </div>;
+  }
+
   if(isExperiments){
     return <div className="space-y-5">
       <button onClick={onBack} className="flex items-center gap-1 text-stone-500 hover:text-stone-300 text-sm font-mono-cal">
@@ -5455,7 +5643,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
-      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes}/>
+      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
     </div>;
   }
 
@@ -5496,7 +5684,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
         </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryBible}/>}
-      <BiblePanel loading={loadingLevels} verses={nodeData?.verses||[]} wwjd={nodeData?.wwjd||[]} tuned={!!nodeData?.tunedBible} onTune={onTuneBible} onAsk={onAsk} curiosityQuestions={curiosityQuestions}/>
+      <BiblePanel loading={loadingLevels} verses={nodeData?.verses||[]} wwjd={nodeData?.wwjd||[]} tuned={!!nodeData?.tunedBible} onTune={onTuneBible} onAsk={onAsk} curiosityQuestions={curiosityQuestions} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
     </div>;
   }
 
@@ -6251,7 +6439,53 @@ function HumorPanel({loading,entries,tuned,onTune}){
   </div>;
 }
 
-function QuotesPanel({loading,quotes,tuned,onTune}){
+function RemindButton({quote,refText,onRemind,remindBusy,reminders}){
+  if(!onRemind) return null;
+  const done = (reminders||[]).some(r=>r.quote===quote);
+  const busy = remindBusy===quote;
+  return <button onClick={()=>!done&&!busy&&onRemind(quote,refText)} disabled={done||(!!remindBusy&&!busy)}
+    className={`mt-2 inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${done?"border-amber-700 text-amber-400 bg-amber-950/30":"border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-300"} disabled:opacity-60`}>
+    {busy ? <><Loader2 size={11} className="animate-spin"/> добавям…</> : done ? "🔔 в Reminders ✓" : "🔔 Добави в Reminders"}
+  </button>;
+}
+function RemindersPanel({reminders,onDelete}){
+  const [copied,setCopied] = useState(null);
+  if(!reminders.length) return <p className="font-read text-stone-500 text-sm">Няма добавени reminders.</p>;
+  const asText = r => `Цитат: ${r.citat}\nМотивационно послание: ${r.message}\nНавик за изграждане: ${r.habit}`;
+  return <div className="space-y-4">
+    {reminders.map(r=>(
+      <div key={r.id} className="rounded border border-amber-900/50 bg-amber-950/10 p-4 space-y-2.5">
+        <p className="font-read text-stone-100 leading-relaxed"><span className="font-bold text-amber-300">Цитат:</span> <span className="italic">{r.citat}</span></p>
+        <p className="font-read text-stone-200 leading-relaxed"><span className="font-bold text-amber-300">Мотивационно послание:</span> {r.message}</p>
+        <p className="font-read text-stone-200 leading-relaxed"><span className="font-bold text-amber-300">Навик за изграждане:</span> {r.habit}</p>
+        <div className="flex gap-3 pt-1">
+          <button onClick={()=>{ try{navigator.clipboard.writeText(asText(r)); setCopied(r.id); setTimeout(()=>setCopied(null),1500);}catch(e){} }}
+            className="font-mono-cal text-[11px] text-stone-400 hover:text-amber-300">{copied===r.id?"копирано ✓":"копирай"}</button>
+          {onDelete && <button onClick={()=>onDelete(r.id)} className="font-mono-cal text-[11px] text-stone-500 hover:text-red-400">изтрий</button>}
+        </div>
+      </div>
+    ))}
+  </div>;
+}
+function PoetryPanel({loading,data,tuned,onTune}){
+  if(loading) return <Spinner label="търся подходящ стих…"/>;
+  if(!data?.poemText) return null;
+  return <div className="space-y-4">
+    <div className="rounded border border-rose-900/50 bg-rose-950/10 p-5">
+      <div className="font-mono-cal text-[10px] uppercase tracking-wide mb-2">
+        {data.poemReal ? <span className="text-emerald-400">Реално произведение</span> : <span className="text-amber-400">✍ Авторски стих, създаден от AI за темата</span>}
+      </div>
+      {data.poemTitle && <div className="font-display text-rose-200 font-bold text-lg">{data.poemTitle}</div>}
+      {data.poemAuthor && <div className="font-mono-cal text-xs text-rose-400 mb-3">{data.poemAuthor}</div>}
+      <div className="font-read text-stone-100 leading-relaxed text-lg italic whitespace-pre-line">{data.poemText}</div>
+    </div>
+    {data.poemNote && <p className="font-read text-stone-300 leading-relaxed">{data.poemNote}</p>}
+    {data.poemReal && <p className="font-read text-stone-500 text-xs italic">AI-генерирано — провери текста и авторството преди да го цитираш другаде.</p>}
+    <div><TuneButton tuned={tuned} onClick={onTune}/></div>
+  </div>;
+}
+
+function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders}){
   if(loading) return <Spinner label="търся подходящи цитати…"/>;
   quotes = (quotes||[]).filter(q=>!/джобс|jobs/i.test(q?.author||"")); // already-saved Steve Jobs entries are hidden too
   if(!quotes.length) return null;
@@ -6262,6 +6496,7 @@ function QuotesPanel({loading,quotes,tuned,onTune}){
           {q.speculative && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-500 mb-1.5">⚠ Хипотетично — не е потвърден реален цитат</div>}
           <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{q.quote}"</p>
           <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
+          <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
         </div>
       ))}
     </div>
@@ -6286,7 +6521,7 @@ function BooksPanel({loading,books,tuned,onTune}){
   </div>;
 }
 
-function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions}){
+function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions,onRemind,remindBusy,reminders}){
   if(loading) return <Spinner label="търся подходящи стихове…"/>;
   if((!verses||!verses.length)&&(!wwjd||!wwjd.length)) return null;
   return <div className="space-y-4">
@@ -6298,6 +6533,7 @@ function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions})
           <div className="font-mono-cal text-xs text-purple-400 mb-1">{v.ref}</div>
           <p className="font-read text-stone-100 leading-relaxed text-lg italic mb-2">„{v.text}"</p>
           <p className="font-read text-stone-300 leading-relaxed text-base">{v.reflection}</p>
+          <RemindButton quote={v.text} refText={v.ref} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
         </div>
       ))}
     </div>}
