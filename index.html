@@ -822,10 +822,10 @@ Output as blocks separated by a blank line, each block exactly 3 lines: quote te
 async function genPoetry(topicLabel, subtopicName, levelHint) {
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
-`Offer ONE poem connected to "${subtopicName}" (within the broader context of "${topicLabel}") — something that makes the idea felt, not only understood.${levelPart}
+`Offer ONE poem connected to "${subtopicName}" (within the broader context of "${topicLabel}") — something that makes the idea felt, not only understood. The connection should be through meaning and image, not a literal 1:1 retelling of the topic.${levelPart}
 Prefer a REAL poem, but ONLY if (a) it is in the public domain (first published before 1929, or its author died more than 70 years ago) AND (b) you know its exact wording with confidence. Then give it exactly as written (a short poem in full, or one or two complete stanzas of a longer one), with the real title and author — in its original language if that is the topic's language, otherwise in an existing faithful translation you know, or your own faithful translation clearly marked as such.
-If no such real poem genuinely fits, WRITE an original poem for this topic instead (8-20 lines, with rhythm and imagery, not a rhymed lecture) and mark it ORIGINAL. Never present an invented poem as real, and never reproduce a poem still under copyright.
-Then add a short note (2-3 sentences) on how the poem connects to the topic.
+If no such real poem genuinely fits, WRITE an original poem instead and mark it ORIGINAL. It must be real poetry, not a rhymed summary: 10-24 lines, rhythmic and musical, but rhyme is NOT required — free verse or irregular, subtle rhyme is welcome; never simple sing-song rhymes. Do NOT retell the topic literally or name its terms one by one: connect to it through meaning — a metaphor, an image, a scene or a human situation that carries the topic's essence, with a hidden layer the reader discovers on a second reading. Concrete images over abstractions, surprising but precise word choices, an ending that turns or deepens the meaning. Never present an invented poem as real, and never reproduce a poem still under copyright.
+Then add a short note (2-3 sentences) revealing the hidden connection between the poem and the topic — what the image stands for.
 Write in the SAME language as the topic (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
 Output EXACTLY: ###KIND### REAL or ORIGINAL ###TITLE### title ###AUTHOR### author (for ORIGINAL write: Авторски стих, създаден от AI) ###POEM### the poem, line by line ###NOTE### the note ###END###`, 1400);
   const f = extractSequentialFields(raw, ["KIND","TITLE","AUTHOR","POEM","NOTE"]);
@@ -833,23 +833,33 @@ Output EXACTLY: ###KIND### REAL or ORIGINAL ###TITLE### title ###AUTHOR### autho
   return { real, title:(f.TITLE||"").trim(), author:(f.AUTHOR||"").trim()||(real?"":"Авторски стих, създаден от AI"), poem:(f.POEM||"").trim(), note:(f.NOTE||"").trim() };
 }
 
-// Reminders: a chosen quote / verse turned into a short message + one concrete habit tied to a real moment
+// Habits (stored as sub.reminders / isReminders for compatibility): a chosen quote / verse turned into a life habit
 async function genReminder(topicLabel, subtopicName, quote, ref) {
   const raw = await callClaudeRaw(
-`The learner studies "${subtopicName}" (within "${topicLabel}") and picked this quote to keep as a reminder:
+`The learner studies "${subtopicName}" (within "${topicLabel}") and picked this quote to turn into a habit for their everyday life:
 QUOTE: ${quote}
 SOURCE / REFERENCE: ${ref||"—"}
 Write in BULGARIAN a short message in exactly this structure:
 CITAT — the chosen quote, quoted exactly (in Bulgarian; if it is a Bible verse use the standard Bulgarian wording you know), followed by " – " and its reference / author.
 MESSAGE — 2-3 sentences that connect the quote with the topic and with one concrete, real moment in life (name the moment vividly).
 HABIT — one concrete, small, doable habit tied to exactly that moment. Say precisely what, when and how (a trigger, a physical action, a short phrase or note, how long it takes). Do not tie it to the morning unless the moment really is in the morning. No generic advice like "помоли се", "прочети Библията", "медитирай" or "бъди благодарен".
+IMPORTANT: this is a habit for the learner's everyday LIFE — work, relationships, health, money, stress, family, decisions — not a habit about reading, studying or learning the topic.
+Then, for that habit:
+TIME — the recommended time to do it (a clock time or time window, e.g. "около 13:00, след обяда"; if it is purely trigger-based, say so and give the typical time that moment happens).
+FREQ — how often (e.g. "всеки работен ден", "всеки път, когато…", "3 пъти седмично").
+TRIGGER — the exact cue that starts it (a moment, place, feeling or preceding action — "след като…" / "когато…").
+ATTRACT — how to make it attractive: 2-3 concrete ideas (pair it with something you enjoy, a tiny reward, visible progress, doing it with someone).
+BAD — the opposite harmful habit it should replace, if there is a real one (one sentence: what it is and when it shows up); if there is none, write "Няма ясно изразен".
+UNATTRACT — how to make that harmful habit unattractive or harder: 2-3 concrete ideas (add friction, remove the cue, make its cost visible, tell someone). If BAD is none, write "—".
 Example of the style (do not reuse it):
 CITAT: „Хвърлете върху Него всичките си грижи, защото Той се грижи за вас.“ – 1 Петрово 5:7
 MESSAGE: Когато стресът те стисне – просрочен срок, неприятно обаждане, прекалено много неща наведнъж – грижата започва да изглежда като твоя лична тежест, която трябва да носиш сам. Стихът те кани да я оставиш, защото има Някой, който наистина я поема. Облекчението не идва, като проблемът изчезне, а като престанеш да го стискаш в юмрук.
 HABIT: В момента, в който усетиш стрес (стегнати рамене, ускорено дишане, мисъл „няма да успея“), направи физически жест на оставяне: стисни двата юмрука за 3 секунди, после бавно ги отвори с дланите нагоре и изкажи на глас или наум една кратка фраза: „Това го оставям.“ След това запиши една-единствена следваща малка стъпка, която зависи от теб (например „изпращам имейла до 14:00“), и се хвани само с нея. Целият навик отнема под минута.
-Output EXACTLY: ###CIT### the quote with reference ###MSG### the message ###HABIT### the habit ###END###`, 900);
-  const f = extractSequentialFields(raw, ["CIT","MSG","HABIT"]);
-  return { citat:(f.CIT||"").trim() || `„${quote}“${ref?` – ${ref}`:""}`, message:(f.MSG||"").trim(), habit:(f.HABIT||"").trim() };
+Output EXACTLY: ###CIT### the quote with reference ###MSG### the message ###HABIT### the habit ###TIME### time ###FREQ### frequency ###TRIGGER### trigger ###ATTRACT### make it attractive ###BAD### opposite harmful habit ###UNATTRACT### make it unattractive ###END###`, 1600);
+  const f = extractSequentialFields(raw, ["CIT","MSG","HABIT","TIME","FREQ","TRIGGER","ATTRACT","BAD","UNATTRACT"]);
+  const t = k => (f[k]||"").trim();
+  return { citat:t("CIT") || `„${quote}“${ref?` – ${ref}`:""}`, message:t("MSG"), habit:t("HABIT"),
+    time:t("TIME"), freq:t("FREQ"), trigger:t("TRIGGER"), attract:t("ATTRACT"), bad:t("BAD"), unattract:t("UNATTRACT") };
 }
 
 // Advice from books: real books with real authors, only when genuinely confident — never a fabricated title/author.
@@ -1753,7 +1763,7 @@ function getDisplayList(subItem){
   const base = visibleSections(subItem);
   const extra = [];
   if(subItem?.curiosityQuestions?.length && !GUEST) extra.push({ name:"Любопитно", isCurious:true });
-  if(subItem?.reminders?.length) extra.push({ name:"Reminders", isReminders:true });
+  if(subItem?.reminders?.length) extra.push({ name:"Habits", isReminders:true });
   return [...base, ...extra];
 }
 function regularUnitCount(subsubList){
@@ -1845,8 +1855,6 @@ function Aperture() {
   const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
   const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
   const [desktopError,setDesktopError] = useState(null);
-  const [desktopPreparing,setDesktopPreparing] = useState(false);
-  const deskPrepRef = useRef(null);
   const [shareMsg,setShareMsg] = useState(null);
   const [guestPlanId,setGuestPlanId] = useState(null); // opened through a shared link (read-only)
   const [guestMissing,setGuestMissing] = useState(false);
@@ -2123,34 +2131,6 @@ function Aperture() {
   const prefetchRef = useRef({lists:{}, inflight:{}});
   const prefetchListKey = (sub, L) => `${currentTopic?.id}|${sub.name}|${L}`;
   function nodeIdFor(sub, L, item){ return `${currentTopic.id}/${slugify(sub.name)}/L${L}/${slugify(subName(item))}`; }
-  // Desktop + smart/news: build the missing per-topic section lists (relevance decided by AI) so that only
-  // apps relevant to some topic are shown. Runs once per plan/level; the lists are saved with the plan.
-  useEffect(()=>{
-    const P = planData, H = hierarchy;
-    if(!desktopMode || !P || !H || !currentTopic || GUEST || subtopicIdx!==null) return;
-    const smartDesk = !!P.smartMode || H.some(x=>x.isNewsStory);
-    if(!smartDesk) return;
-    const missing = H.map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && !(deskList(t.x, P.activeLevel)||[]).length);
-    if(!missing.length) return;
-    const tag = `${currentTopic.id}|${P.activeLevel}`;
-    if(deskPrepRef.current===tag) return;
-    deskPrepRef.current = tag;
-    setDesktopPreparing(true);
-    (async()=>{
-      const topicPrompt = currentTopic.prompt||currentTopic.name;
-      const built = {};
-      let q = [...missing];
-      const worker = async()=>{ while(q.length){ const {x,i} = q.shift(); const L = deskLevel(x, P.activeLevel);
-        try{ built[i] = {L, ...(await buildSmartSections(topicPrompt, x, lvMeta(L)))}; }catch(e){ console.warn("desktop relevance failed", x.name, e); } } };
-      await Promise.all([worker(), worker(), worker()]);
-      const H2 = H.map((x,i)=>{ const b = built[i]; if(!b) return x;
-        return {...x, byLevel:{...(x.byLevel||{}), [b.L]:b.list}, activeLevel:b.L, ...(b.smartPlan?{smartPlan:b.smartPlan}:{}), ...(P.smartMode&&!x.isNewsStory?{smart:true}:{})}; });
-      const P2 = {...P, byLevel:{...P.byLevel, [P.activeLevel]:H2}};
-      setHierarchy(H2); setPlanData(P2);
-      try{ await saveJSON(`plan:${currentTopic.id}`, P2); }catch(e){ console.warn(e); }
-    })().finally(()=>setDesktopPreparing(false));
-  }, [desktopMode, planData?.smartMode, planData?.activeLevel, currentTopic?.id, subtopicIdx, hierarchy]);
-
   async function prefetchDesktopNext(subIdx, key, H, P){
     try{
       if(!H || !P || !currentTopic) return;
@@ -2192,6 +2172,13 @@ function Aperture() {
     const H0 = hierarchy, P0 = planData;
     const sub = H0?.[subIdx];
     if(!sub || !P0) return;
+    if(key==="isReminders"){
+      const idx = getDisplayList(sub).findIndex(it=>isRemindersItem(it));
+      if(idx<0){ setDesktopError("Тази тема няма навици."); return; }
+      setDesktopError(null); setDesktopApp(key);
+      await openNode(subIdx, idx, H0, P0);
+      return;
+    }
     const L = level || sub.activeLevel || P0.activeLevel || 1;
     const levelMeta = lvMeta(L);
     const topicPrompt = currentTopic.prompt||currentTopic.name;
@@ -3653,7 +3640,7 @@ function Aperture() {
       const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
       setHierarchy(H); setPlanData(P);
       await saveJSON(`plan:${currentTopic.id}`, P);
-    }catch(e){ setNodeError(`Грешка при Reminder: ${e.message}`); }
+    }catch(e){ setNodeError(`Грешка при Habit: ${e.message}`); }
     finally{ setRemindBusy(null); }
   }
   async function deleteReminder(subIdx, rid){
@@ -4437,8 +4424,8 @@ function Aperture() {
           :subtopicIdx===null?(
             <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:toggleDesktopMode} desktopOn={desktopMode}
               desktopSlot={desktopMode ? <DesktopGrid embedded topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
-                preparing={desktopPreparing} planLevel={planData?.activeLevel}
-                onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel))); if(first>=0) openDesktopSection(first,k); }}/> : null}
+                planLevel={planData?.activeLevel}
+                onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (k==='isReminders' ? deskHasKey(x,k) : (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel)))); if(first>=0) openDesktopSection(first,k); }}/> : null}
               onPick={pickSubtopic}
               onLevelCheck={guestPlanId?null:runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
@@ -4912,7 +4899,7 @@ function sectionTitle(item){ return item?.catchy ? `${subName(item)} · ${item.c
 
 // ── Desktop режим ── every section is an "app"; inside an app you move through all the plan's topics,
 // and "Прочети още" takes the same section of the same topic one level deeper.
-const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
+const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isReminders:"🌱",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
 // the regular (non-news) full section list, same items as the plan's own builder
 async function buildStandardSections(topicPrompt, sub, levelMeta){
   const terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
@@ -4920,27 +4907,34 @@ async function buildStandardSections(topicPrompt, sub, levelMeta){
     .map(k=>({name:PODCAST_SECTIONS[k][0], [k]:true, ...(k==="isGlossary"?{terms}:{})}));
 }
 // Desktop + Умен режим / news: a section "app" exists only for the topics whose own (relevant) section list has it
+function deskAppName(k){ return k==="isReminders" ? "Habits" : (PODCAST_SECTIONS[k]?.[0]||k); }
 function deskLevel(sub, planLevel){ return sub?.activeLevel || planLevel || 1; }
 function deskList(sub, planLevel){ return sub?.byLevel?.[deskLevel(sub, planLevel)] || null; }
-function deskHasKey(sub, key, planLevel){ const l = deskList(sub, planLevel); return !l || l.some(it=>podcastSectionKey(it)===key); }
-function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,preparing,planLevel}){
+function deskHasKey(sub, key, planLevel){ if(key==="isReminders") return !!sub?.reminders?.length; const l = deskList(sub, planLevel); return !l || l.some(it=>podcastSectionKey(it)===key); }
+function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLevel}){
   const hasNews = (hierarchy||[]).some(x=>x.isNewsStory);
   const realTopics = (hierarchy||[]).filter(x=>!isTrailerItem(x));
   const count = realTopics.length;
   const smartDesk = smart || hasNews;
   // in smart/news plans: only apps that are relevant to at least one topic, with how many topics have them
-  const relCount = k => realTopics.filter(x=>{ const l=deskList(x, planLevel); return l && l.some(it=>podcastSectionKey(it)===k); }).length;
-  const apps = PODCAST_DEFAULT_ORDER.filter(k=>(hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || relCount(k)>0));
+  // relevance only from what is already known (topics whose section list exists) — no extra AI calls.
+  // An app is hidden when every known topic left it out; while no topic is known yet, all apps are shown.
+  const known = realTopics.filter(x=>(deskList(x, planLevel)||[]).length);
+  const relCount = k => known.filter(x=>deskList(x, planLevel).some(it=>podcastSectionKey(it)===k)).length;
+  const unknownCount = realTopics.length - known.length;
+  const habitsCount = realTopics.filter(x=>x.reminders?.length).length;
+  const apps = [...PODCAST_DEFAULT_ORDER.filter(k=>(hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || !known.length || relCount(k)>0)),
+    ...(habitsCount?["isReminders"]:[])];
+  const badge = k => k==="isReminders" ? habitsCount : (smartDesk && known.length ? relCount(k)+unknownCount : count);
   if(embedded) return <div className="space-y-3 rounded-lg border border-amber-900/50 bg-stone-900/40 p-4">
     <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500">🖥 Desktop · {smartDesk?"само релевантните приложения — във всяко минаваш през темите, за които е подходящо":`отвори приложение и мини през всички ${count} теми в него`}</div>
     {error&&<ErrorNote message={error}/>}
-    {preparing ? <Spinner label="подбирам релевантните приложения за всяка тема…"/> :
-    <div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-5">
+    {<div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-5">
       {apps.map(k=>(
         <button key={k} onClick={()=>onOpen(k)} disabled={!count} className="relative flex flex-col items-center gap-1.5 group disabled:opacity-40">
-          {smartDesk && relCount(k)<count && <span className="absolute -top-1 right-1 font-mono-cal text-[10px] px-1 rounded-full bg-amber-600 text-stone-950">{relCount(k)}</span>}
+          {badge(k)<count && <span className="absolute -top-1 right-1 font-mono-cal text-[10px] px-1 rounded-full bg-amber-600 text-stone-950">{badge(k)}</span>}
           <span className="w-14 h-14 rounded-2xl bg-gradient-to-br from-stone-700 to-stone-900 border border-stone-700 group-hover:border-amber-500 flex items-center justify-center text-2xl shadow-lg shadow-black/40 transition-colors">{DESKTOP_ICONS[k]||"•"}</span>
-          <span className="font-read text-[11px] leading-tight text-stone-300 text-center">{PODCAST_SECTIONS[k][0]}</span>
+          <span className="font-read text-[11px] leading-tight text-stone-300 text-center">{deskAppName(k)}</span>
         </button>
       ))}
     </div>}
@@ -4959,14 +4953,14 @@ function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,prepari
       {apps.map(k=>(
         <button key={k} onClick={()=>onOpen(k)} disabled={!count} className="flex flex-col items-center gap-1.5 group disabled:opacity-40">
           <span className="w-14 h-14 rounded-2xl bg-gradient-to-br from-stone-700 to-stone-900 border border-stone-700 group-hover:border-amber-500 flex items-center justify-center text-2xl shadow-lg shadow-black/40 transition-colors">{DESKTOP_ICONS[k]||"•"}</span>
-          <span className="font-read text-[11px] leading-tight text-stone-300 text-center">{PODCAST_SECTIONS[k][0]}</span>
+          <span className="font-read text-[11px] leading-tight text-stone-300 text-center">{deskAppName(k)}</span>
         </button>
       ))}
     </div>
   </div>;
 }
 function DesktopBar({appKey,hierarchy,subIdx,onPickTopic,onExit,error,smart,planLevel}){
-  const topics = (hierarchy||[]).map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && (!(smart||t.x.isNewsStory) || t.i===subIdx || deskHasKey(t.x, appKey, planLevel)));
+  const topics = (hierarchy||[]).map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && (t.i===subIdx || (appKey==='isReminders' ? deskHasKey(t.x, appKey, planLevel) : (!(smart||t.x.isNewsStory) || deskHasKey(t.x, appKey, planLevel)))));
   const pos = topics.findIndex(t=>t.i===subIdx);
   const prev = pos>0 ? topics[pos-1] : null;
   const next = pos>=0 && pos<topics.length-1 ? topics[pos+1] : null;
@@ -4974,7 +4968,7 @@ function DesktopBar({appKey,hierarchy,subIdx,onPickTopic,onExit,error,smart,plan
   return <div className="space-y-2 mb-5 pb-3 border-b border-stone-800">
     <div className="flex items-center justify-between gap-2">
       <button onClick={onExit} className="flex items-center gap-1 font-mono-cal text-xs text-stone-400 hover:text-amber-400"><ChevronLeft size={14}/> 🖥 Desktop</button>
-      <span className="font-mono-cal text-xs text-amber-400">{DESKTOP_ICONS[appKey]} {PODCAST_SECTIONS[appKey]?.[0]} · тема {pos+1} от {topics.length}</span>
+      <span className="font-mono-cal text-xs text-amber-400">{DESKTOP_ICONS[appKey]} {deskAppName(appKey)} · тема {pos+1} от {topics.length}</span>
     </div>
     <div className="flex items-center gap-2">
       <button disabled={!prev} onClick={()=>prev&&onPickTopic(prev.i)} className={arrow}><ChevronLeft size={14}/></button>
@@ -5537,7 +5531,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
   if(isReminders){
     return <div className="space-y-5">
       {head("text-amber-300")}
-      <p className="font-read text-stone-500 text-sm italic">🔔 Цитати, които си избрал да пазиш — с послание и малък навик за конкретен момент.</p>
+      <p className="font-read text-stone-500 text-sm italic">🌱 Навици за живота ти, изградени върху цитати, които си избрал — кога, колко често, какво ги задейства и какво да изместят.</p>
       {error&&<ErrorNote message={error}/>}
       <RemindersPanel reminders={reminders||[]} onDelete={onDeleteReminder}/>
     </div>;
@@ -6445,19 +6439,28 @@ function RemindButton({quote,refText,onRemind,remindBusy,reminders}){
   const busy = remindBusy===quote;
   return <button onClick={()=>!done&&!busy&&onRemind(quote,refText)} disabled={done||(!!remindBusy&&!busy)}
     className={`mt-2 inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${done?"border-amber-700 text-amber-400 bg-amber-950/30":"border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-300"} disabled:opacity-60`}>
-    {busy ? <><Loader2 size={11} className="animate-spin"/> добавям…</> : done ? "🔔 в Reminders ✓" : "🔔 Добави в Reminders"}
+    {busy ? <><Loader2 size={11} className="animate-spin"/> създавам навик…</> : done ? "🌱 в Habits ✓" : "🌱 Направи навик (Habits)"}
   </button>;
 }
 function RemindersPanel({reminders,onDelete}){
   const [copied,setCopied] = useState(null);
-  if(!reminders.length) return <p className="font-read text-stone-500 text-sm">Няма добавени reminders.</p>;
-  const asText = r => `Цитат: ${r.citat}\nМотивационно послание: ${r.message}\nНавик за изграждане: ${r.habit}`;
+  if(!reminders.length) return <p className="font-read text-stone-500 text-sm">Няма добавени навици.</p>;
+  const ROWS = [["time","🕒 Препоръчително време"],["freq","🔁 Колко често"],["trigger","⚡ Тригер"],["attract","✨ Как да го направиш привлекателен"],["bad","🚫 Вреден навик, който измества"],["unattract","🧱 Как да направиш вредния непривлекателен"]];
+  const asText = r => [`Цитат: ${r.citat}`,`Мотивационно послание: ${r.message}`,`Навик за изграждане: ${r.habit}`,...ROWS.filter(([k])=>r[k]).map(([k,l])=>`${l.replace(/^\S+\s/,"")}: ${r[k]}`)].join("\n");
   return <div className="space-y-4">
     {reminders.map(r=>(
       <div key={r.id} className="rounded border border-amber-900/50 bg-amber-950/10 p-4 space-y-2.5">
         <p className="font-read text-stone-100 leading-relaxed"><span className="font-bold text-amber-300">Цитат:</span> <span className="italic">{r.citat}</span></p>
         <p className="font-read text-stone-200 leading-relaxed"><span className="font-bold text-amber-300">Мотивационно послание:</span> {r.message}</p>
         <p className="font-read text-stone-200 leading-relaxed"><span className="font-bold text-amber-300">Навик за изграждане:</span> {r.habit}</p>
+        {ROWS.some(([k])=>r[k]) && <div className="grid gap-2 pt-2 border-t border-amber-900/40">
+          {ROWS.filter(([k])=>r[k]).map(([k,l])=>(
+            <div key={k} className={`rounded px-3 py-2 ${k==="bad"||k==="unattract"?"bg-red-950/20 border border-red-900/40":"bg-stone-900/50 border border-stone-800"}`}>
+              <div className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400 mb-0.5">{l}</div>
+              <div className="font-read text-stone-200 text-sm leading-relaxed whitespace-pre-line">{r[k]}</div>
+            </div>
+          ))}
+        </div>}
         <div className="flex gap-3 pt-1">
           <button onClick={()=>{ try{navigator.clipboard.writeText(asText(r)); setCopied(r.id); setTimeout(()=>setCopied(null),1500);}catch(e){} }}
             className="font-mono-cal text-[11px] text-stone-400 hover:text-amber-300">{copied===r.id?"копирано ✓":"копирай"}</button>
