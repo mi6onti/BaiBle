@@ -203,7 +203,9 @@ function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2
 let SOURCE_TEXT = null; // full text of the open "по текст" plan (all added parts), or null
 const SOURCE_MAX = 160000;
 function sourceJoin(parts){ return (parts||[]).map((p,i)=>`[Част ${i+1}${p.title?`: ${p.title}`:""}]\n${p.text}`).join("\n\n"); }
+const NOSRC = "@@NOSOURCE@@"; // prefix: this call does not need the pasted text (e.g. choosing sections)
 function withSource(user){
+  if(user.startsWith(NOSRC)) return user.slice(NOSRC.length);
   if(!SOURCE_TEXT) return user;
   const txt = SOURCE_TEXT.length>SOURCE_MAX ? SOURCE_TEXT.slice(0,SOURCE_MAX)+"\n[…]" : SOURCE_TEXT;
   return `SOURCE TEXT — this whole study plan is built ENTIRELY on the text below (an article or a book excerpt the learner pasted). Base every explanation, example, term, question and claim on what this text actually says. You may explain, rephrase and illustrate its ideas, but never present outside facts as if they were in the text, and never contradict it. Any QUOTES must be exact, verbatim passages from this text — never quotes from other people or other sources.
@@ -1826,7 +1828,10 @@ function Aperture() {
   const [homeError,setHomeError]       = useState(null);
   const [subtopicIdx,setSubtopicIdx]   = useState(null);
   const [subsubIdx,setSubsubIdx]       = useState(null);
-  const [nodeId,setNodeId]             = useState(null);
+  const [nodeId,_setNodeId]            = useState(null);
+  const nodeIdRef = useRef(null);
+  const setNodeId = v => { nodeIdRef.current = v; _setNodeId(v); };
+  const isCur = id => nodeIdRef.current === id;
   const [nodeData,setNodeData]         = useState(null);
   const [tab,setTab]                   = useState("levels");
   const [loadingL,setLoadingL]         = useState(false);
@@ -1855,6 +1860,10 @@ function Aperture() {
   const [desktopMode,setDesktopMode] = useState(false);   // plan shown as a desktop of section "apps"
   const [desktopApp,setDesktopApp]   = useState(null);    // section key of the open app, e.g. "isOverview"
   const [desktopError,setDesktopError] = useState(null);
+  const [busyLabel,setBusyLabel] = useState(null);
+  const deskBusyRef = useRef(false);
+  const [deskPreparing,setDeskPreparing] = useState(false);
+  const smartBatchRef = useRef({});
   const [shareMsg,setShareMsg] = useState(null);
   const [guestPlanId,setGuestPlanId] = useState(null); // opened through a shared link (read-only)
   const [guestMissing,setGuestMissing] = useState(false);
@@ -2131,6 +2140,39 @@ function Aperture() {
   const prefetchRef = useRef({lists:{}, inflight:{}});
   const prefetchListKey = (sub, L) => `${currentTopic?.id}|${sub.name}|${L}`;
   function nodeIdFor(sub, L, item){ return `${currentTopic.id}/${slugify(sub.name)}/L${L}/${slugify(subName(item))}`; }
+  // background-generate one section of a topic (no screen updates); skips what is cached or already running
+  function prefetchItem(sub, item, H){
+    try{
+      if(!sub || !item || !currentTopic || !sub.activeLevel) return;
+      if(isCuriousItem(item) || isRemindersItem(item) || isSimulationItem(item)) return;
+      const L = sub.activeLevel;
+      const id = nodeIdFor(sub, L, item);
+      const R = prefetchRef.current; R.done = R.done || {};
+      if(R.inflight[id] || R.done[id] || id===nodeIdRef.current) return;
+      R.done[id] = true;
+      const job = (async()=>{
+        await genSectionContent({id, item, subItem:sub, subLevel:L, subLevelMeta:lvMeta(L), topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:getSubsubList(sub)||[], curHierarchy:H||hierarchy});
+        const keys = await loadJSON("allNodeKeys", []);
+        if(!keys.includes(id)) await saveJSON("allNodeKeys", [...keys, id]);
+      })().catch(e=>{ console.warn("prefetch failed", e); delete R.done[id]; }).finally(()=>{ delete R.inflight[id]; });
+      R.inflight[id] = job;
+    }catch(e){ console.warn("prefetch failed", e); }
+  }
+  // Умен режим (outside Desktop): entering a topic prepares Общ преглед; opening a section prepares the next one
+  useEffect(()=>{
+    if(desktopApp || subtopicIdx===null || !hierarchy) return;
+    const sub = hierarchy[subtopicIdx];
+    if(!isSmartSub(sub) || !(getSubsubList(sub)||[]).length) return;
+    const list = getDisplayList(sub);
+    if(subsubIdx===null){
+      const ov = list.find(it=>isOverviewItem(it));
+      if(ov) prefetchItem(sub, ov, hierarchy);
+    } else {
+      const nxt = list[subsubIdx+1];
+      if(nxt) prefetchItem(sub, nxt, hierarchy);
+    }
+  }, [subtopicIdx, subsubIdx, desktopApp, hierarchy]);
+
   async function prefetchDesktopNext(subIdx, key, H, P){
     try{
       if(!H || !P || !currentTopic) return;
@@ -2168,26 +2210,70 @@ function Aperture() {
     }catch(e){ console.warn("desktop prefetch failed", e); }
   }
 
+  // Умен режим: build the section lists of ALL topics still missing one, with a single AI call (see genSmartFocusBatch).
+  // Concurrent callers share the same call. Returns the updated hierarchy + plan.
+  async function ensureSmartLists(H, P){
+    if(!P?.smartMode || !H || !currentTopic) return {H, P};
+    const missing = H.map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && !t.x.isNewsStory && !(deskList(t.x, P.activeLevel)||[]).length);
+    if(!missing.length) return {H, P};
+    const tag = `${currentTopic.id}|${P.activeLevel}`;
+    if(smartBatchRef.current[tag]) return smartBatchRef.current[tag];
+    const job = (async()=>{
+      const L = P.activeLevel;
+      const pool = PODCAST_DEFAULT_ORDER.filter(k=>!SMART_EXCLUDED.includes(k) && k!=="isInvestment" && k!=="isPrediction");
+      const map = await genSmartFocusBatch(currentTopic.prompt||currentTopic.name, missing.map(t=>t.x.name), lvMeta(L), pool);
+      if(!Object.keys(map).length) return {H, P};
+      const H2 = H.map((x,i)=>{
+        const m = missing.findIndex(t=>t.i===i);
+        if(m<0 || !map[m]) return x;
+        const Lx = deskLevel(x, L);
+        return {...x, byLevel:{...(x.byLevel||{}), [Lx]:smartEntriesToList(map[m])}, activeLevel:Lx, smartPlan:{...(x.smartPlan||{}), [Lx]:map[m]}, smart:true};
+      });
+      const P2 = {...P, byLevel:{...P.byLevel, [P.activeLevel]:H2}};
+      setHierarchy(H2); setPlanData(P2);
+      saveJSON(`plan:${currentTopic.id}`, P2).catch(e=>console.warn(e));
+      return {H:H2, P:P2};
+    })().finally(()=>{ delete smartBatchRef.current[tag]; });
+    smartBatchRef.current[tag] = job;
+    return job;
+  }
+
+  // Desktop + Умен режим: as soon as the desktop is shown, know every topic's relevant sections (one call),
+  // so only relevant apps appear and each app lists only the topics it has.
+  useEffect(()=>{
+    if(!desktopMode || !planData?.smartMode || !hierarchy || GUEST || subtopicIdx!==null) return;
+    const missing = hierarchy.some(x=>!isTrailerItem(x) && !x.isNewsStory && !(deskList(x, planData.activeLevel)||[]).length);
+    if(!missing) return;
+    setDeskPreparing(true);
+    ensureSmartLists(hierarchy, planData).catch(e=>console.warn(e)).finally(()=>setDeskPreparing(false));
+  }, [desktopMode, planData?.smartMode, planData?.activeLevel, currentTopic?.id, subtopicIdx, hierarchy?.length]);
+
   async function openDesktopSection(subIdx, key, level){
-    const H0 = hierarchy, P0 = planData;
-    const sub = H0?.[subIdx];
-    if(!sub || !P0) return;
-    if(key==="isReminders"){
-      const idx = getDisplayList(sub).findIndex(it=>isRemindersItem(it));
-      if(idx<0){ setDesktopError("Тази тема няма навици."); return; }
-      setDesktopError(null); setDesktopApp(key);
-      await openNode(subIdx, idx, H0, P0);
-      return;
-    }
-    const L = level || sub.activeLevel || P0.activeLevel || 1;
-    const levelMeta = lvMeta(L);
-    const topicPrompt = currentTopic.prompt||currentTopic.name;
+    if(deskBusyRef.current) return; // one click at a time — no queue of half-finished opens
+    let H0 = hierarchy, P0 = planData;
+    if(!H0?.[subIdx] || !P0) return;
+    deskBusyRef.current = true;
     setDesktopError(null);
-    let list = sub.byLevel?.[L];
-    const needsBuild = !(list && list.length);
-    const needsItem = needsBuild || !list.some(it=>podcastSectionKey(it)===key);
-    if(needsItem) setLoadingH(true);
+    setBusyLabel("зареждам…"); setLoadingH(true);
     try{
+      if(key==="isReminders"){
+        const idx = getDisplayList(H0[subIdx]).findIndex(it=>isRemindersItem(it));
+        if(idx<0){ setDesktopError("Тази тема няма навици."); return; }
+        setDesktopApp(key);
+        await openNode(subIdx, idx, H0, P0);
+        return;
+      }
+      if(P0.smartMode && !H0[subIdx].isNewsStory && !(deskList(H0[subIdx], P0.activeLevel)||[]).length){
+        setBusyLabel("подбирам секциите за темите…");
+        const r = await ensureSmartLists(H0, P0); H0 = r.H; P0 = r.P;
+        setBusyLabel("зареждам…");
+      }
+      const sub = H0[subIdx];
+      const L = level || sub.activeLevel || P0.activeLevel || 1;
+      const levelMeta = lvMeta(L);
+      const topicPrompt = currentTopic.prompt||currentTopic.name;
+      let list = sub.byLevel?.[L];
+      const needsBuild = !(list && list.length);
       const smart = !!(sub.isNewsStory || sub.smart || P0.smartMode);
       let newSmartPlan = null;
       if(needsBuild){
@@ -2207,21 +2293,20 @@ function Aperture() {
         updSub = {...updSub, readSections:{...updSub.readSections, [key]:L}};
       }
       if(!updSub.showMore && (list||[]).some(it=>it.more && podcastSectionKey(it)===key)) updSub = {...updSub, showMore:true};
-      const H = H0.map((x,i)=>i===subIdx?updSub:x);
-      const P = {...P0, byLevel:{...P0.byLevel, [P0.activeLevel]:H}};
-      setHierarchy(H); setPlanData(P);
-      await saveJSON(`plan:${currentTopic.id}`, P);
+      const changed = updSub!==sub && JSON.stringify(updSub)!==JSON.stringify(sub);
+      const H = changed ? H0.map((x,i)=>i===subIdx?updSub:x) : H0;
+      const P = changed ? {...P0, byLevel:{...P0.byLevel, [P0.activeLevel]:H}} : P0;
+      if(changed){ setHierarchy(H); setPlanData(P); saveJSON(`plan:${currentTopic.id}`, P).catch(e=>console.warn(e)); }
       const idx = getDisplayList(updSub).findIndex(it=>podcastSectionKey(it)===key);
-      setLoadingH(false);
-      if(idx<0){ setDesktopError(smart ? `„${PODCAST_SECTIONS[key][0]}“ не е включена за тази тема — в умен режим се показват само релевантните секции, всяка на едно ниво.` : "Тази секция не можа да се отвори за тази тема."); return; }
+      if(idx<0){ setDesktopError(smart ? `„${PODCAST_SECTIONS[key][0]}“ не е включена за тази тема — в умен режим се показват само релевантните секции.` : "Тази секция не можа да се отвори за тази тема."); return; }
       setDesktopApp(key);
-      const pending = prefetchRef.current.inflight[nodeIdFor(updSub, L, getDisplayList(updSub)[idx])];
-      if(pending && pending.then){ setLoadingH(true); try{ await pending; } finally { setLoadingH(false); } }
       await openNode(subIdx, idx, H, P);
       prefetchDesktopNext(subIdx, key, H, P); // background, not awaited
     }catch(e){
-      setLoadingH(false);
       setDesktopError(`Грешка: ${e.message}`);
+    }finally{
+      setLoadingH(false); setBusyLabel(null);
+      deskBusyRef.current = false;
     }
   }
   async function toggleDesktopMode(){
@@ -2413,6 +2498,14 @@ function Aperture() {
       return;
     }
 
+    // Умен режим: one call chooses the sections of ALL topics at once (cheaper; the others are then ready instantly)
+    if(planData?.smartMode && !sub.isNewsStory && !GUEST){
+      setSubtopicOverview(null); setBusyLabel("подбирам секциите за темите…"); setLoadingH(true);
+      try{ const r = await ensureSmartLists(hierarchy, planData); if((getSubsubList(r.H[i])||[]).length) return; }
+      catch(e){ console.warn(e); }
+      finally{ setLoadingH(false); setBusyLabel(null); }
+    }
+
     // nothing generated yet for this subtopic — auto-apply the plan's chosen level directly, no manual picker screen
     setSubtopicOverview(null);
     setLoadingH(true);
@@ -2556,7 +2649,7 @@ function Aperture() {
 
   async function openNode(subIdx,ssIdx,hOverride,pOverride){
     setSubtopicIdx(subIdx);setSubsubIdx(ssIdx);
-    setTab("levels");setNodeError(null);
+    setTab("levels");setNodeError(null);setLoadingL(false);
     const subItem=(hOverride||hierarchy)[subIdx];
     const sub=subItem.name;
     const subLevel=subItem.activeLevel;
@@ -2588,6 +2681,13 @@ function Aperture() {
 
     const id=`${currentTopic.id}/${slugify(sub)}/L${subLevel}/${slugify(subsub)}`;
     setNodeId(id);
+    const pend = prefetchRef.current.inflight[id];
+    if(pend && pend.then){ // already being prepared in the background — wait for it instead of generating twice
+      setNodeData(null); setLoadingL(true);
+      try{ await pend; }catch(e){}
+      if(!isCur(id)) return;
+      setLoadingL(false);
+    }
 
     if(isPoetryItem(subsubItem)){
       const EMPTY={poemText:"",poemLevel:null,tunedPoetry:false,unitConfused:false};
@@ -2892,13 +2992,14 @@ function Aperture() {
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = lvMeta(subLevel);
-      const terms = await genGlossary(currentTopic.prompt||currentTopic.name, sub, termNames, levelMeta);
+      const tn = (termNames && termNames.length) ? termNames : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const terms = await genGlossary(currentTopic.prompt||currentTopic.name, sub, tn, levelMeta);
       const updated = {...base, terms, glossaryLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneGlossary(){
@@ -2920,11 +3021,11 @@ function Aperture() {
       const names = await genPrefaceTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const entries = names.map(n=>({name:n}));
       const updated = {...base, entries, prefaceLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tunePreface(){
@@ -3031,11 +3132,11 @@ function Aperture() {
       const names = await genNextTopics(currentTopic.prompt||currentTopic.name, sub, levelMeta, existingNames);
       const entries = names.map(n=>({name:n}));
       const updated = {...base, entries, nextLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneNext(){
@@ -3139,11 +3240,11 @@ function Aperture() {
       const names = await genInceptionPrompts(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const entries = names.map(n=>({name:n}));
       const updated = {...base, entries, inceptionLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneInception(){
@@ -3246,11 +3347,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const essay=await genSubtopicEssay(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated={...base, essay, essayLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function doLoadExamples(id,sub,subLevel,base){
@@ -3259,11 +3360,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const examples=await genSubtopicExamples(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated={...base, examples, examplesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneExamples(){
@@ -3284,11 +3385,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const resources = await genResources(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, resources, resourcesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneResources(){
@@ -3309,11 +3410,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const {items,innovations,services} = await genShoppingList(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, shopItems:items, shopInnovations:innovations, shopServices:services, shopLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneShopping(){
@@ -3334,11 +3435,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const stages = await genActionPlan(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, stages, actionPlanLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneActionPlan(){
@@ -3359,11 +3460,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const steps = await genSocraticDialogue(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, steps, socraticLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneSocratic(){
@@ -3384,11 +3485,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const testQuestions = await genTestQuestions(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, testQuestions, testLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneTest(){
@@ -3409,11 +3510,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const entries = await genEncyclopedia(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, entries, encLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneEncyclopedia(){
@@ -3434,11 +3535,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const quotes = await genQuotes(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, quotes, quotesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneQuotes(){
@@ -3459,11 +3560,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const books = await genBookAdvice(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, books, booksLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneBooks(){
@@ -3484,11 +3585,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const {verses,wwjd} = await genBibleSection(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, verses, wwjd, bibleLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneBible(){
@@ -3509,11 +3610,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const {before,comparisons} = await genBeforeDiscovery(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, beforeText:before, beforeComparisons:comparisons, beforeLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneBefore(){
@@ -3534,11 +3635,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const approaches = await genApproachComparisons(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, approaches, compareLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneCompare(){
@@ -3559,11 +3660,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const milestones = await genTimeline(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, milestones, timelineLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneTimeline(){
@@ -3584,11 +3685,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const {scenario,ripples} = await genButterflyEffect(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, butterflyScenario:scenario, butterflyRipples:ripples, butterflyLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneButterfly(){
@@ -3609,11 +3710,11 @@ function Aperture() {
       const p = await genPoetry(currentTopic.prompt||currentTopic.name, sub, lvMeta(subLevel));
       if(!p.poem) throw new Error("не успях да генерирам стих");
       const updated = {...base, poemText:p.poem, poemTitle:p.title, poemAuthor:p.author, poemReal:p.real, poemNote:p.note, poemLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
   async function tunePoetry(){
     if(!nodeData||nodeData.tunedPoetry)return;
@@ -3660,11 +3761,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const experiments = await genExperiments(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, experiments, experimentsLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneExperiments(){
@@ -3685,11 +3786,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const {items:investItems, vectors:investVectors, companies:investCompanies} = await genInvestment(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, investItems, investVectors, investCompanies, investLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneInvestment(){
@@ -3710,11 +3811,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const predScenarios = await genPrediction(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, predScenarios, predChoice:null, predAt:null, predLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function savePrediction(idx){
@@ -3742,11 +3843,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const {intro,questions} = await genInterview(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, interviewIntro:intro, interviewQuestions:questions, interviewLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneInterview(){
@@ -3767,11 +3868,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const simHtml = await genSimulation(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, simHtml, simLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneSimulation(){
@@ -3789,7 +3890,7 @@ function Aperture() {
   async function doLoadCrossword(id, sub, subLevel, base){
     if(base?.crosswordPuzzle){
       const updated = {...base, gameType:"crossword"};
-      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      isCur(id)&&setNodeData(updated); await saveJSON(`node:${id}`,updated);
       return;
     }
     setLoadingL(true);setNodeError(null);
@@ -3798,17 +3899,17 @@ function Aperture() {
       const words = await genCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const puzzle = buildCrossword(words);
       const updated = {...base, gameType:"crossword", crosswordWords:words, crosswordPuzzle:puzzle, gamesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function doLoadCryptic(id, sub, subLevel, base){
     if(base?.crypticPuzzle){
       const updated = {...base, gameType:"cryptic"};
-      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      isCur(id)&&setNodeData(updated); await saveJSON(`node:${id}`,updated);
       return;
     }
     setLoadingL(true);setNodeError(null);
@@ -3817,17 +3918,17 @@ function Aperture() {
       const words = await genCrypticCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const puzzle = buildCrossword(words);
       const updated = {...base, gameType:"cryptic", crypticWords:words, crypticPuzzle:puzzle, gamesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function doLoadOpposites(id, sub, subLevel, base){
     if(base?.oppositesPuzzle){
       const updated = {...base, gameType:"opposites"};
-      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      isCur(id)&&setNodeData(updated); await saveJSON(`node:${id}`,updated);
       return;
     }
     setLoadingL(true);setNodeError(null);
@@ -3836,17 +3937,17 @@ function Aperture() {
       const words = await genOppositesCrosswordWords(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const puzzle = buildCrossword(words);
       const updated = {...base, gameType:"opposites", oppositesWords:words, oppositesPuzzle:puzzle, gamesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function doLoadConnections(id, sub, subLevel, base){
     if(base?.connectionsGroups?.length){
       const updated = {...base, gameType:"connections"};
-      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      isCur(id)&&setNodeData(updated); await saveJSON(`node:${id}`,updated);
       return;
     }
     setLoadingL(true);setNodeError(null);
@@ -3854,17 +3955,17 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const groups = await genConnections(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, gameType:"connections", connectionsGroups:groups, gamesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function doLoadMillionaire(id, sub, subLevel, base){
     if(base?.millionaireQuestions?.length){
       const updated = {...base, gameType:"millionaire"};
-      setNodeData(updated); await saveJSON(`node:${id}`,updated);
+      isCur(id)&&setNodeData(updated); await saveJSON(`node:${id}`,updated);
       return;
     }
     setLoadingL(true);setNodeError(null);
@@ -3872,11 +3973,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const questions = await genMillionaireQuestions(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, gameType:"millionaire", millionaireQuestions:questions, gamesLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function backToGamesMenu(){
@@ -3904,11 +4005,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const appIdeas = await genAppIdeas(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, appIdeas, appIdeasLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneAppIdeas(){
@@ -3936,11 +4037,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const confession = await genAiConfession(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, confession, confessionLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneConfession(){
@@ -3961,11 +4062,11 @@ function Aperture() {
       const levelMeta = lvMeta(subLevel);
       const humorEntries = await genHumor(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, humorEntries, humorLevel:subLevel};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   async function tuneHumor(){
@@ -4042,11 +4143,11 @@ function Aperture() {
     try{
       const abstraction=await genAbstraction(currentTopic.prompt||currentTopic.name,sub,subsub,subLevel,unitCount);
       const updated={...base,abstraction};
-      setNodeData(updated);
+      isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
-      if(!r.ok)setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
-    }catch(e){setNodeError(`Грешка: ${e.message}`);}
-    finally{setLoadingL(false);}
+      if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
+    }catch(e){isCur(id)&&setNodeError(`Грешка: ${e.message}`);}
+    finally{(isCur(id)&&setLoadingL(false));}
   }
 
   function switchTab(next){
@@ -4268,7 +4369,7 @@ function Aperture() {
       }
     } else if(isGlossaryItem(item)){
       if(!existing?.terms?.length){
-        const terms = await genGlossary(topicPrompt, subItem.name, item.terms||[], subLevelMeta);
+        const terms = await genGlossary(topicPrompt, subItem.name, (item.terms&&item.terms.length) ? item.terms : await genSubsubtopicsFor(topicPrompt, subItem.name, subLevelMeta), subLevelMeta);
         await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), terms, glossaryLevel:subLevel, tunedGlossary:existing?.tunedGlossary||false});
       }
     } else if(isConfessionItem(item)){
@@ -4419,12 +4520,12 @@ function Aperture() {
               onResume={resumeTopic} onOpenNews={()=>{setHomeError(null);setShowNewsAreas(true);}} error={homeError}
               onDelete={softDeleteTopic} onRestore={restoreTopic}
               showTrash={showTrash} setShowTrash={setShowTrash}/>
-          ):loadingH?<Spinner label="изграждам учебен план…"/>
+          ):loadingH?<Spinner label={busyLabel||"изграждам учебен план…"}/>
           :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>resumeTopic(currentTopic)}/>
           :subtopicIdx===null?(
             <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:toggleDesktopMode} desktopOn={desktopMode}
               desktopSlot={desktopMode ? <DesktopGrid embedded topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
-                planLevel={planData?.activeLevel}
+                planLevel={planData?.activeLevel} preparing={deskPreparing}
                 onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (k==='isReminders' ? deskHasKey(x,k) : (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel)))); if(first>=0) openDesktopSection(first,k); }}/> : null}
               onPick={pickSubtopic}
               onLevelCheck={guestPlanId?null:runLevelCheck} loadingLevelCheck={loadingLC}
@@ -4852,7 +4953,7 @@ async function genSmartFocusPlan(topicLabel, name, levelMeta, pool){
   const seen = new Set();
   try{
     const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
-    const raw = await callClaudeRaw(
+    const raw = await callClaudeRaw(NOSRC+
 `A learner studies the topic "${name}" (part of the plan "${topicLabel}") at the level "${levelMeta?.label||"Аналогия"}" (${levelMeta?.hint||"everyday comparison"}).
 From the menu, keep ONLY the sections that are genuinely relevant and useful for THIS topic — leave out every section that does not truly fit (leaving many out is fine and expected). Order the kept sections by relevance, the most important first. isOverview is mandatory and always first.
 Split them into two groups:
@@ -4880,6 +4981,48 @@ Output one line per entry in the form GROUP | KEY | catchy title (GROUP is CORE 
   core = [ov, ...core.filter(p=>p.key!=="isOverview")];
   return [...core, ...more.map(p=>({...p, more:true}))];
 }
+// Умен режим: ONE call chooses, for every topic of the plan, its relevant sections (by relevance, CORE + MORE) —
+// cheaper than one call per topic (the section menu is sent once) and it lets Desktop know exactly which apps
+// and which topics exist. Never sends the pasted source text.
+async function genSmartFocusBatch(topicLabel, names, levelMeta, pool){
+  const out = {};
+  const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
+  for(let start=0; start<names.length; start+=10){
+    const chunk = names.slice(start, start+10);
+    try{
+      const raw = await callClaudeRaw(NOSRC+
+`A learner studies the plan "${topicLabel}" at the level "${levelMeta?.label||"Аналогия"}" (${levelMeta?.hint||"everyday comparison"}). Its topics:
+${chunk.map((n,i)=>`${i+1}. ${n}`).join("\n")}
+For EACH topic separately: from the menu keep ONLY the sections genuinely relevant and useful for THAT topic (leaving many out is fine and expected), ordered by relevance, the most important first. isOverview is mandatory for every topic and always first.
+Split each topic's sections into CORE — the ones that, read together, are ENOUGH to really learn that topic at this level (typically 3 to 6 including isOverview) — and MORE — the remaining relevant ones (may be empty).
+For each entry write a catchy, specific title (3-7 words) saying what that section will reveal about THAT topic — intriguing but honest, no clickbait, no invented facts, numbers or names.
+Menu (KEY — name: what it contains) — choose ONLY from these:
+${menu}
+Write the titles in the SAME language as the topics (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
+Output one line per entry in the form TOPIC_NUMBER | GROUP | KEY | catchy title (GROUP is CORE or MORE), nothing else, wrapped exactly like this: ###PLAN###the lines here###PLAN_END###`, Math.min(8000, 500+260*chunk.length), 0, 8000);
+      const per = {};
+      for(const line of extractField(raw,"PLAN").split("\n")){
+        const m = line.match(/(\d+)\s*\|\s*(CORE|MORE)\s*\|\s*(is[A-Za-z]+)\s*\|\s*(.+)/i);
+        if(!m) continue;
+        const n = Number(m[1])-1, g = m[2].toUpperCase(), k = m[3].trim(), t = m[4].trim().replace(/^[„“"']+|[“”"']+$/g,"");
+        if(n<0 || n>=chunk.length || !PODCAST_SECTIONS[k] || !(pool.includes(k)||k==="isOverview")) continue;
+        const e = per[n] || (per[n]={core:[],more:[],seen:new Set()});
+        if(e.seen.has(k)) continue; e.seen.add(k);
+        (g==="CORE"||k==="isOverview" ? e.core : e.more).push({key:k, catchy:t});
+      }
+      Object.entries(per).forEach(([n,e])=>{
+        if(e.core.length + e.more.length < 2) return; // too thin — that topic falls back to its own call later
+        const ov = e.core.find(p=>p.key==="isOverview") || {key:"isOverview", catchy:""};
+        out[start+Number(n)] = [ov, ...e.core.filter(p=>p.key!=="isOverview"), ...e.more.map(p=>({...p, more:true}))];
+      });
+    }catch(e){ console.warn("smart batch planning failed", e); }
+  }
+  return out;
+}
+function smartEntriesToList(entries){
+  return entries.map(p=>({ name:PODCAST_SECTIONS[p.key][0], [p.key]:true, ...(p.catchy?{catchy:p.catchy}:{}), ...(p.more?{more:true}:{}), ...(p.key==="isGlossary"?{terms:[]}:{}) }));
+}
+
 async function buildSmartSections(topicPrompt, sub, levelMeta){
   const L = levelMeta?.level||1;
   if(!sub.isNewsStory){
@@ -4911,7 +5054,7 @@ function deskAppName(k){ return k==="isReminders" ? "Habits" : (PODCAST_SECTIONS
 function deskLevel(sub, planLevel){ return sub?.activeLevel || planLevel || 1; }
 function deskList(sub, planLevel){ return sub?.byLevel?.[deskLevel(sub, planLevel)] || null; }
 function deskHasKey(sub, key, planLevel){ if(key==="isReminders") return !!sub?.reminders?.length; const l = deskList(sub, planLevel); return !l || l.some(it=>podcastSectionKey(it)===key); }
-function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLevel}){
+function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLevel,preparing}){
   const hasNews = (hierarchy||[]).some(x=>x.isNewsStory);
   const realTopics = (hierarchy||[]).filter(x=>!isTrailerItem(x));
   const count = realTopics.length;
@@ -4929,7 +5072,7 @@ function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLev
   if(embedded) return <div className="space-y-3 rounded-lg border border-amber-900/50 bg-stone-900/40 p-4">
     <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500">🖥 Desktop · {smartDesk?"само релевантните приложения — във всяко минаваш през темите, за които е подходящо":`отвори приложение и мини през всички ${count} теми в него`}</div>
     {error&&<ErrorNote message={error}/>}
-    {<div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-5">
+    {preparing ? <Spinner label="подбирам релевантните приложения (една заявка за целия план)…"/> : <div className="grid grid-cols-4 sm:grid-cols-6 gap-x-3 gap-y-5">
       {apps.map(k=>(
         <button key={k} onClick={()=>onOpen(k)} disabled={!count} className="relative flex flex-col items-center gap-1.5 group disabled:opacity-40">
           {badge(k)<count && <span className="absolute -top-1 right-1 font-mono-cal text-[10px] px-1 rounded-full bg-amber-600 text-stone-950">{badge(k)}</span>}
