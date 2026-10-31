@@ -95,28 +95,38 @@ let GUEST_NS = "";           // localStorage prefix for what the recipient gener
 function guestOverlayGet(key){ try{ const r=localStorage.getItem(GUEST_NS+key); return r==null?undefined:JSON.parse(r); }catch{ return undefined; } }
 function guestOverlaySet(key,value){ try{ localStorage.setItem(GUEST_NS+key, JSON.stringify(value)); return {ok:true}; }catch(e){ return {ok:false, detail:e.message}; } }
 function ownerToken(){ try{ return localStorage.getItem("aperture:ownerToken")||""; }catch{ return ""; } }
+// fetch with a time limit — a stuck request must never freeze the app (it then falls back / reports an error)
+async function fetchT(url, opts, ms){
+  const ac = new AbortController(); const t = setTimeout(()=>ac.abort(), ms);
+  try{ return await fetch(url, {...opts, signal:ac.signal}); }
+  catch(e){ if(e.name==="AbortError") throw new Error(`timeout ${Math.round(ms/1000)}s`); throw e; }
+  finally{ clearTimeout(t); }
+}
+let KV_DISABLED = false; // the kv function isn't set up on the server (no OWNER_TOKEN) — go straight to the direct store
 async function kvCall(body, asOwner=true){
+  if(KV_DISABLED) throw new Error("kv disabled");
   const headers = {"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`,"apikey":SUPABASE_KEY};
   if(asOwner) headers["x-owner-token"] = ownerToken();
-  const res = await fetch(KV_FN,{method:"POST",headers,body:JSON.stringify(body)});
+  const res = await fetchT(KV_FN,{method:"POST",headers,body:JSON.stringify(body)}, 15000);
   const d = await res.json().catch(()=>({}));
   if(res.status===401){ const e=new Error("unauthorized"); e.ownerAuth=true; throw e; }
+  if(res.status===500 && /not configured/i.test(d.error||"")) KV_DISABLED = true;
   if(!res.ok) throw new Error(d.error||`kv ${res.status}`);
   return d;
 }
 async function legacyLoad(key, fallback){
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
-    {headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`}});
+  const res = await fetchT(`${SUPABASE_URL}/rest/v1/kv_store?key=eq.${encodeURIComponent(key)}&select=value`,
+    {headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`}}, 20000);
   if (!res.ok) throw new Error(res.status);
   const rows = await res.json();
   return rows.length>0 ? rows[0].value : fallback;
 }
 async function legacySave(key, value){
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/kv_store?on_conflict=key`,{
+  const res = await fetchT(`${SUPABASE_URL}/rest/v1/kv_store?on_conflict=key`,{
     method:"POST",
-    headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=representation"},
+    headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates,return=minimal"},
     body:JSON.stringify({key,value})
-  });
+  }, 30000);
   if (!res.ok){const b=await res.text();return{ok:false,detail:`${res.status}: ${b.slice(0,200)}`};}
   return {ok:true};
 }
@@ -125,6 +135,10 @@ function guestGet(key, fallback){
   if(key===`plan:${GUEST.topic.id}`) return GUEST.plan;
   if(key.startsWith("node:")) return GUEST.nodes?.[key.slice(5)] ?? fallback;
   return fallback;
+}
+let NK_CHAIN = Promise.resolve();
+function trackNodeKey(id){
+  NK_CHAIN = NK_CHAIN.then(async()=>{ const k = await loadJSON("allNodeKeys", []); if(!k.includes(id)) await saveJSON("allNodeKeys", [...k, id]); }).catch(e=>console.warn("allNodeKeys", e));
 }
 async function loadJSON(key, fallback) {
   if (GUEST){ const o = guestOverlayGet(key); return o!==undefined ? o : guestGet(key, fallback); }
@@ -845,23 +859,24 @@ async function genQuoteSuggestions(topicLabel, subtopicName, quotes){
 Quotes:
 ${quotes.map((q,i)=>`${i+1}. ${q.quote}${q.author?` — ${q.author}`:""}`).join("\n")}
 For EACH quote choose the 2 to 5 sections that would be genuinely interesting and fitting for THAT quote (different quotes usually get different sections); leave out everything that does not truly fit. Order by how interesting they are.
+For each choice also write a catchy, specific title (3-7 words) saying what that section would reveal about THAT quote — intriguing but honest, no clickbait, no invented facts, in the SAME language as the quotes (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
 Menu (KEY — name: what it contains) — choose ONLY from these:
 ${menu}
-Output one line per choice in the form QUOTE_NUMBER | KEY, nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 900);
+Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 1500);
   const out = {};
   for(const line of extractField(raw,"PLAN").split("\n")){
-    const m = line.match(/(\d+)\s*\|\s*(is[A-Za-z]+)/);
+    const m = line.match(/(\d+)\s*\|\s*(is[A-Za-z]+)\s*(?:\|\s*(.+))?/);
     if(!m) continue;
-    const n = Number(m[1])-1, k = m[2].trim();
+    const n = Number(m[1])-1, k = m[2].trim(), t = (m[3]||"").trim().replace(/^[„“"']+|[“”"']+$/g,"");
     if(n<0 || n>=quotes.length || !pool.includes(k)) continue;
     const q = quotes[n].quote;
     out[q] = out[q] || [];
-    if(!out[q].includes(k) && out[q].length<5) out[q].push(k);
+    if(!out[q].some(x=>x.key===k) && out[q].length<5) out[q].push({key:k, catchy:t});
   }
   return out;
 }
 function quoteHash(t){ let h=0; for(const c of (t||"")) h=((h<<5)-h+c.charCodeAt(0))|0; return Math.abs(h).toString(36); }
-function interestItem(e){ return { name:PODCAST_SECTIONS[e.key]?.[0]||e.key, [e.key]:true, catchy:`„${(e.quote||"").length>70?e.quote.slice(0,70)+"…":e.quote}“` }; }
+function interestItem(e){ return { name:PODCAST_SECTIONS[e.key]?.[0]||e.key, [e.key]:true, catchy: e.catchy || `„${(e.quote||"").length>70?e.quote.slice(0,70)+"…":e.quote}“` }; }
 
 // Habits (stored as sub.reminders / isReminders for compatibility): a chosen quote / verse turned into a life habit
 async function genReminder(topicLabel, subtopicName, quote, ref) {
@@ -2182,8 +2197,7 @@ function Aperture() {
       R.done[id] = true;
       const job = (async()=>{
         await genSectionContent({id, item, subItem:sub, subLevel:L, subLevelMeta:lvMeta(L), topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:getSubsubList(sub)||[], curHierarchy:H||hierarchy});
-        const keys = await loadJSON("allNodeKeys", []);
-        if(!keys.includes(id)) await saveJSON("allNodeKeys", [...keys, id]);
+        trackNodeKey(id);
       })().catch(e=>{ console.warn("prefetch failed", e); delete R.done[id]; }).finally(()=>{ delete R.inflight[id]; });
       R.inflight[id] = job;
     }catch(e){ console.warn("prefetch failed", e); }
@@ -2233,8 +2247,7 @@ function Aperture() {
       if(prefetchRef.current.inflight[id]) return;
       const job = (async()=>{
         await genSectionContent({id, item, subItem:sub, subLevel:L, subLevelMeta:levelMeta, topicPrompt, subsubList:list, curHierarchy:H});
-        const keys = await loadJSON("allNodeKeys", []);
-        if(!keys.includes(id)) await saveJSON("allNodeKeys", [...keys, id]);
+        trackNodeKey(id);
       })().catch(e=>console.warn("desktop prefetch failed", e)).finally(()=>{ delete prefetchRef.current.inflight[id]; });
       prefetchRef.current.inflight[id] = job;
     }catch(e){ console.warn("desktop prefetch failed", e); }
@@ -2723,8 +2736,7 @@ function Aperture() {
       const EMPTY={poemText:"",poemLevel:null,tunedPoetry:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.poemText) doLoadPoetry(id,sub,subLevel,cached);
       return;
     }
@@ -2733,8 +2745,7 @@ function Aperture() {
       const EMPTY={entries:[],prefaceLevel:null,tunedPreface:false,prefaceTopicId:null,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.entries||!cached.entries.length) doLoadPreface(id,sub,subLevel,cached);
       return;
     }
@@ -2743,8 +2754,7 @@ function Aperture() {
       const EMPTY={entries:[],nextLevel:null,tunedNext:false,nextTopicId:null,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.entries||!cached.entries.length) doLoadNext(id,sub,subLevel,cached);
       return;
     }
@@ -2753,8 +2763,7 @@ function Aperture() {
       const EMPTY={entries:[],inceptionLevel:null,tunedInception:false,inceptionTopicId:null,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.entries||!cached.entries.length) doLoadInception(id,sub,subLevel,cached);
       return;
     }
@@ -2763,8 +2772,7 @@ function Aperture() {
       const EMPTY={terms:[],glossaryLevel:null,tunedGlossary:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.terms||!cached.terms.length) doLoadGlossary(id,sub,subLevel,cached,subsubItem.terms||[]);
       return;
     }
@@ -2773,8 +2781,7 @@ function Aperture() {
       const EMPTY={essay:"",essayLevel:null,tunedEssay:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.essay) doLoadEssay(id,sub,subLevel,cached);
       return;
     }
@@ -2783,8 +2790,7 @@ function Aperture() {
       const EMPTY={examples:"",examplesLevel:null,tunedExamples:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.examples) doLoadExamples(id,sub,subLevel,cached);
       return;
     }
@@ -2793,8 +2799,7 @@ function Aperture() {
       const EMPTY={resources:[],resourcesLevel:null,tunedResources:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.resources||!cached.resources.length) doLoadResources(id,sub,subLevel,cached);
       return;
     }
@@ -2803,8 +2808,7 @@ function Aperture() {
       const EMPTY={shopItems:[],shopInnovations:[],shopServices:[],shopLevel:null,tunedShopping:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.shopItems||!cached.shopItems.length) doLoadShopping(id,sub,subLevel,cached);
       return;
     }
@@ -2813,8 +2817,7 @@ function Aperture() {
       const EMPTY={stages:[],actionPlanLevel:null,tunedActionPlan:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.stages||!cached.stages.length) doLoadActionPlan(id,sub,subLevel,cached);
       return;
     }
@@ -2823,8 +2826,7 @@ function Aperture() {
       const EMPTY={steps:[],socraticLevel:null,tunedSocratic:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.steps||!cached.steps.length) doLoadSocratic(id,sub,subLevel,cached);
       return;
     }
@@ -2833,8 +2835,7 @@ function Aperture() {
       const EMPTY={testQuestions:[],testLevel:null,tunedTest:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.testQuestions||!cached.testQuestions.length) doLoadTest(id,sub,subLevel,cached);
       return;
     }
@@ -2843,8 +2844,7 @@ function Aperture() {
       const EMPTY={entries:[],encLevel:null,tunedEnc:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.entries||!cached.entries.length) doLoadEncyclopedia(id,sub,subLevel,cached);
       return;
     }
@@ -2853,8 +2853,7 @@ function Aperture() {
       const EMPTY={beforeText:"",beforeComparisons:[],beforeLevel:null,tunedBefore:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.beforeText) doLoadBefore(id,sub,subLevel,cached);
       return;
     }
@@ -2863,8 +2862,7 @@ function Aperture() {
       const EMPTY={approaches:[],compareLevel:null,tunedCompare:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.approaches||!cached.approaches.length) doLoadCompare(id,sub,subLevel,cached);
       return;
     }
@@ -2873,8 +2871,7 @@ function Aperture() {
       const EMPTY={milestones:[],timelineLevel:null,tunedTimeline:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.milestones||!cached.milestones.length) doLoadTimeline(id,sub,subLevel,cached);
       return;
     }
@@ -2883,8 +2880,7 @@ function Aperture() {
       const EMPTY={butterflyScenario:"",butterflyRipples:[],butterflyLevel:null,tunedButterfly:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.butterflyScenario) doLoadButterfly(id,sub,subLevel,cached);
       return;
     }
@@ -2893,8 +2889,7 @@ function Aperture() {
       const EMPTY={experiments:[],experimentsLevel:null,tunedExperiments:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.experiments||!cached.experiments.length) doLoadExperiments(id,sub,subLevel,cached);
       return;
     }
@@ -2903,8 +2898,7 @@ function Aperture() {
       const EMPTY={investItems:[],investVectors:null,investCompanies:null,investLevel:null,tunedInvest:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.investItems||!cached.investItems.length||!Array.isArray(cached.investVectors)) doLoadInvestment(id,sub,subLevel,cached);
       return;
     }
@@ -2913,8 +2907,7 @@ function Aperture() {
       const EMPTY={predScenarios:[],predChoice:null,predAt:null,predLevel:null,tunedPred:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.predScenarios||!cached.predScenarios.length) doLoadPrediction(id,sub,subLevel,cached);
       return;
     }
@@ -2923,8 +2916,7 @@ function Aperture() {
       const EMPTY={interviewIntro:"",interviewQuestions:[],interviewAnswers:{},interviewLevel:null,tunedInterview:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.interviewQuestions||!cached.interviewQuestions.length) doLoadInterview(id,sub,subLevel,cached);
       return;
     }
@@ -2933,8 +2925,7 @@ function Aperture() {
       const EMPTY={quotes:[],quotesLevel:null,tunedQuotes:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.quotes||!cached.quotes.length) doLoadQuotes(id,sub,subLevel,cached);
       return;
     }
@@ -2943,8 +2934,7 @@ function Aperture() {
       const EMPTY={books:[],booksLevel:null,tunedBooks:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.books||!cached.books.length) doLoadBooks(id,sub,subLevel,cached);
       return;
     }
@@ -2953,8 +2943,7 @@ function Aperture() {
       const EMPTY={verses:[],wwjd:[],bibleLevel:null,tunedBible:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.verses||!cached.verses.length) doLoadBible(id,sub,subLevel,cached);
       return;
     }
@@ -2963,8 +2952,7 @@ function Aperture() {
       const EMPTY={simHtml:"",simLevel:null,tunedSim:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.simHtml) doLoadSimulation(id,sub,subLevel,cached);
       return;
     }
@@ -2973,8 +2961,7 @@ function Aperture() {
       const EMPTY={gameType:null,crosswordWords:[],crosswordPuzzle:null,crosswordInput:null,crypticWords:[],crypticPuzzle:null,crypticInput:null,oppositesWords:[],oppositesPuzzle:null,oppositesInput:null,connectionsGroups:null,connectionsState:null,millionaireQuestions:null,millionaireState:null,gamesLevel:null,tunedGames:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       // no auto-generation — user picks a game type from the menu first
       return;
     }
@@ -2983,8 +2970,7 @@ function Aperture() {
       const EMPTY={appIdeas:[],appIdeasLevel:null,tunedAppIdeas:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.appIdeas||!cached.appIdeas.length) doLoadAppIdeas(id,sub,subLevel,cached);
       return;
     }
@@ -2993,8 +2979,7 @@ function Aperture() {
       const EMPTY={confession:"",confessionLevel:null,tunedConfession:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.confession) doLoadConfession(id,sub,subLevel,cached);
       return;
     }
@@ -3003,8 +2988,7 @@ function Aperture() {
       const EMPTY={humorEntries:[],humorLevel:null,tunedHumor:false,unitConfused:false};
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
-      const allKeys=await loadJSON("allNodeKeys",[]);
-      if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+      trackNodeKey(id);
       if(!cached.humorEntries||!cached.humorEntries.length) doLoadHumor(id,sub,subLevel,cached);
       return;
     }
@@ -3013,8 +2997,7 @@ function Aperture() {
     const cached=await loadJSON(`node:${id}`,EMPTY);
     setNodeData(cached);
     // track all node keys for learning profile
-    const allKeys=await loadJSON("allNodeKeys",[]);
-    if(!allKeys.includes(id)){await saveJSON("allNodeKeys",[...allKeys,id]);}
+    trackNodeKey(id);
     if(!cached.abstraction?.length)doLoadLevels(id,sub,subsub,subLevel,regularUnitCount(getDisplayList(subItem)),cached);
   }
 
@@ -3775,24 +3758,23 @@ function Aperture() {
     }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
     finally{ setSuggestBusy(false); }
   }
-  async function exploreQuote(quote, author, key){
+  async function exploreQuote(quote, author, key, catchy){
     const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
     if(!sub || !planData || interestBusy) return;
     const L = sub.activeLevel || planData.activeLevel || 1;
     const nid = `${currentTopic.id}/${slugify(sub.name)}/L${L}/q${quoteHash(quote)}-${slugify(PODCAST_SECTIONS[key][0])}`;
     setInterestBusy(`${quote}|${key}`); setNodeError(null);
     try{
-      const subject = `цитата „${quote}“${author?` (${author})`:""} — в контекста на „${sub.name}“`;
+      const subject = `цитата „${quote}“${author?` (${author})`:""}${catchy?` — ъгъл: ${catchy}`:""} — в контекста на „${sub.name}“`;
       await genSectionContent({id:nid, item:{name:PODCAST_SECTIONS[key][0], [key]:true}, subItem:{...sub, name:subject}, subLevel:L, subLevelMeta:lvMeta(L),
         topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
-      const keys = await loadJSON("allNodeKeys", []);
-      if(!keys.includes(nid)) await saveJSON("allNodeKeys", [...keys, nid]);
-      const entry = {id:uid(), quote, author:author||"", key, nodeId:nid, createdAt:Date.now()};
+      trackNodeKey(nid);
+      const entry = {id:uid(), quote, author:author||"", key, catchy:catchy||"", nodeId:nid, createdAt:Date.now()};
       const updSub = {...sub, interesting:[...(sub.interesting||[]).filter(e=>!(e.quote===quote&&e.key===key)), entry]};
       const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
       const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
       setHierarchy(H); setPlanData(P);
-      await saveJSON(`plan:${currentTopic.id}`, P);
+      saveJSON(`plan:${currentTopic.id}`, P).catch(e=>console.warn(e));
     }catch(e){ setNodeError(`Грешка: ${e.message}`); }
     finally{ setInterestBusy(null); }
   }
@@ -6755,7 +6737,13 @@ function InterestingPanel({entries,onOpen,onDelete}){
         <div className="flex flex-wrap gap-2">
           {g.items.map(e=>(
             <span key={e.id} className="inline-flex items-center gap-1">
-              <button onClick={()=>onOpen(e)} className="font-mono-cal text-xs px-2.5 py-1 rounded-full border border-yellow-700 text-yellow-200 hover:border-yellow-400">{DESKTOP_ICONS[e.key]||"•"} {PODCAST_SECTIONS[e.key]?.[0]||e.key}</button>
+              <button onClick={()=>onOpen(e)} className="text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border border-yellow-700 hover:border-yellow-400">
+                <span className="pt-0.5">{DESKTOP_ICONS[e.key]||"•"}</span>
+                <span className="flex flex-col leading-tight">
+                  <span className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-500">{PODCAST_SECTIONS[e.key]?.[0]||e.key}</span>
+                  {e.catchy && <span className="font-read text-sm text-yellow-100">{e.catchy}</span>}
+                </span>
+              </button>
               {onDelete && <button onClick={()=>onDelete(e.id)} title="изтрий" className="text-stone-600 hover:text-red-400 text-xs px-1">✕</button>}
             </span>
           ))}
@@ -6773,13 +6761,18 @@ function QuoteExplorer({q,onExplore,suggestions,onSuggest,suggestBusy,interestBu
     {open && <div className="mt-2 flex flex-wrap gap-2">
       {!keys && (suggestBusy ? <span className="flex items-center gap-1 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> подбирам подходящите секции…</span>
                               : <span className="text-xs text-stone-500 font-read">Няма предложения.</span>)}
-      {keys && keys.map(k=>{
+      {keys && keys.map(x=>{
+        const k = typeof x==="string" ? x : x.key, catchy = typeof x==="string" ? "" : (x.catchy||"");
         const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k);
         const busy = interestBusy===`${q.quote}|${k}`;
         return <button key={k} disabled={!!interestBusy && !busy && !done}
-          onClick={()=>done ? onOpenInterest(done) : (!busy && onExplore(q.quote, q.author, k))}
-          className={`inline-flex items-center gap-1 font-mono-cal text-xs px-2.5 py-1 rounded-full border disabled:opacity-50 ${done?"border-yellow-600 text-yellow-200 bg-yellow-950/30":"border-stone-700 text-stone-300 hover:border-yellow-500"}`}>
-          {busy ? <Loader2 size={11} className="animate-spin"/> : (DESKTOP_ICONS[k]||"•")} {PODCAST_SECTIONS[k]?.[0]||k}{done?" ✓":""}
+          onClick={()=>done ? onOpenInterest(done) : (!busy && onExplore(q.quote, q.author, k, catchy))}
+          className={`w-full sm:w-auto text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border disabled:opacity-50 ${done?"border-yellow-600 bg-yellow-950/30":"border-stone-700 hover:border-yellow-500"}`}>
+          <span className="pt-0.5">{busy ? <Loader2 size={13} className="animate-spin"/> : (DESKTOP_ICONS[k]||"•")}</span>
+          <span className="flex flex-col leading-tight">
+            <span className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400">{PODCAST_SECTIONS[k]?.[0]||k}{done?" · ✓ в Интересно":busy?" · генерирам…":""}</span>
+            {catchy && <span className="font-read text-sm text-yellow-100">{catchy}</span>}
+          </span>
         </button>;
       })}
       {keys && <span className="w-full font-read text-[11px] text-stone-500">Генерираното отива в секция „Интересно“; ✓ = вече е там (натисни, за да го отвориш).</span>}
