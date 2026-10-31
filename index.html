@@ -6755,7 +6755,8 @@ function InterestingPanel({entries,onOpen,onDelete}){
 function QuoteExplorer({q,onExplore,suggestions,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
   const [open,setOpen] = useState(false);
   const keys = suggestions?.[q.quote];
-  function toggle(){ const nx=!open; setOpen(nx); if(nx && !keys && !suggestBusy) onSuggest(); }
+  const legacy = !!keys && keys.some(x=>typeof x==="string"); // saved before titles existed — fetch again, now with titles
+  function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(); }
   return <div className="mt-2">
     <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>
     {open && <div className="mt-2 flex flex-wrap gap-2">
