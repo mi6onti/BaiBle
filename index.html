@@ -835,6 +835,34 @@ Output EXACTLY: ###KIND### REAL or ORIGINAL ###TITLE### title ###AUTHOR### autho
   return { real, title:(f.TITLE||"").trim(), author:(f.AUTHOR||"").trim()||(real?"":"Авторски стих, създаден от AI"), poem:(f.POEM||"").trim(), note:(f.NOTE||"").trim() };
 }
 
+// План по текст → Цитати: for each quote, the section types that would genuinely illuminate THAT quote
+const QUOTE_EXPLORE_EXCLUDED = ["isQuotes","isSimulation","isAppIdeas","isInvestment","isPrediction","isPreface","isNext","isInception"];
+async function genQuoteSuggestions(topicLabel, subtopicName, quotes){
+  const pool = PODCAST_DEFAULT_ORDER.filter(k=>!QUOTE_EXPLORE_EXCLUDED.includes(k));
+  const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
+  const raw = await callClaudeRaw(NOSRC+
+`A learner reads quotes from a text (plan "${topicLabel}", topic "${subtopicName}") and wants to explore single quotes deeper through one of the sections below — e.g. a Timeline of just that quote's idea, or a Comparison of that quote with other views.
+Quotes:
+${quotes.map((q,i)=>`${i+1}. ${q.quote}${q.author?` — ${q.author}`:""}`).join("\n")}
+For EACH quote choose the 2 to 5 sections that would be genuinely interesting and fitting for THAT quote (different quotes usually get different sections); leave out everything that does not truly fit. Order by how interesting they are.
+Menu (KEY — name: what it contains) — choose ONLY from these:
+${menu}
+Output one line per choice in the form QUOTE_NUMBER | KEY, nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 900);
+  const out = {};
+  for(const line of extractField(raw,"PLAN").split("\n")){
+    const m = line.match(/(\d+)\s*\|\s*(is[A-Za-z]+)/);
+    if(!m) continue;
+    const n = Number(m[1])-1, k = m[2].trim();
+    if(n<0 || n>=quotes.length || !pool.includes(k)) continue;
+    const q = quotes[n].quote;
+    out[q] = out[q] || [];
+    if(!out[q].includes(k) && out[q].length<5) out[q].push(k);
+  }
+  return out;
+}
+function quoteHash(t){ let h=0; for(const c of (t||"")) h=((h<<5)-h+c.charCodeAt(0))|0; return Math.abs(h).toString(36); }
+function interestItem(e){ return { name:PODCAST_SECTIONS[e.key]?.[0]||e.key, [e.key]:true, catchy:`„${(e.quote||"").length>70?e.quote.slice(0,70)+"…":e.quote}“` }; }
+
 // Habits (stored as sub.reminders / isReminders for compatibility): a chosen quote / verse turned into a life habit
 async function genReminder(topicLabel, subtopicName, quote, ref) {
   const raw = await callClaudeRaw(
@@ -1725,6 +1753,7 @@ function isCompareItem(item){ return typeof item==="object" && item!==null && !!
 function isTimelineItem(item){ return typeof item==="object" && item!==null && !!item.isTimeline; }
 function isButterflyItem(item){ return typeof item==="object" && item!==null && !!item.isButterfly; }
 function isPoetryItem(item){ return typeof item==="object" && item!==null && !!item.isPoetry; }
+function isInterestingItem(item){ return typeof item==="object" && item!==null && !!item.isInteresting; }
 function isRemindersItem(item){ return typeof item==="object" && item!==null && !!item.isReminders; }
 function isExperimentsItem(item){ return typeof item==="object" && item!==null && !!item.isExperiments; }
 function isInterviewItem(item){ return typeof item==="object" && item!==null && !!item.isInterview; }
@@ -1766,6 +1795,7 @@ function getDisplayList(subItem){
   const extra = [];
   if(subItem?.curiosityQuestions?.length && !GUEST) extra.push({ name:"Любопитно", isCurious:true });
   if(subItem?.reminders?.length) extra.push({ name:"Habits", isReminders:true });
+  if(subItem?.interesting?.length) extra.push({ name:"Интересно", isInteresting:true });
   return [...base, ...extra];
 }
 function regularUnitCount(subsubList){
@@ -2256,9 +2286,9 @@ function Aperture() {
     setDesktopError(null);
     setBusyLabel("зареждам…"); setLoadingH(true);
     try{
-      if(key==="isReminders"){
-        const idx = getDisplayList(H0[subIdx]).findIndex(it=>isRemindersItem(it));
-        if(idx<0){ setDesktopError("Тази тема няма навици."); return; }
+      if(DESK_DYNAMIC[key]){
+        const idx = getDisplayList(H0[subIdx]).findIndex(it=>!!it[key]);
+        if(idx<0){ setDesktopError(key==="isReminders" ? "Тази тема няма навици." : "Тази тема няма разгледани цитати."); return; }
         setDesktopApp(key);
         await openNode(subIdx, idx, H0, P0);
         return;
@@ -2649,7 +2679,7 @@ function Aperture() {
 
   async function openNode(subIdx,ssIdx,hOverride,pOverride){
     setSubtopicIdx(subIdx);setSubsubIdx(ssIdx);
-    setTab("levels");setNodeError(null);setLoadingL(false);
+    setTab("levels");setNodeError(null);setLoadingL(false);setInterestOpen(null);
     const subItem=(hOverride||hierarchy)[subIdx];
     const sub=subItem.name;
     const subLevel=subItem.activeLevel;
@@ -2677,7 +2707,7 @@ function Aperture() {
       return;
     }
 
-    if(isRemindersItem(subsubItem)){ setNodeId(null); setNodeData({}); return; }
+    if(isRemindersItem(subsubItem) || isInterestingItem(subsubItem)){ setNodeId(null); setNodeData({}); return; }
 
     const id=`${currentTopic.id}/${slugify(sub)}/L${subLevel}/${slugify(subsub)}`;
     setNodeId(id);
@@ -3729,6 +3759,72 @@ function Aperture() {
   }
   // Reminders: turn a chosen quote / verse into message + habit, kept on the topic (shown as its own section)
   const [remindBusy,setRemindBusy] = useState(null);
+  // План по текст: explore a single quote through another section; results live in the topic's "Интересно" section
+  const [interestOpen,setInterestOpen] = useState(null);   // the opened Интересно entry, or null
+  const [interestBusy,setInterestBusy] = useState(null);   // `${quote}|${key}` being generated
+  const [suggestBusy,setSuggestBusy]   = useState(false);
+  async function suggestQuoteSections(){
+    const id = nodeId, base = nodeData, sub = hierarchy?.[subtopicIdx];
+    if(!id || !base?.quotes?.length || !sub || suggestBusy) return;
+    setSuggestBusy(true);
+    try{
+      const map = await genQuoteSuggestions(currentTopic.prompt||currentTopic.name, sub.name, base.quotes);
+      const updated = {...base, quoteSuggest:{...(base.quoteSuggest||{}), ...map}};
+      if(isCur(id)) setNodeData(updated);
+      await saveJSON(`node:${id}`, updated);
+    }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
+    finally{ setSuggestBusy(false); }
+  }
+  async function exploreQuote(quote, author, key){
+    const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
+    if(!sub || !planData || interestBusy) return;
+    const L = sub.activeLevel || planData.activeLevel || 1;
+    const nid = `${currentTopic.id}/${slugify(sub.name)}/L${L}/q${quoteHash(quote)}-${slugify(PODCAST_SECTIONS[key][0])}`;
+    setInterestBusy(`${quote}|${key}`); setNodeError(null);
+    try{
+      const subject = `цитата „${quote}“${author?` (${author})`:""} — в контекста на „${sub.name}“`;
+      await genSectionContent({id:nid, item:{name:PODCAST_SECTIONS[key][0], [key]:true}, subItem:{...sub, name:subject}, subLevel:L, subLevelMeta:lvMeta(L),
+        topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
+      const keys = await loadJSON("allNodeKeys", []);
+      if(!keys.includes(nid)) await saveJSON("allNodeKeys", [...keys, nid]);
+      const entry = {id:uid(), quote, author:author||"", key, nodeId:nid, createdAt:Date.now()};
+      const updSub = {...sub, interesting:[...(sub.interesting||[]).filter(e=>!(e.quote===quote&&e.key===key)), entry]};
+      const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
+      const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
+      setHierarchy(H); setPlanData(P);
+      await saveJSON(`plan:${currentTopic.id}`, P);
+    }catch(e){ setNodeError(`Грешка: ${e.message}`); }
+    finally{ setInterestBusy(null); }
+  }
+  // open an Интересно entry (from the Интересно list, or a ✓ chip under a quote)
+  async function openInterestEntry(entry){
+    const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
+    if(!sub) return;
+    const idx = getDisplayList(sub).findIndex(it=>isInterestingItem(it));
+    if(idx<0) return;
+    setSubsubIdx(idx); setTab("levels"); setNodeError(null);
+    setInterestOpen(entry); setNodeId(entry.nodeId); setNodeData(null); setLoadingL(true);
+    try{
+      let nd = await loadJSON(`node:${entry.nodeId}`, null);
+      if(!nd){ // generation was lost — make it again
+        const L = sub.activeLevel || planData.activeLevel || 1;
+        await genSectionContent({id:entry.nodeId, item:{name:PODCAST_SECTIONS[entry.key][0], [entry.key]:true}, subItem:{...sub, name:`цитата „${entry.quote}“${entry.author?` (${entry.author})`:""} — в контекста на „${sub.name}“`}, subLevel:L, subLevelMeta:lvMeta(L), topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
+        nd = await loadJSON(`node:${entry.nodeId}`, {});
+      }
+      if(isCur(entry.nodeId)) setNodeData(nd||{});
+    }catch(e){ if(isCur(entry.nodeId)) setNodeError(`Грешка: ${e.message}`); }
+    finally{ if(isCur(entry.nodeId)) setLoadingL(false); }
+  }
+  async function deleteInterestEntry(eid){
+    const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
+    if(!sub || !planData) return;
+    const updSub = {...sub, interesting:(sub.interesting||[]).filter(e=>e.id!==eid)};
+    const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
+    const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
+    setHierarchy(H); setPlanData(P);
+    await saveJSON(`plan:${currentTopic.id}`, P);
+    if(!updSub.interesting.length){ setSubsubIdx(null); setNodeData(null); }
+  }
   async function addReminder(subIdx, quote, ref){
     const sub = hierarchy?.[subIdx];
     if(!sub || !planData || remindBusy) return;
@@ -4487,6 +4583,8 @@ function Aperture() {
     finally{setGA(false);setLoadingH(false);}
   }
 
+  const curNodeItem = (hierarchy && subtopicIdx!=null && subsubIdx!=null && hierarchy[subtopicIdx])
+    ? (interestOpen ? interestItem(interestOpen) : getDisplayList(hierarchy[subtopicIdx])[subsubIdx]) : null;
   /* render */
   return (
     <div className="min-h-screen bg-stone-950 text-stone-200">
@@ -4526,7 +4624,7 @@ function Aperture() {
             <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:toggleDesktopMode} desktopOn={desktopMode}
               desktopSlot={desktopMode ? <DesktopGrid embedded topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
                 planLevel={planData?.activeLevel} preparing={deskPreparing}
-                onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (k==='isReminders' ? deskHasKey(x,k) : (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel)))); if(first>=0) openDesktopSection(first,k); }}/> : null}
+                onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (DESK_DYNAMIC[k] ? deskHasKey(x,k) : (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel)))); if(first>=0) openDesktopSection(first,k); }}/> : null}
               onPick={pickSubtopic}
               onLevelCheck={guestPlanId?null:runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
@@ -4563,54 +4661,58 @@ function Aperture() {
             <NodeView
               topic={topicLabel(currentTopic)}
               subtopic={hierarchy[subtopicIdx].name}
-              subsub={sectionTitle(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isOverview={isOverviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isPreface={isPrefaceItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isNext={isNextItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isInception={isInceptionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isGlossary={isGlossaryItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isExamples={isExamplesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isResources={isResourcesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isShopping={isShoppingItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isEncyclopedia={isEncyclopediaItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isBefore={isBeforeItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isCompare={isCompareItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isTimeline={isTimelineItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isButterfly={isButterflyItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isExperiments={isExperimentsItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isPoetry={isPoetryItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isReminders={isRemindersItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
+              subsub={sectionTitle(curNodeItem)}
+              isOverview={isOverviewItem(curNodeItem)}
+              isPreface={isPrefaceItem(curNodeItem)}
+              isNext={isNextItem(curNodeItem)}
+              isInception={isInceptionItem(curNodeItem)}
+              isGlossary={isGlossaryItem(curNodeItem)}
+              isExamples={isExamplesItem(curNodeItem)}
+              isResources={isResourcesItem(curNodeItem)}
+              isShopping={isShoppingItem(curNodeItem)}
+              isEncyclopedia={isEncyclopediaItem(curNodeItem)}
+              isBefore={isBeforeItem(curNodeItem)}
+              isCompare={isCompareItem(curNodeItem)}
+              isTimeline={isTimelineItem(curNodeItem)}
+              isButterfly={isButterflyItem(curNodeItem)}
+              isExperiments={isExperimentsItem(curNodeItem)}
+              isPoetry={isPoetryItem(curNodeItem)}
+              isReminders={isRemindersItem(curNodeItem)}
+              isInteresting={isInterestingItem(curNodeItem)} interesting={hierarchy[subtopicIdx].interesting||[]}
+              onOpenInterest={openInterestEntry} onDeleteInterest={guestPlanId?null:deleteInterestEntry}
+              onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy}
+              onSuggestQuotes={suggestQuoteSections} suggestBusy={suggestBusy}
               reminders={hierarchy[subtopicIdx].reminders||[]}
               onRemind={guestPlanId?null:(q,ref)=>addReminder(subtopicIdx,q,ref)} remindBusy={remindBusy}
               onDeleteReminder={guestPlanId?null:(rid)=>deleteReminder(subtopicIdx,rid)}
               onRetryPoetry={()=>doLoadPoetry(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)} onTunePoetry={tunePoetry}
-              isInterview={isInterviewItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isInvestment={isInvestmentItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isPrediction={isPredictionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isQuotes={isQuotesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isBooks={isBooksItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isBible={isBibleItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isActionPlan={isActionPlanItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isSocratic={isSocraticItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isTest={isTestItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isSimulation={isSimulationItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isGames={isGamesItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isAppIdeas={isAppIdeasItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isConfession={isConfessionItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isHumor={isHumorItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              isCurious={isCuriousItem(getDisplayList(hierarchy[subtopicIdx])[subsubIdx])}
-              onBack={desktopApp ? exitDesktopApp : ()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
+              isInterview={isInterviewItem(curNodeItem)}
+              isInvestment={isInvestmentItem(curNodeItem)}
+              isPrediction={isPredictionItem(curNodeItem)}
+              isQuotes={isQuotesItem(curNodeItem)}
+              isBooks={isBooksItem(curNodeItem)}
+              isBible={isBibleItem(curNodeItem)}
+              isActionPlan={isActionPlanItem(curNodeItem)}
+              isSocratic={isSocraticItem(curNodeItem)}
+              isTest={isTestItem(curNodeItem)}
+              isSimulation={isSimulationItem(curNodeItem)}
+              isGames={isGamesItem(curNodeItem)}
+              isAppIdeas={isAppIdeasItem(curNodeItem)}
+              isConfession={isConfessionItem(curNodeItem)}
+              isHumor={isHumorItem(curNodeItem)}
+              isCurious={isCuriousItem(curNodeItem)}
+              onBack={interestOpen ? ()=>{setInterestOpen(null);setNodeId(null);setNodeData({});setNodeError(null);setLoadingL(false);} : desktopApp ? exitDesktopApp : ()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
-              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]),hierarchy[subtopicIdx].activeLevel,regularUnitCount(getDisplayList(hierarchy[subtopicIdx])),nodeData)}
+              onRetryLevels={()=>doLoadLevels(nodeId,hierarchy[subtopicIdx].name,subName(curNodeItem),hierarchy[subtopicIdx].activeLevel,regularUnitCount(getDisplayList(hierarchy[subtopicIdx])),nodeData)}
               onRetryPreface={()=>doLoadPreface(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onOpenPrefaceEntry={(entryIdx)=>openPrefaceEntry(subtopicIdx,entryIdx)}
               onRetryNext={()=>doLoadNext(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onOpenNextEntry={(entryIdx)=>openNextEntry(subtopicIdx,entryIdx)}
               onRetryInception={()=>doLoadInception(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onOpenInceptionEntry={(entryIdx)=>openInceptionEntry(subtopicIdx,entryIdx)}
-              onRetryGlossary={()=>doLoadGlossary(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData,getDisplayList(hierarchy[subtopicIdx])[subsubIdx]?.terms||[])}
+              onRetryGlossary={()=>doLoadGlossary(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData,curNodeItem?.terms||[])}
               onRetryEssay={()=>doLoadEssay(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryExamples={()=>doLoadExamples(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
               onRetryResources={()=>doLoadResources(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)}
@@ -4682,7 +4784,7 @@ function Aperture() {
               onTuneHumor={tuneHumor}
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
-              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(getDisplayList(hierarchy[subtopicIdx])[subsubIdx]))}/>
+              canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(curNodeItem))}/>
             {desktopApp && !isSmartSub(hierarchy[subtopicIdx]) && <DesktopReadMore level={hierarchy[subtopicIdx]?.activeLevel}
               onReadMore={()=>openDesktopSection(subtopicIdx, desktopApp, (hierarchy[subtopicIdx]?.activeLevel||1)+1)}/>}</>
           )}
@@ -5042,7 +5144,7 @@ function sectionTitle(item){ return item?.catchy ? `${subName(item)} · ${item.c
 
 // ── Desktop режим ── every section is an "app"; inside an app you move through all the plan's topics,
 // and "Прочети още" takes the same section of the same topic one level deeper.
-const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isReminders:"🌱",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
+const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isReminders:"🌱",isInteresting:"💡",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
 // the regular (non-news) full section list, same items as the plan's own builder
 async function buildStandardSections(topicPrompt, sub, levelMeta){
   const terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
@@ -5050,10 +5152,11 @@ async function buildStandardSections(topicPrompt, sub, levelMeta){
     .map(k=>({name:PODCAST_SECTIONS[k][0], [k]:true, ...(k==="isGlossary"?{terms}:{})}));
 }
 // Desktop + Умен режим / news: a section "app" exists only for the topics whose own (relevant) section list has it
-function deskAppName(k){ return k==="isReminders" ? "Habits" : (PODCAST_SECTIONS[k]?.[0]||k); }
+const DESK_DYNAMIC = {isReminders:"reminders", isInteresting:"interesting"}; // apps that exist only when a topic has such entries
+function deskAppName(k){ return k==="isReminders" ? "Habits" : k==="isInteresting" ? "Интересно" : (PODCAST_SECTIONS[k]?.[0]||k); }
 function deskLevel(sub, planLevel){ return sub?.activeLevel || planLevel || 1; }
 function deskList(sub, planLevel){ return sub?.byLevel?.[deskLevel(sub, planLevel)] || null; }
-function deskHasKey(sub, key, planLevel){ if(key==="isReminders") return !!sub?.reminders?.length; const l = deskList(sub, planLevel); return !l || l.some(it=>podcastSectionKey(it)===key); }
+function deskHasKey(sub, key, planLevel){ if(DESK_DYNAMIC[key]) return !!sub?.[DESK_DYNAMIC[key]]?.length; const l = deskList(sub, planLevel); return !l || l.some(it=>podcastSectionKey(it)===key); }
 function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLevel,preparing}){
   const hasNews = (hierarchy||[]).some(x=>x.isNewsStory);
   const realTopics = (hierarchy||[]).filter(x=>!isTrailerItem(x));
@@ -5066,9 +5169,10 @@ function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLev
   const relCount = k => known.filter(x=>deskList(x, planLevel).some(it=>podcastSectionKey(it)===k)).length;
   const unknownCount = realTopics.length - known.length;
   const habitsCount = realTopics.filter(x=>x.reminders?.length).length;
+  const interestCount = realTopics.filter(x=>x.interesting?.length).length;
   const apps = [...PODCAST_DEFAULT_ORDER.filter(k=>(hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || !known.length || relCount(k)>0)),
-    ...(habitsCount?["isReminders"]:[])];
-  const badge = k => k==="isReminders" ? habitsCount : (smartDesk && known.length ? relCount(k)+unknownCount : count);
+    ...(habitsCount?["isReminders"]:[]), ...(interestCount?["isInteresting"]:[])];
+  const badge = k => k==="isReminders" ? habitsCount : k==="isInteresting" ? interestCount : (smartDesk && known.length ? relCount(k)+unknownCount : count);
   if(embedded) return <div className="space-y-3 rounded-lg border border-amber-900/50 bg-stone-900/40 p-4">
     <div className="font-mono-cal text-xs uppercase tracking-wide text-amber-500">🖥 Desktop · {smartDesk?"само релевантните приложения — във всяко минаваш през темите, за които е подходящо":`отвори приложение и мини през всички ${count} теми в него`}</div>
     {error&&<ErrorNote message={error}/>}
@@ -5103,7 +5207,7 @@ function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLev
   </div>;
 }
 function DesktopBar({appKey,hierarchy,subIdx,onPickTopic,onExit,error,smart,planLevel}){
-  const topics = (hierarchy||[]).map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && (t.i===subIdx || (appKey==='isReminders' ? deskHasKey(t.x, appKey, planLevel) : (!(smart||t.x.isNewsStory) || deskHasKey(t.x, appKey, planLevel)))));
+  const topics = (hierarchy||[]).map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && (t.i===subIdx || (DESK_DYNAMIC[appKey] ? deskHasKey(t.x, appKey, planLevel) : (!(smart||t.x.isNewsStory) || deskHasKey(t.x, appKey, planLevel)))));
   const pos = topics.findIndex(t=>t.i===subIdx);
   const prev = pos>0 ? topics[pos-1] : null;
   const next = pos>=0 && pos<topics.length-1 ? topics[pos+1] : null;
@@ -5402,7 +5506,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -5671,6 +5775,14 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       <PoetryPanel loading={loadingLevels} data={nodeData} tuned={!!nodeData?.tunedPoetry} onTune={onTunePoetry}/>
     </div>;
   }
+  if(isInteresting){
+    return <div className="space-y-5">
+      {head("text-yellow-300")}
+      <p className="font-read text-stone-500 text-sm italic">💡 Цитати от текста, разгледани през друга секция — отвори някой, за да го прочетеш.</p>
+      {error&&<ErrorNote message={error}/>}
+      <InterestingPanel entries={interesting||[]} onOpen={onOpenInterest} onDelete={onDeleteInterest}/>
+    </div>;
+  }
   if(isReminders){
     return <div className="space-y-5">
       {head("text-amber-300")}
@@ -5780,7 +5892,8 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
-      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
+      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}
+        onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>
     </div>;
   }
 
@@ -6631,7 +6744,49 @@ function PoetryPanel({loading,data,tuned,onTune}){
   </div>;
 }
 
-function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders}){
+function InterestingPanel({entries,onOpen,onDelete}){
+  if(!entries.length) return <p className="font-read text-stone-500 text-sm">Още няма разгледани цитати.</p>;
+  const groups = [];
+  entries.forEach(e=>{ let g = groups.find(x=>x.quote===e.quote); if(!g){ g={quote:e.quote, author:e.author, items:[]}; groups.push(g); } g.items.push(e); });
+  return <div className="space-y-4">
+    {groups.map((g,gi)=>(
+      <div key={gi} className="rounded border border-yellow-900/50 bg-yellow-950/10 p-4 space-y-3">
+        <p className="font-read text-stone-100 italic leading-relaxed">„{g.quote}“{g.author&&<span className="not-italic font-mono-cal text-xs text-yellow-500"> — {g.author}</span>}</p>
+        <div className="flex flex-wrap gap-2">
+          {g.items.map(e=>(
+            <span key={e.id} className="inline-flex items-center gap-1">
+              <button onClick={()=>onOpen(e)} className="font-mono-cal text-xs px-2.5 py-1 rounded-full border border-yellow-700 text-yellow-200 hover:border-yellow-400">{DESKTOP_ICONS[e.key]||"•"} {PODCAST_SECTIONS[e.key]?.[0]||e.key}</button>
+              {onDelete && <button onClick={()=>onDelete(e.id)} title="изтрий" className="text-stone-600 hover:text-red-400 text-xs px-1">✕</button>}
+            </span>
+          ))}
+        </div>
+      </div>
+    ))}
+  </div>;
+}
+function QuoteExplorer({q,onExplore,suggestions,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
+  const [open,setOpen] = useState(false);
+  const keys = suggestions?.[q.quote];
+  function toggle(){ const nx=!open; setOpen(nx); if(nx && !keys && !suggestBusy) onSuggest(); }
+  return <div className="mt-2">
+    <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>
+    {open && <div className="mt-2 flex flex-wrap gap-2">
+      {!keys && (suggestBusy ? <span className="flex items-center gap-1 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> подбирам подходящите секции…</span>
+                              : <span className="text-xs text-stone-500 font-read">Няма предложения.</span>)}
+      {keys && keys.map(k=>{
+        const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k);
+        const busy = interestBusy===`${q.quote}|${k}`;
+        return <button key={k} disabled={!!interestBusy && !busy && !done}
+          onClick={()=>done ? onOpenInterest(done) : (!busy && onExplore(q.quote, q.author, k))}
+          className={`inline-flex items-center gap-1 font-mono-cal text-xs px-2.5 py-1 rounded-full border disabled:opacity-50 ${done?"border-yellow-600 text-yellow-200 bg-yellow-950/30":"border-stone-700 text-stone-300 hover:border-yellow-500"}`}>
+          {busy ? <Loader2 size={11} className="animate-spin"/> : (DESKTOP_ICONS[k]||"•")} {PODCAST_SECTIONS[k]?.[0]||k}{done?" ✓":""}
+        </button>;
+      })}
+      {keys && <span className="w-full font-read text-[11px] text-stone-500">Генерираното отива в секция „Интересно“; ✓ = вече е там (натисни, за да го отвориш).</span>}
+    </div>}
+  </div>;
+}
+function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,onExplore,suggestions,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
   if(loading) return <Spinner label="търся подходящи цитати…"/>;
   quotes = (quotes||[]).filter(q=>!/джобс|jobs/i.test(q?.author||"")); // already-saved Steve Jobs entries are hidden too
   if(!quotes.length) return null;
@@ -6643,6 +6798,7 @@ function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders}
           <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{q.quote}"</p>
           <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
           <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
+          {onExplore && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>}
         </div>
       ))}
     </div>
