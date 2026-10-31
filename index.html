@@ -230,6 +230,14 @@ SOURCE>>>
 ${user}`;
 }
 // pasted text vs a prompt: long, multi-sentence or multi-paragraph input is treated as a source text
+// the source text as a list of sentences (the "[Част N]" headers are dropped) — quotes are cut from these verbatim
+function sourceSentences(text){
+  const out = [];
+  (text||"").split(/\n+/).map(l=>l.trim()).filter(l=>l && !/^\[Част \d+/.test(l)).forEach(par=>{
+    par.split(/(?<=[.!?…]["»“”']?)\s+(?=["„«“'(\[—–-]?\s*[A-ZА-ЯЁЇІЄҐ0-9])/u).map(x=>x.trim()).filter(Boolean).forEach(x=>out.push(x));
+  });
+  return out;
+}
 function looksLikeSourceText(t){
   const s=(t||"").trim();
   if(s.length<400) return false;
@@ -807,23 +815,35 @@ Output EXACTLY in this format, nothing before the first marker or after the last
 // Цитати: only quotes the model is genuinely confident are real and accurately attributed — better fewer than fabricated
 async function genQuotes(topicLabel, subtopicName, levelHint) {
   if(SOURCE_TEXT){
-    // План по текст: how many quotes follows the level — a few at the lightest, every quotable passage at the deepest
+    // План по текст: the AI only CHOOSES sentences by number — the quote text itself is cut from the source by the
+    // app, so it is always word-for-word, and quotes are sorted by their place in the text. Count follows the level.
+    const sents = sourceSentences(SOURCE_TEXT);
     const lvl = levelHint?.level || 3;
-    const howMany = {1:"exactly 3 of the most essential", 2:"5 to 6 key", 3:"8 to 10", 4:"12 to 15"}[lvl] || "ALL the quotable";
+    const howMany = {1:"exactly 3 of the most essential", 2:"5 to 6 key", 3:"8 to 10", 4:"12 to 15"}[lvl];
     const pick = lvl>=5
-      ? `Give ALL the quotable passages of the SOURCE TEXT that belong to this topic — every sentence or short passage worth quoting (key statements, vivid images, definitions, turning points, memorable lines); do not skip any meaningful one.`
-      : `Pick ${howMany} quotes for this topic — the passages that best capture its key ideas, most important first in your selection, but output them in text order.`;
-    const raw = await callClaudeRaw(
-`Quotes for the topic "${subtopicName}" — taken ONLY from the SOURCE TEXT above, copied EXACTLY word for word (you may shorten with … but never reword). No quotes from anywhere else.
+      ? `Choose ALL the quotable passages that belong to this topic — every sentence or short passage worth quoting (key statements, vivid images, definitions, turning points, memorable lines); do not skip any meaningful one.`
+      : `Choose ${howMany} passages that best capture this topic's key ideas.`;
+    const raw = await callClaudeRaw(NOSRC+
+`Below is a text split into numbered sentences. The learner studies the topic "${subtopicName}" (plan "${topicLabel}").
 ${pick}
-ORDER: list them strictly in the order they appear in the text (sequentially, from the beginning of the text to the end).
-For each: the exact passage (under 40 words), who says it in the text (the author, a character or a person quoted there; if unclear, write the text's author or "Из текста"), and one short line on why this passage matters for the topic, in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian).
-Never use the " character.
-Output as blocks separated by a blank line, each block exactly 3 lines: quote, who, why it matters. Wrapped exactly like this and nothing else: ###TEXT###the quotes here###TEXT_END###`, {1:900,2:1500,3:2400,4:3500}[lvl]||6000, 0, 12000);
-    return extractField(raw, "TEXT").split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
-      const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
-      return { quote: (lines[0]||"").replace(/^[„“"']+|[“”"']+$/g,""), author: lines[1]||"Из текста", role: lines[2]||"", speculative:false };
-    }).filter(q=>q.quote);
+A passage is ONE sentence, or a run of up to 3 consecutive sentences that belong together. Refer to passages ONLY by their numbers: N, or N-M for a run. Only choose sentences that are really about this topic.
+For each passage also give: who says it in the text (the author, a character or a person quoted there; if unclear, write Из текста) and one short line on why it matters for the topic, in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
+Output one line per passage, in the order of the numbers: NUMBERS | who | why it matters — nothing else, wrapped exactly like this: ###TEXT###the lines###TEXT_END###
+
+NUMBERED TEXT:
+${sents.map((t,i)=>`[${i+1}] ${t}`).join("\n")}`, {1:600,2:900,3:1400,4:2000}[lvl]||4000, 0, 10000);
+    const picked = [];
+    for(const line of extractField(raw,"TEXT").split("\n")){
+      const m = line.match(/^\s*\[?(\d+)\]?\s*(?:[-–]\s*\[?(\d+)\]?)?\s*\|\s*([^|]*)\|?\s*(.*)$/);
+      if(!m) continue;
+      let a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+      if(b<a) [a,b]=[b,a];
+      if(a<1 || b>sents.length || b-a>3) continue;
+      if(picked.some(p=>!(b<p.a || a>p.b))) continue; // overlapping passage — keep the first
+      picked.push({a, b, author:(m[3]||"").trim()||"Из текста", role:(m[4]||"").trim()});
+    }
+    picked.sort((x,y)=>x.a-y.a);
+    return picked.map(p=>({ quote:sents.slice(p.a-1, p.b).join(" "), author:p.author, role:p.role, speculative:false, pos:p.a }));
   }
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
@@ -2934,7 +2954,7 @@ function Aperture() {
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
       trackNodeKey(id);
-      if(!cached.quotes||!cached.quotes.length||(SOURCE_TEXT&&cached.quotesV!==2)) doLoadQuotes(id,sub,subLevel,cached);
+      if(!cached.quotes||!cached.quotes.length||(SOURCE_TEXT&&cached.quotesV!==3)) doLoadQuotes(id,sub,subLevel,cached);
       return;
     }
 
@@ -3555,7 +3575,7 @@ function Aperture() {
     try{
       const levelMeta = lvMeta(subLevel);
       const quotes = await genQuotes(currentTopic.prompt||currentTopic.name, sub, levelMeta);
-      const updated = {...base, quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?2:undefined};
+      const updated = {...base, quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?3:undefined};
       isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
@@ -4400,9 +4420,9 @@ function Aperture() {
         await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), interviewIntro:intro, interviewQuestions:questions, interviewAnswers:existing?.interviewAnswers||{}, interviewLevel:subLevel, tunedInterview:existing?.tunedInterview||false});
       }
     } else if(isQuotesItem(item)){
-      if(!existing?.quotes?.length || (SOURCE_TEXT && existing.quotesV!==2)){
+      if(!existing?.quotes?.length || (SOURCE_TEXT && existing.quotesV!==3)){
         const quotes = await genQuotes(topicPrompt, subItem.name, subLevelMeta);
-        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?2:undefined, tunedQuotes:existing?.tunedQuotes||false});
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?3:undefined, tunedQuotes:existing?.tunedQuotes||false});
       }
     } else if(isBooksItem(item)){
       if(!existing?.books?.length){
