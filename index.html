@@ -807,11 +807,19 @@ Output EXACTLY in this format, nothing before the first marker or after the last
 // Цитати: only quotes the model is genuinely confident are real and accurately attributed — better fewer than fabricated
 async function genQuotes(topicLabel, subtopicName, levelHint) {
   if(SOURCE_TEXT){
+    // План по текст: how many quotes follows the level — a few at the lightest, every quotable passage at the deepest
+    const lvl = levelHint?.level || 3;
+    const howMany = {1:"exactly 3 of the most essential", 2:"5 to 6 key", 3:"8 to 10", 4:"12 to 15"}[lvl] || "ALL the quotable";
+    const pick = lvl>=5
+      ? `Give ALL the quotable passages of the SOURCE TEXT that belong to this topic — every sentence or short passage worth quoting (key statements, vivid images, definitions, turning points, memorable lines); do not skip any meaningful one.`
+      : `Pick ${howMany} quotes for this topic — the passages that best capture its key ideas, most important first in your selection, but output them in text order.`;
     const raw = await callClaudeRaw(
-`Pick between 2 and 5 quotes for the topic "${subtopicName}" — taken ONLY from the SOURCE TEXT above, copied EXACTLY word for word (you may shorten with … but never reword). No quotes from anywhere else. Choose the passages that best capture this topic's key ideas.
+`Quotes for the topic "${subtopicName}" — taken ONLY from the SOURCE TEXT above, copied EXACTLY word for word (you may shorten with … but never reword). No quotes from anywhere else.
+${pick}
+ORDER: list them strictly in the order they appear in the text (sequentially, from the beginning of the text to the end).
 For each: the exact passage (under 40 words), who says it in the text (the author, a character or a person quoted there; if unclear, write the text's author or "Из текста"), and one short line on why this passage matters for the topic, in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian).
 Never use the " character.
-Output as blocks separated by a blank line, each block exactly 3 lines: quote, who, why it matters. Wrapped exactly like this and nothing else: ###TEXT###the quotes here###TEXT_END###`, 1400);
+Output as blocks separated by a blank line, each block exactly 3 lines: quote, who, why it matters. Wrapped exactly like this and nothing else: ###TEXT###the quotes here###TEXT_END###`, {1:900,2:1500,3:2400,4:3500}[lvl]||6000, 0, 12000);
     return extractField(raw, "TEXT").split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
       const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
       return { quote: (lines[0]||"").replace(/^[„“"']+|[“”"']+$/g,""), author: lines[1]||"Из текста", role: lines[2]||"", speculative:false };
@@ -2926,7 +2934,7 @@ function Aperture() {
       const cached=await loadJSON(`node:${id}`,EMPTY);
       setNodeData(cached);
       trackNodeKey(id);
-      if(!cached.quotes||!cached.quotes.length) doLoadQuotes(id,sub,subLevel,cached);
+      if(!cached.quotes||!cached.quotes.length||(SOURCE_TEXT&&cached.quotesV!==2)) doLoadQuotes(id,sub,subLevel,cached);
       return;
     }
 
@@ -3547,7 +3555,7 @@ function Aperture() {
     try{
       const levelMeta = lvMeta(subLevel);
       const quotes = await genQuotes(currentTopic.prompt||currentTopic.name, sub, levelMeta);
-      const updated = {...base, quotes, quotesLevel:subLevel};
+      const updated = {...base, quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?2:undefined};
       isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
       if(!r.ok)isCur(id)&&setNodeError(`Генерирано, но не е запазено: ${r.detail}`);
@@ -4392,9 +4400,9 @@ function Aperture() {
         await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), interviewIntro:intro, interviewQuestions:questions, interviewAnswers:existing?.interviewAnswers||{}, interviewLevel:subLevel, tunedInterview:existing?.tunedInterview||false});
       }
     } else if(isQuotesItem(item)){
-      if(!existing?.quotes?.length){
+      if(!existing?.quotes?.length || (SOURCE_TEXT && existing.quotesV!==2)){
         const quotes = await genQuotes(topicPrompt, subItem.name, subLevelMeta);
-        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), quotes, quotesLevel:subLevel, tunedQuotes:existing?.tunedQuotes||false});
+        await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?2:undefined, tunedQuotes:existing?.tunedQuotes||false});
       }
     } else if(isBooksItem(item)){
       if(!existing?.books?.length){
