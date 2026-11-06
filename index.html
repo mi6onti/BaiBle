@@ -373,10 +373,11 @@ function lvMeta(level, custom){
   return c ? {...base, hero:c.hero||null, time:c.time||null, label:c.name, hint:`${c.why||c.name} — depth comparable to "${base.label}" (${base.hint})`, baseLabel:base.label} : base;
 }
 // Умен режим at the prompt: 5 depth levels made for THIS goal — what you will be able to do at each, and why stop there
-async function genGoalLevels(prompt){
-  const raw = await callClaudeRaw(
+async function genGoalLevels(prompt, sourceDesc){
+  const raw = await callClaudeRaw(NOSRC+
+(sourceDesc ? `A learner pasted a text to study — "${prompt}": ${sourceDesc}. The levels below are about how deeply they want to take in THIS text (from catching its point to mastering every idea in it), and why.\n` : "")+
 `A learner wants to learn: "${prompt}". Instead of generic abstraction levels (analogy, example, mechanics, definition, depth), define 5 levels of DEPTH made for THIS specific subject and the purpose implied by the prompt — how deeply they want to learn it, and why.
-Level 1 is the lightest (quick, essential understanding — the fastest way to what matters), level 5 the deepest (expert command). Each level is named after what the learner will be able to DO or understand at that depth, never a generic label.
+Level 1 is the lightest (quick, essential understanding — the fastest way to what matters), level 5 the deepest (expert command). Each level is named after what the learner will be able to DO or understand at that depth, never a generic label. Make every name and hero title spark curiosity — intriguing, a little surprising, something the learner wants to reach — while staying honest about the depth.
 For each level give:
 - HERO: a one-word hero/role title for someone at this depth, fitting the subject and growing in mastery from 1 to 5 (in the spirit of Пътешественик, Изследовател, Откривател, Майстор, Мъдрец — but invent titles that suit THIS subject; all 5 distinct). Capitalised, no article.
 - NAME (2-6 words, the outcome, e.g. "Да разбирам новините за нея", "Да го ползвам в работата си").
@@ -897,17 +898,17 @@ ALSO, App Store: for EACH quote suggest 1 or 2 tiny APPS (not in the menu). An a
 - reveal: questions with a hidden answer to check yourself, e.g. what the quote does NOT say
 - compare: two columns side by side, e.g. then vs now, myth vs what the text says
 - journal: 2-4 personal reflection prompts with a hint and a place to write
-For each app give: an emoji icon, an app-like general name (1-3 words, like a real app: „Днешен превод“, „Решение за 30 сек“, „Тест на разбирането“), the kind, and its general purpose in one short sentence (what it does with ANY input).
-Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, and for your apps QUOTE_NUMBER | APP | emoji | app name | kind | purpose — nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 2400);
+For each app give: an emoji icon, an app-like general name (1-3 words, like a real app: „Днешен превод“, „Решение за 30 сек“, „Тест на разбирането“), the kind, its general purpose in one short sentence (what it does with ANY input), and a HOOK — one intriguing sentence on how exactly THIS quote and this topic connect with the app (what the learner will discover by running it on this quote; specific, sparks curiosity).
+Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, and for your apps QUOTE_NUMBER | APP | emoji | app name | kind | purpose | hook — nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 2400);
   const out = {};
   for(const line of extractField(raw,"PLAN").split("\n")){
-    const ma = line.match(/(\d+)\s*\|\s*APP\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*(.+)/i);
+    const ma = line.match(/(\d+)\s*\|\s*APP\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)(?:\|\s*(.+))?/i);
     if(ma){
       const n = Number(ma[1])-1, icon = ma[2].trim().slice(0,4), t = ma[3].trim().replace(/^[„“"']+|[“”"']+$/g,"");
-      const kind = (ma[4].trim().toLowerCase().match(/cards|steps|choice|reveal|compare|journal/)||["reveal"])[0], ins = ma[5].trim();
+      const kind = (ma[4].trim().toLowerCase().match(/cards|steps|choice|reveal|compare|journal/)||["reveal"])[0], ins = ma[5].trim(), hook = (ma[6]||"").trim();
       if(n<0 || n>=quotes.length || !t) continue;
       const q = quotes[n].quote; out[q] = out[q] || [];
-      if(out[q].filter(x=>x.key==="isCustomApp").length<2) out[q].push({key:"isCustomApp", catchy:t, instr:ins, icon, kind});
+      if(out[q].filter(x=>x.key==="isCustomApp").length<2) out[q].push({key:"isCustomApp", catchy:t, instr:ins, icon, kind, hook});
       continue;
     }
     const m = line.match(/(\d+)\s*\|\s*(is[A-Za-z]+)\s*(?:\|\s*(.+))?/);
@@ -951,8 +952,13 @@ ${input}
 Return JSON exactly in this shape: ${APP_KINDS[k]}
 Add to that JSON one more field, "hook": 1-2 sentences, placed first, that show precisely how THIS input connects with what the app does — something specific and intriguing that makes the learner want to start (no generic praise).
 Everything must serve the app's purpose for THIS input. ${fromSource?"The input comes from the source text — stay faithful to it, no invented facts about it.":"The input is the learner's own (a situation, an idea, another quote or topic) — work with it as given."} No filler. Short, concrete, warm.
-Write in the SAME language as the input (if Cyrillic, that means BULGARIAN specifically, never Russian).`;
-  const spec = await callClaude(fromSource ? prompt : NOSRC+prompt, 1800);
+Write in the SAME language as the input (if Cyrillic, that means BULGARIAN specifically, never Russian). Inside the JSON strings never use the " character — use „ “ instead.`;
+  let spec;
+  try{ spec = await callClaude(fromSource ? prompt : NOSRC+prompt, 2200); }
+  catch(e){
+    if(!/\[json\]/.test(e.message)) throw e;
+    spec = await callClaude((fromSource ? "" : NOSRC)+prompt+"\nIMPORTANT: your previous answer was not valid JSON. Return ONLY valid JSON, complete, nothing else.", 2600);
+  }
   return {...spec, kind:k};
 }
 function interestLabel(k){ return k==="isCustomApp" ? "App Store · приложение от AI" : (PODCAST_SECTIONS[k]?.[0]||k); }
@@ -1980,6 +1986,7 @@ function Aperture() {
   const [prefs,setPrefs]               = useState({abstraction:{},personality:{}});
   const [topicInput,setTopicInput]     = useState("");
   const [currentTopic,setCurrentTopic] = useState(null);
+  const currentTopicRef = useRef(null); currentTopicRef.current = currentTopic;
   const [hierarchy,setHierarchy]       = useState(null);
   const [loadingH,setLoadingH]         = useState(false);
   const [homeError,setHomeError]       = useState(null);
@@ -2101,7 +2108,7 @@ function Aperture() {
       const id = slugify(meta.name)+"-"+Date.now().toString(36);
       const newTopic = {id, name:meta.name, prompt:label, createdAt:Date.now(), isSource:true};
       setCurrentTopic(newTopic);
-      const levels = smartStart ? await genGoalLevels(meta.name) : await genOverviewLevels(label);
+      const levels = await genGoalLevels(meta.name, label);
       setTopicOverview({loading:false, levels, prompt:label, name:meta.name, id, newTopic, learningProfile:null, smart:smartStart,
         source:[{title:meta.part||meta.name, text, addedAt:Date.now()}]});
     }catch(e){
@@ -2191,12 +2198,12 @@ function Aperture() {
     setTopicOverview(null);
     setLoadingH(true);
     try{
-      const levelMeta = lvMeta(level, smart ? topicOverview.levels : null);
+      const levelMeta = lvMeta(level, (smart||source) ? topicOverview.levels : null);
       const names = newsStories ? newsStories.map(st=>st.title) : source ? await genSourceTopicNames(levelMeta) : await genSubtopicNames(prompt, learningProfile, levelMeta);
       const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
       const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
       const subtopics = [...((smart||source)?[]:[trailerItem]), ...(newsStories ? newsStories.map(newsStorySubtopic) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
-      const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level, ...(newsStories?{newsStories}:{}), ...(smart?{smartMode:true, levelNames:topicOverview.levels}:{}), ...(source?{isSource:true, sourceParts:source}:{})};
+      const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level, ...(newsStories?{newsStories}:{}), ...(smart?{smartMode:true, levelNames:topicOverview.levels}:{}), ...(source?{isSource:true, sourceParts:source, levelNames:topicOverview.levels}:{})};
       setPlanData(newPlan); setHierarchy(subtopics);
       await saveJSON(`plan:${id}`, newPlan);
     }catch(e){setHomeError(`Грешка: ${e.message}`);}
@@ -2465,6 +2472,21 @@ function Aperture() {
       deskBusyRef.current = false;
     }
   }
+  const srcLevelsRef = useRef({});
+  const planRef = useRef(null); planRef.current = planData;
+  useEffect(()=>{
+    const P = planData;
+    if(!P || !P.isSource || P.levelNames || GUEST || !currentTopic || srcLevelsRef.current[currentTopic.id]) return;
+    const tid = currentTopic.id; srcLevelsRef.current[tid] = true;
+    genGoalLevels(P.name||currentTopic.name, P.prompt||"").then(async levels=>{
+      if(!levels?.length) return;
+      if(currentTopicRef.current?.id!==tid) return;
+      const updated = {...planRef.current, levelNames:levels, overviewLevels:levels};
+      setPlanData(updated);
+      await saveJSON(`plan:${tid}`, updated);
+    }).catch(e=>console.warn("source levels", e));
+  }, [planData?.isSource, planData?.levelNames, currentTopic?.id]);
+
   async function toggleDesktopMode(){
     if(!planData||!currentTopic) return;
     const updated = {...planData, desktopMode:!planData.desktopMode};
@@ -3903,13 +3925,14 @@ function Aperture() {
   const [interestOpen,setInterestOpen] = useState(null);   // the opened Интересно entry, or null
   const [interestBusy,setInterestBusy] = useState(null);   // `${quote}|${key}` being generated
   const [suggestBusy,setSuggestBusy]   = useState(false);
+  const [interestErr,setInterestErr]   = useState(null);   // {quote, msg}
   async function suggestQuoteSections(){
     const id = nodeId, base = nodeData, sub = hierarchy?.[subtopicIdx];
     if(!id || !base?.quotes?.length || !sub || suggestBusy) return;
     setSuggestBusy(true);
     try{
       const map = await genQuoteSuggestions(currentTopic.prompt||currentTopic.name, sub.name, base.quotes);
-      const updated = {...base, quoteSuggest:{...(base.quoteSuggest||{}), ...map}, quoteSuggestV:3};
+      const updated = {...base, quoteSuggest:{...(base.quoteSuggest||{}), ...map}, quoteSuggestV:4};
       if(isCur(id)) setNodeData(updated);
       await saveJSON(`node:${id}`, updated);
     }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
@@ -3918,7 +3941,7 @@ function Aperture() {
   async function genCustomNode(nid, sub, quote, author, title, extra){
     const def = {name:title, purpose:extra?.instr||"", kind:extra?.kind||"reveal", icon:extra?.icon||"✨"};
     const app = await genAppRun(def, `Цитат от текста: „${quote}“${author?` — ${author}`:""} (тема: ${sub.name})`, true);
-    await saveJSON(`node:${nid}`, {appDef:def, app, appTitle:title, appIcon:def.icon, runs:[], unitConfused:false});
+    await saveJSON(`node:${nid}`, {appDef:def, app, appTitle:title, appIcon:def.icon, appHook:extra?.hook||"", runs:[], unitConfused:false});
   }
   // use the same app on another context (a situation, an idea, another quote or topic) — kept as extra runs
   const [appRunBusy,setAppRunBusy] = useState(false);
@@ -3942,7 +3965,7 @@ function Aperture() {
     const L = sub.activeLevel || planData.activeLevel || 1;
     const custom = key==="isCustomApp";
     const nid = `${currentTopic.id}/${slugify(sub.name)}/L${L}/q${quoteHash(quote)}-${custom ? "app-"+quoteHash(catchy||"") : slugify(PODCAST_SECTIONS[key][0])}`;
-    setInterestBusy(`${quote}|${key}|${catchy||""}`); setNodeError(null);
+    setInterestBusy(`${quote}|${key}|${catchy||""}`); setNodeError(null); setInterestErr(null);
     try{
       if(custom) await genCustomNode(nid, sub, quote, author, catchy, extra);
       else{
@@ -3951,14 +3974,14 @@ function Aperture() {
           topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
       }
       trackNodeKey(nid);
-      const entry = {id:uid(), quote, author:author||"", key, catchy:catchy||"", ...(custom?{instr:extra?.instr||"", icon:extra?.icon||"✨", kind:extra?.kind||"reveal"}:{}), nodeId:nid, createdAt:Date.now()};
+      const entry = {id:uid(), quote, author:author||"", key, catchy:catchy||"", ...(custom?{instr:extra?.instr||"", icon:extra?.icon||"✨", kind:extra?.kind||"reveal", hook:extra?.hook||""}:{}), nodeId:nid, createdAt:Date.now()};
       const same = e => e.quote===quote && e.key===key && (!custom || e.catchy===(catchy||""));
       const updSub = {...sub, interesting:[...(sub.interesting||[]).filter(e=>!same(e)), entry]};
       const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
       const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
       setHierarchy(H); setPlanData(P);
       saveJSON(`plan:${currentTopic.id}`, P).catch(e=>console.warn(e));
-    }catch(e){ setNodeError(`Грешка: ${e.message}`); }
+    }catch(e){ setInterestErr({quote, msg:`Не успях да генерирам: ${e.message}`}); }
     finally{ setInterestBusy(null); }
   }
   // open an Интересно entry (from the Интересно list, or a ✓ chip under a quote)
@@ -4871,7 +4894,7 @@ function Aperture() {
               isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp || isMyAppItem(curNodeItem)} onRunApp={guestPlanId?null:runAppOn} appRunBusy={appRunBusy}
               onSaveMine={guestPlanId?null:saveMyApp} onRemoveMine={guestPlanId?null:removeMyApp} savingMine={savingMine} myApps={myApps} interesting={hierarchy[subtopicIdx].interesting||[]}
               onOpenInterest={openInterestEntry} onDeleteInterest={guestPlanId?null:deleteInterestEntry}
-              onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy}
+              onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy} interestErr={interestErr}
               onSuggestQuotes={suggestQuoteSections} suggestBusy={suggestBusy}
               reminders={hierarchy[subtopicIdx].reminders||[]}
               onRemind={guestPlanId?null:(q,ref,title)=>addReminder(subtopicIdx,q,ref,title)} remindBusy={remindBusy}
@@ -5699,7 +5722,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -5975,7 +5998,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </button>
       {error&&<ErrorNote message={error}/>}
       {loadingLevels ? <Spinner label="отварям приложението…"/> :
-        nodeData?.app ? <QuoteApp app={nodeData.app} runs={nodeData.runs||[]} def={nodeData.appDef} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`} onRun={onRunApp} running={appRunBusy}
+        nodeData?.app ? <QuoteApp app={nodeData.app} runs={nodeData.runs||[]} def={nodeData.appDef} hookLine={nodeData.appHook} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`} onRun={onRunApp} running={appRunBusy}
           mine={(myApps||[]).find(a=>a.id===nodeData.myAppId) || (myApps||[]).find(a=>a.name===nodeData.appTitle)} onSaveMine={onSaveMine} onRemoveMine={onRemoveMine} savingMine={savingMine}/> :
         <div className="font-read text-stone-200 leading-relaxed text-lg whitespace-pre-line">{nodeData?.customText}</div>}
     </div>;
@@ -6098,7 +6121,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
       <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitles}
-        onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>
+        onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>
     </div>;
   }
 
@@ -6956,7 +6979,7 @@ function PoetryPanel({loading,data,tuned,onTune}){
 }
 
 // App Store app for a quote — a few simple kinds, each with a clear purpose
-function QuoteApp({app,runs,def,icon,name,storeKey,onRun,running,mine,onSaveMine,onRemoveMine,savingMine}){
+function QuoteApp({app,runs,def,hookLine,icon,name,storeKey,onRun,running,mine,onSaveMine,onRemoveMine,savingMine}){
   const [fb,setFb] = useState("");
   const all = [{id:"q", label:"Цитатът", app}, ...(runs||[]).map((r,i)=>({id:r.id, label:r.input.length>28?r.input.slice(0,28)+"…":r.input, app:r.app}))];
   const [tab,setTab] = useState(0);
@@ -6969,7 +6992,8 @@ function QuoteApp({app,runs,def,icon,name,storeKey,onRun,running,mine,onSaveMine
       <span className="w-12 h-12 rounded-2xl bg-gradient-to-br from-yellow-700/60 to-stone-900 border border-yellow-800 flex items-center justify-center text-2xl shadow-lg shadow-black/40">{icon||"✨"}</span>
       <div><div className="font-display text-lg font-bold text-yellow-100">{name}</div>
         <div className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-500">App Store · приложение от AI</div>
-        {def?.purpose && <div className="font-read text-xs text-stone-400">{def.purpose}</div>}</div>
+        {def?.purpose && <div className="font-read text-xs text-stone-400">{def.purpose}</div>}
+        {hookLine && <div className="font-read text-xs text-yellow-200/90 italic mt-0.5">↳ {hookLine}</div>}</div>
     </div>
     {all.length>1 && <div className="flex flex-wrap gap-1.5">{all.map((r,i)=>(
       <button key={r.id} onClick={()=>setTab(i)} className={`font-mono-cal text-[11px] px-2.5 py-1 rounded-full border ${i===tab?"border-yellow-500 text-yellow-200 bg-yellow-950/30":"border-stone-700 text-stone-400 hover:border-yellow-700"}`}>{r.label}</button>))}</div>}
@@ -7076,10 +7100,10 @@ function InterestingPanel({entries,onOpen,onDelete}){
     ))}
   </div>;
 }
-function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
+function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   const [open,setOpen] = useState(false);
   const keys = suggestions?.[q.quote];
-  const legacy = !!keys && (keys.some(x=>typeof x==="string") || suggestionsV!==3); // saved before titles / App Store apps existed — fetch again once
+  const legacy = !!keys && (keys.some(x=>typeof x==="string") || suggestionsV!==4); // saved before titles / App Store apps / hooks existed — fetch again once
   function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(); }
   return <div className="mt-2">
     <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>
@@ -7099,15 +7123,19 @@ function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBu
           <span className="flex flex-col leading-tight">
             {k==="isCustomApp" && catchy && <span className="font-display text-sm font-bold text-yellow-100">{catchy}</span>}
             <span className={`font-mono-cal text-[10px] uppercase tracking-wide ${k==="isCustomApp"?"text-yellow-500":"text-stone-400"}`}>{x.mine ? "⭐ Мое приложение" : interestLabel(k)}{done?" · ✓ в Интересно":busy?" · генерирам…":""}</span>
-            {k==="isCustomApp" ? (x.instr && <span className="font-read text-xs text-stone-400">{x.instr}</span>) : (catchy && <span className="font-read text-sm text-yellow-100">{catchy}</span>)}
+            {k==="isCustomApp" ? <>
+                {x.instr && <span className="font-read text-xs text-stone-400">{x.instr}</span>}
+                {x.hook && <span className="font-read text-xs text-yellow-200/90 italic mt-0.5">↳ {x.hook}</span>}
+              </> : (catchy && <span className="font-read text-sm text-yellow-100">{catchy}</span>)}
           </span>
         </button>;
       })}
+      {interestErr && interestErr.quote===q.quote && <span className="w-full font-read text-xs text-red-300">⚠ {interestErr.msg} — опитай пак.</span>}
       {keys && <span className="w-full font-read text-[11px] text-stone-500">Генерираното отива в секция „Интересно“; ✓ = вече е там (натисни, за да го отвориш).</span>}
     </div>}
   </div>;
 }
-function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
+function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   if(loading) return <Spinner label="търся подходящи цитати…"/>;
   quotes = (quotes||[]).filter(q=>!/джобс|jobs/i.test(q?.author||"")); // already-saved Steve Jobs entries are hidden too
   if(!quotes.length) return null;
@@ -7119,7 +7147,7 @@ function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,
           <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{q.quote}"</p>
           <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
           <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[q.quote]}/>
-          {onExplore && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} suggestionsV={suggestionsV} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>}
+          {onExplore && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} suggestionsV={suggestionsV} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>}
         </div>
       ))}
     </div>
