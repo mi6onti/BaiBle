@@ -890,14 +890,14 @@ For EACH quote choose the 2 to 5 sections that would be genuinely interesting an
 For each choice also write a catchy, specific title (3-7 words) saying what that section would reveal about THAT quote — intriguing but honest, no clickbait, no invented facts, in the SAME language as the quotes (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
 Menu (KEY — name: what it contains) — choose ONLY from these:
 ${menu}
-ALSO, App Store: for EACH quote invent 1 or 2 tiny APPS of your own (not in the menu) — each with ONE concrete purpose that helps the learner understand or live this quote: practise it, decide with it, apply it, test their understanding, translate it to today, see it in contrast. Not games for fun, not a plain essay. Each app is built on one of these kinds:
+ALSO, App Store: for EACH quote suggest 1 or 2 tiny APPS (not in the menu). An app is a GENERAL, reusable tool with ONE concrete purpose — it would work just as well on any other quote, idea, topic or life situation; this quote is only the first thing it is used on. Think of the kind of tool that fits this quote best (practise an idea, decide with it, apply it to a real situation, test understanding, translate old words to today, see something in contrast) — but the app's name and purpose must be general and must NOT mention this quote or its content. Not games for fun, not a plain essay. Each app is built on one of these kinds:
 - cards: flip cards (front → back), e.g. old phrase → today's words, word → its meaning here
 - steps: a short guided routine to do, step by step, e.g. apply it to a real situation today
 - choice: real-life situations with options; picking one shows feedback, e.g. what would this quote advise here
 - reveal: questions with a hidden answer to check yourself, e.g. what the quote does NOT say
 - compare: two columns side by side, e.g. then vs now, myth vs what the text says
 - journal: 2-4 personal reflection prompts with a hint and a place to write
-For each app give: an emoji icon, an app-like name (1-3 words, like a real app: „Днешен превод“, „Решение за 30 сек“), the kind, and its purpose in one short sentence.
+For each app give: an emoji icon, an app-like general name (1-3 words, like a real app: „Днешен превод“, „Решение за 30 сек“, „Тест на разбирането“), the kind, and its general purpose in one short sentence (what it does with ANY input).
 Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, and for your apps QUOTE_NUMBER | APP | emoji | app name | kind | purpose — nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 2400);
   const out = {};
   for(const line of extractField(raw,"PLAN").split("\n")){
@@ -929,14 +929,17 @@ const APP_KINDS = {
   compare: `{"intro":"...","left":"column title","right":"column title","rows":[{"l":"...","r":"..."}]}  — 4-7 rows`,
   journal: `{"intro":"...","prompts":[{"q":"a personal question","hint":"a nudge, 1 sentence"}]}  — 2-4 prompts`,
 };
-async function genQuoteApp(topicLabel, subtopicName, quote, author, name, purpose, kind){
-  const k = APP_KINDS[kind] ? kind : "reveal";
-  const spec = await callClaude(
-`The learner reads the quote „${quote}“${author?` (${author})`:""} from the source text (topic "${subtopicName}", plan "${topicLabel}").
-Build the content of a tiny app called „${name}“. Its purpose: ${purpose||"help the learner understand and use this quote"}.
-It is a "${k}" app. Return JSON exactly in this shape: ${APP_KINDS[k]}
-Everything must serve the purpose and stay faithful to the text — no invented facts about it, no filler. Short, concrete, warm.
-Write in the SAME language as the quote (if Cyrillic, that means BULGARIAN specifically, never Russian).`, 1800);
+// an app = a general definition {name, purpose, kind}; running it on an input produces the content shown
+async function genAppRun(def, input, fromSource){
+  const k = APP_KINDS[def.kind] ? def.kind : "reveal";
+  const prompt =
+`You are a tiny app called „${def.name}“. What it does with any input: ${def.purpose||"help the learner understand and use it"}.
+It is a "${k}" app. Apply it to this input:
+${input}
+Return JSON exactly in this shape: ${APP_KINDS[k]}
+Everything must serve the app's purpose for THIS input. ${fromSource?"The input comes from the source text — stay faithful to it, no invented facts about it.":"The input is the learner's own (a situation, an idea, another quote or topic) — work with it as given."} No filler. Short, concrete, warm.
+Write in the SAME language as the input (if Cyrillic, that means BULGARIAN specifically, never Russian).`;
+  const spec = await callClaude(fromSource ? prompt : NOSRC+prompt, 1800);
   return {...spec, kind:k};
 }
 function interestLabel(k){ return k==="isCustomApp" ? "App Store · приложение от AI" : (PODCAST_SECTIONS[k]?.[0]||k); }
@@ -3843,8 +3846,25 @@ function Aperture() {
     finally{ setSuggestBusy(false); }
   }
   async function genCustomNode(nid, sub, quote, author, title, extra){
-    const app = await genQuoteApp(currentTopic.prompt||currentTopic.name, sub.name, quote, author, title, extra?.instr, extra?.kind);
-    await saveJSON(`node:${nid}`, {app, appTitle:title, appIcon:extra?.icon||"✨", unitConfused:false});
+    const def = {name:title, purpose:extra?.instr||"", kind:extra?.kind||"reveal", icon:extra?.icon||"✨"};
+    const app = await genAppRun(def, `Цитат от текста: „${quote}“${author?` — ${author}`:""} (тема: ${sub.name})`, true);
+    await saveJSON(`node:${nid}`, {appDef:def, app, appTitle:title, appIcon:def.icon, runs:[], unitConfused:false});
+  }
+  // use the same app on another context (a situation, an idea, another quote or topic) — kept as extra runs
+  const [appRunBusy,setAppRunBusy] = useState(false);
+  async function runAppOn(input){
+    const id = nodeId, base = nodeData, text = (input||"").trim();
+    if(!id || !base?.app || !text || appRunBusy) return;
+    const def = base.appDef || {name:base.appTitle, purpose:interestOpen?.instr||"", kind:base.app.kind, icon:base.appIcon};
+    setAppRunBusy(true); setNodeError(null);
+    try{
+      const app = await genAppRun(def, text, false);
+      const latest = await loadJSON(`node:${id}`, base);
+      const updated = {...latest, appDef:def, runs:[...(latest.runs||[]), {id:uid(), input:text, app, createdAt:Date.now()}]};
+      await saveJSON(`node:${id}`, updated);
+      if(isCur(id)) setNodeData(updated);
+    }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
+    finally{ setAppRunBusy(false); }
   }
   async function exploreQuote(quote, author, key, catchy, extra){
     const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
@@ -4776,7 +4796,7 @@ function Aperture() {
               isExperiments={isExperimentsItem(curNodeItem)}
               isPoetry={isPoetryItem(curNodeItem)}
               isReminders={isRemindersItem(curNodeItem)}
-              isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp} interesting={hierarchy[subtopicIdx].interesting||[]}
+              isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp} onRunApp={guestPlanId?null:runAppOn} appRunBusy={appRunBusy} interesting={hierarchy[subtopicIdx].interesting||[]}
               onOpenInterest={openInterestEntry} onDeleteInterest={guestPlanId?null:deleteInterestEntry}
               onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy}
               onSuggestQuotes={suggestQuoteSections} suggestBusy={suggestBusy}
@@ -5604,7 +5624,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -5880,7 +5900,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </button>
       {error&&<ErrorNote message={error}/>}
       {loadingLevels ? <Spinner label="отварям приложението…"/> :
-        nodeData?.app ? <QuoteApp app={nodeData.app} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`}/> :
+        nodeData?.app ? <QuoteApp app={nodeData.app} runs={nodeData.runs||[]} def={nodeData.appDef} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`} onRun={onRunApp} running={appRunBusy}/> :
         <div className="font-read text-stone-200 leading-relaxed text-lg whitespace-pre-line">{nodeData?.customText}</div>}
     </div>;
   }
@@ -6860,7 +6880,34 @@ function PoetryPanel({loading,data,tuned,onTune}){
 }
 
 // App Store app for a quote — a few simple kinds, each with a clear purpose
-function QuoteApp({app,icon,name,storeKey}){
+function QuoteApp({app,runs,def,icon,name,storeKey,onRun,running}){
+  const all = [{id:"q", label:"Цитатът", app}, ...(runs||[]).map((r,i)=>({id:r.id, label:r.input.length>28?r.input.slice(0,28)+"…":r.input, app:r.app}))];
+  const [tab,setTab] = useState(0);
+  const [input,setInput] = useState("");
+  const [seen,setSeen] = useState(all.length);
+  useEffect(()=>{ if(all.length>seen){ setTab(all.length-1); setInput(""); } setSeen(all.length); }, [all.length]);
+  const cur = all[Math.min(tab, all.length-1)];
+  return <div className="space-y-4">
+    <div className="flex items-center gap-3">
+      <span className="w-12 h-12 rounded-2xl bg-gradient-to-br from-yellow-700/60 to-stone-900 border border-yellow-800 flex items-center justify-center text-2xl shadow-lg shadow-black/40">{icon||"✨"}</span>
+      <div><div className="font-display text-lg font-bold text-yellow-100">{name}</div>
+        <div className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-500">App Store · приложение от AI</div>
+        {def?.purpose && <div className="font-read text-xs text-stone-400">{def.purpose}</div>}</div>
+    </div>
+    {all.length>1 && <div className="flex flex-wrap gap-1.5">{all.map((r,i)=>(
+      <button key={r.id} onClick={()=>setTab(i)} className={`font-mono-cal text-[11px] px-2.5 py-1 rounded-full border ${i===tab?"border-yellow-500 text-yellow-200 bg-yellow-950/30":"border-stone-700 text-stone-400 hover:border-yellow-700"}`}>{r.label}</button>))}</div>}
+    <QuoteAppRun key={cur.id} app={cur.app} storeKey={`${storeKey}|${cur.id}`}/>
+    {onRun && <div className="rounded-lg border border-dashed border-stone-700 p-3 space-y-2">
+      <div className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400">Използвай „{name}“ с друг контекст</div>
+      <textarea value={input} onChange={e=>setInput(e.target.value)} rows={2} placeholder="напр. ситуация от живота ти, друг цитат, друга идея или тема…"
+        className="w-full bg-stone-950 border border-stone-800 rounded px-3 py-2 font-read text-sm text-stone-100 focus:outline-none focus:border-yellow-700"/>
+      <button onClick={()=>onRun(input)} disabled={running||!input.trim()} className="inline-flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide bg-yellow-700 hover:bg-yellow-600 disabled:opacity-50 text-stone-950 font-medium px-3 py-1.5 rounded">
+        {running ? <><Loader2 size={12} className="animate-spin"/> пускам…</> : "▶ Пусни"}
+      </button>
+    </div>}
+  </div>;
+}
+function QuoteAppRun({app,storeKey}){
   const [flip,setFlip] = useState({}), [done,setDone] = useState({}), [pickd,setPickd] = useState({}), [shown,setShown] = useState({});
   const nk = `aperture:appnotes:${storeKey}`;
   const [notes,setNotes] = useState(()=>{ try{ return JSON.parse(localStorage.getItem(nk)||"{}"); }catch(e){ return {}; } });
@@ -6868,11 +6915,6 @@ function QuoteApp({app,icon,name,storeKey}){
   const k = app.kind;
   const card = "rounded-lg border border-stone-800 bg-stone-900/60 p-4";
   return <div className="space-y-4">
-    <div className="flex items-center gap-3">
-      <span className="w-12 h-12 rounded-2xl bg-gradient-to-br from-yellow-700/60 to-stone-900 border border-yellow-800 flex items-center justify-center text-2xl shadow-lg shadow-black/40">{icon||"✨"}</span>
-      <div><div className="font-display text-lg font-bold text-yellow-100">{name}</div>
-        <div className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-500">App Store · приложение от AI</div></div>
-    </div>
     {app.intro && <p className="font-read text-stone-400 text-sm italic">{app.intro}</p>}
     {k==="cards" && <div className="grid sm:grid-cols-2 gap-3">{(app.cards||[]).map((c,i)=>(
       <button key={i} onClick={()=>setFlip({...flip,[i]:!flip[i]})} className={`${card} text-left min-h-[96px] hover:border-yellow-700`}>
