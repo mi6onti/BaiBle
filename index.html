@@ -890,28 +890,67 @@ For EACH quote choose the 2 to 5 sections that would be genuinely interesting an
 For each choice also write a catchy, specific title (3-7 words) saying what that section would reveal about THAT quote — intriguing but honest, no clickbait, no invented facts, in the SAME language as the quotes (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
 Menu (KEY — name: what it contains) — choose ONLY from these:
 ${menu}
-Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 1500);
+ALSO, App Store: for EACH quote invent 1 or 2 short explanation formats of your own that are NOT in the menu and would make that quote's meaning click — simple, text-only (e.g. the quote retold in today's words; what it would mean at work tomorrow; the one word it hinges on; what it does NOT say). Each one: a catchy title (3-7 words) and a one-sentence instruction of what to write.
+Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, and for your own App Store formats QUOTE_NUMBER | APP | catchy title | instruction — nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 2200);
   const out = {};
   for(const line of extractField(raw,"PLAN").split("\n")){
+    const ma = line.match(/(\d+)\s*\|\s*APP\s*\|\s*([^|]+)\|\s*(.+)/i);
+    if(ma){
+      const n = Number(ma[1])-1, t = ma[2].trim().replace(/^[„“"']+|[“”"']+$/g,""), ins = ma[3].trim();
+      if(n<0 || n>=quotes.length || !t) continue;
+      const q = quotes[n].quote; out[q] = out[q] || [];
+      if(out[q].filter(x=>x.key==="isCustomApp").length<2) out[q].push({key:"isCustomApp", catchy:t, instr:ins});
+      continue;
+    }
     const m = line.match(/(\d+)\s*\|\s*(is[A-Za-z]+)\s*(?:\|\s*(.+))?/);
     if(!m) continue;
     const n = Number(m[1])-1, k = m[2].trim(), t = (m[3]||"").trim().replace(/^[„“"']+|[“”"']+$/g,"");
     if(n<0 || n>=quotes.length || !pool.includes(k)) continue;
     const q = quotes[n].quote;
     out[q] = out[q] || [];
-    if(!out[q].some(x=>x.key===k) && out[q].length<5) out[q].push({key:k, catchy:t});
+    if(!out[q].some(x=>x.key===k) && out[q].filter(x=>x.key!=="isCustomApp").length<5) out[q].push({key:k, catchy:t});
   }
   return out;
 }
+// App Store (suggested by AI) for a quote: a short, plain-text explanation in a format the AI itself proposed
+async function genCustomExplain(topicLabel, subtopicName, quote, author, title, instr){
+  const raw = await callClaudeRaw(
+`The learner reads the quote „${quote}“${author?` (${author})`:""} from the source text (topic "${subtopicName}", plan "${topicLabel}").
+Write a short explanation titled „${title}“: ${instr||"explain the quote's meaning in a way that makes it click"}.
+Plain text only, 120-300 words, short paragraphs, warm and clear, no headings, no lists unless truly needed. Stay faithful to the text — do not invent facts about it.
+Write in the SAME language as the quote (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
+Wrap it exactly like this: ###TEXT###the text###TEXT_END###`, 900);
+  return extractField(raw,"TEXT").trim();
+}
+function interestLabel(k){ return k==="isCustomApp" ? "App Store · предложено от AI" : (PODCAST_SECTIONS[k]?.[0]||k); }
 function quoteHash(t){ let h=0; for(const c of (t||"")) h=((h<<5)-h+c.charCodeAt(0))|0; return Math.abs(h).toString(36); }
-function interestItem(e){ return { name:PODCAST_SECTIONS[e.key]?.[0]||e.key, [e.key]:true, catchy: e.catchy || `„${(e.quote||"").length>70?e.quote.slice(0,70)+"…":e.quote}“` }; }
+function interestItem(e){ return { name:e.key==="isCustomApp" ? "App Store" : (PODCAST_SECTIONS[e.key]?.[0]||e.key), [e.key]:true, catchy: e.catchy || `„${(e.quote||"").length>70?e.quote.slice(0,70)+"…":e.quote}“` }; }
 
 // Habits (stored as sub.reminders / isReminders for compatibility): a chosen quote / verse turned into a life habit
-async function genReminder(topicLabel, subtopicName, quote, ref) {
+async function genHabitTitles(topicLabel, subtopicName, items){
+  const raw = await callClaudeRaw(NOSRC+
+`The learner studies "${subtopicName}" (within "${topicLabel}"). For EACH quote below, propose ONE concrete habit for everyday LIFE (work, relationships, health, money, stress, family, decisions — not about reading or studying) that the quote could inspire.
+Give only its title: 3-8 words, specific and practical, saying what you will actually do and ideally in which moment (e.g. „Жест на оставяне при стрес“, „Пауза от 10 секунди преди отговор“). No generic titles like „Бъди благодарен“ or „Молитва сутрин“.
+Quotes:
+${items.map((q,i)=>`${i+1}. ${q.quote}${q.ref?` — ${q.ref}`:""}`).join("\n")}
+Write in BULGARIAN. Never use the " character.
+Output one line per quote: NUMBER | habit title — nothing else, wrapped exactly like this: ###TEXT###the lines###TEXT_END###`, 120+40*items.length, 0, 4000);
+  const out = {};
+  for(const line of extractField(raw,"TEXT").split("\n")){
+    const m = line.match(/^\s*(\d+)\s*[|.)]\s*(.+)$/);
+    if(!m) continue;
+    const n = Number(m[1])-1;
+    if(n>=0 && n<items.length) out[items[n].quote] = m[2].trim().replace(/^[„“"']+|[“”"']+$/g,"");
+  }
+  return out;
+}
+
+async function genReminder(topicLabel, subtopicName, quote, ref, title) {
   const raw = await callClaudeRaw(
 `The learner studies "${subtopicName}" (within "${topicLabel}") and picked this quote to turn into a habit for their everyday life:
 QUOTE: ${quote}
-SOURCE / REFERENCE: ${ref||"—"}
+SOURCE / REFERENCE: ${ref||"—"}${title?`
+THE HABIT TO BUILD (already chosen — develop exactly this one): ${title}`:""}
 Write in BULGARIAN a short message in exactly this structure:
 CITAT — the chosen quote, quoted exactly (in Bulgarian; if it is a Bible verse use the standard Bulgarian wording you know), followed by " – " and its reference / author.
 MESSAGE — 2-3 sentences that connect the quote with the topic and with one concrete, real moment in life (name the moment vividly).
@@ -928,10 +967,10 @@ Example of the style (do not reuse it):
 CITAT: „Хвърлете върху Него всичките си грижи, защото Той се грижи за вас.“ – 1 Петрово 5:7
 MESSAGE: Когато стресът те стисне – просрочен срок, неприятно обаждане, прекалено много неща наведнъж – грижата започва да изглежда като твоя лична тежест, която трябва да носиш сам. Стихът те кани да я оставиш, защото има Някой, който наистина я поема. Облекчението не идва, като проблемът изчезне, а като престанеш да го стискаш в юмрук.
 HABIT: В момента, в който усетиш стрес (стегнати рамене, ускорено дишане, мисъл „няма да успея“), направи физически жест на оставяне: стисни двата юмрука за 3 секунди, после бавно ги отвори с дланите нагоре и изкажи на глас или наум една кратка фраза: „Това го оставям.“ След това запиши една-единствена следваща малка стъпка, която зависи от теб (например „изпращам имейла до 14:00“), и се хвани само с нея. Целият навик отнема под минута.
-Output EXACTLY: ###CIT### the quote with reference ###MSG### the message ###HABIT### the habit ###TIME### time ###FREQ### frequency ###TRIGGER### trigger ###ATTRACT### make it attractive ###BAD### opposite harmful habit ###UNATTRACT### make it unattractive ###END###`, 1600);
-  const f = extractSequentialFields(raw, ["CIT","MSG","HABIT","TIME","FREQ","TRIGGER","ATTRACT","BAD","UNATTRACT"]);
+Output EXACTLY: ###TITLE### a short habit title (3-8 words)${title?` — use: ${title}`:""} ###CIT### the quote with reference ###MSG### the message ###HABIT### the habit ###TIME### time ###FREQ### frequency ###TRIGGER### trigger ###ATTRACT### make it attractive ###BAD### opposite harmful habit ###UNATTRACT### make it unattractive ###END###`, 1600);
+  const f = extractSequentialFields(raw, ["TITLE","CIT","MSG","HABIT","TIME","FREQ","TRIGGER","ATTRACT","BAD","UNATTRACT"]);
   const t = k => (f[k]||"").trim();
-  return { citat:t("CIT") || `„${quote}“${ref?` – ${ref}`:""}`, message:t("MSG"), habit:t("HABIT"),
+  return { title:title || t("TITLE").replace(/^[„“"']+|[“”"']+$/g,""), citat:t("CIT") || `„${quote}“${ref?` – ${ref}`:""}`, message:t("MSG"), habit:t("HABIT"),
     time:t("TIME"), freq:t("FREQ"), trigger:t("TRIGGER"), attract:t("ATTRACT"), bad:t("BAD"), unattract:t("UNATTRACT") };
 }
 
@@ -3780,25 +3819,35 @@ function Aperture() {
     setSuggestBusy(true);
     try{
       const map = await genQuoteSuggestions(currentTopic.prompt||currentTopic.name, sub.name, base.quotes);
-      const updated = {...base, quoteSuggest:{...(base.quoteSuggest||{}), ...map}};
+      const updated = {...base, quoteSuggest:{...(base.quoteSuggest||{}), ...map}, quoteSuggestV:2};
       if(isCur(id)) setNodeData(updated);
       await saveJSON(`node:${id}`, updated);
     }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
     finally{ setSuggestBusy(false); }
   }
-  async function exploreQuote(quote, author, key, catchy){
+  async function genCustomNode(nid, sub, quote, author, title, instr){
+    const text = await genCustomExplain(currentTopic.prompt||currentTopic.name, sub.name, quote, author, title, instr);
+    if(!text) throw new Error("не успях да генерирам обяснение");
+    await saveJSON(`node:${nid}`, {customText:text, customTitle:title, unitConfused:false});
+  }
+  async function exploreQuote(quote, author, key, catchy, instr){
     const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
     if(!sub || !planData || interestBusy) return;
     const L = sub.activeLevel || planData.activeLevel || 1;
-    const nid = `${currentTopic.id}/${slugify(sub.name)}/L${L}/q${quoteHash(quote)}-${slugify(PODCAST_SECTIONS[key][0])}`;
-    setInterestBusy(`${quote}|${key}`); setNodeError(null);
+    const custom = key==="isCustomApp";
+    const nid = `${currentTopic.id}/${slugify(sub.name)}/L${L}/q${quoteHash(quote)}-${custom ? "app-"+quoteHash(catchy||"") : slugify(PODCAST_SECTIONS[key][0])}`;
+    setInterestBusy(`${quote}|${key}|${catchy||""}`); setNodeError(null);
     try{
-      const subject = `цитата „${quote}“${author?` (${author})`:""}${catchy?` — ъгъл: ${catchy}`:""} — в контекста на „${sub.name}“`;
-      await genSectionContent({id:nid, item:{name:PODCAST_SECTIONS[key][0], [key]:true}, subItem:{...sub, name:subject}, subLevel:L, subLevelMeta:lvMeta(L),
-        topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
+      if(custom) await genCustomNode(nid, sub, quote, author, catchy, instr);
+      else{
+        const subject = `цитата „${quote}“${author?` (${author})`:""}${catchy?` — ъгъл: ${catchy}`:""} — в контекста на „${sub.name}“`;
+        await genSectionContent({id:nid, item:{name:PODCAST_SECTIONS[key][0], [key]:true}, subItem:{...sub, name:subject}, subLevel:L, subLevelMeta:lvMeta(L),
+          topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
+      }
       trackNodeKey(nid);
-      const entry = {id:uid(), quote, author:author||"", key, catchy:catchy||"", nodeId:nid, createdAt:Date.now()};
-      const updSub = {...sub, interesting:[...(sub.interesting||[]).filter(e=>!(e.quote===quote&&e.key===key)), entry]};
+      const entry = {id:uid(), quote, author:author||"", key, catchy:catchy||"", ...(custom?{instr:instr||""}:{}), nodeId:nid, createdAt:Date.now()};
+      const same = e => e.quote===quote && e.key===key && (!custom || e.catchy===(catchy||""));
+      const updSub = {...sub, interesting:[...(sub.interesting||[]).filter(e=>!same(e)), entry]};
       const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
       const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
       setHierarchy(H); setPlanData(P);
@@ -3816,6 +3865,10 @@ function Aperture() {
     setInterestOpen(entry); setNodeId(entry.nodeId); setNodeData(null); setLoadingL(true);
     try{
       let nd = await loadJSON(`node:${entry.nodeId}`, null);
+      if(!nd && entry.key==="isCustomApp"){
+        await genCustomNode(entry.nodeId, sub, entry.quote, entry.author, entry.catchy, entry.instr);
+        nd = await loadJSON(`node:${entry.nodeId}`, {});
+      }
       if(!nd){ // generation was lost — make it again
         const L = sub.activeLevel || planData.activeLevel || 1;
         await genSectionContent({id:entry.nodeId, item:{name:PODCAST_SECTIONS[entry.key][0], [entry.key]:true}, subItem:{...sub, name:`цитата „${entry.quote}“${entry.author?` (${entry.author})`:""} — в контекста на „${sub.name}“`}, subLevel:L, subLevelMeta:lvMeta(L), topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
@@ -3835,12 +3888,31 @@ function Aperture() {
     await saveJSON(`plan:${currentTopic.id}`, P);
     if(!updSub.interesting.length){ setSubsubIdx(null); setNodeData(null); }
   }
-  async function addReminder(subIdx, quote, ref){
+  const habitTitlesRef = useRef({});
+  useEffect(()=>{
+    const id = nodeId, nd = nodeData;
+    if(!id || !nd || GUEST || guestPlanId || interestOpen || loadingL) return;
+    if(SOURCE_TEXT && nd.quotes?.length && nd.quotesV!==3) return; // old quotes about to be redone — wait for the new ones
+    const items = (nd.quotes?.length ? nd.quotes.map(q=>({quote:q.quote, ref:q.author})) : (nd.verses||[]).map(v=>({quote:v.text, ref:v.ref}))).filter(x=>x.quote);
+    const missing = items.filter(x=>!(nd.habitTitles||{})[x.quote]);
+    if(!missing.length || habitTitlesRef.current[id]) return;
+    habitTitlesRef.current[id] = true;
+    const sub = hierarchy?.[subtopicIdx];
+    genHabitTitles(currentTopic.prompt||currentTopic.name, sub?.name||"", missing).then(async map=>{
+      if(!Object.keys(map).length) return;
+      const latest = await loadJSON(`node:${id}`, nd);
+      const updated = {...latest, habitTitles:{...(latest.habitTitles||{}), ...map}};
+      await saveJSON(`node:${id}`, updated);
+      if(isCur(id)) setNodeData(cur=>cur ? {...cur, habitTitles:updated.habitTitles} : cur);
+    }).catch(e=>console.warn("habit titles", e)).finally(()=>{ delete habitTitlesRef.current[id]; });
+  }, [nodeId, nodeData?.quotes, nodeData?.verses, loadingL]);
+
+  async function addReminder(subIdx, quote, ref, title){
     const sub = hierarchy?.[subIdx];
     if(!sub || !planData || remindBusy) return;
     setRemindBusy(quote); setNodeError(null);
     try{
-      const r = await genReminder(currentTopic.prompt||currentTopic.name, sub.name, quote, ref);
+      const r = await genReminder(currentTopic.prompt||currentTopic.name, sub.name, quote, ref, title);
       const item = {id:uid(), quote, ref:ref||"", ...r, createdAt:Date.now()};
       const updSub = {...sub, reminders:[...(sub.reminders||[]), item]};
       const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
@@ -4688,12 +4760,12 @@ function Aperture() {
               isExperiments={isExperimentsItem(curNodeItem)}
               isPoetry={isPoetryItem(curNodeItem)}
               isReminders={isRemindersItem(curNodeItem)}
-              isInteresting={isInterestingItem(curNodeItem)} interesting={hierarchy[subtopicIdx].interesting||[]}
+              isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp} interesting={hierarchy[subtopicIdx].interesting||[]}
               onOpenInterest={openInterestEntry} onDeleteInterest={guestPlanId?null:deleteInterestEntry}
               onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy}
               onSuggestQuotes={suggestQuoteSections} suggestBusy={suggestBusy}
               reminders={hierarchy[subtopicIdx].reminders||[]}
-              onRemind={guestPlanId?null:(q,ref)=>addReminder(subtopicIdx,q,ref)} remindBusy={remindBusy}
+              onRemind={guestPlanId?null:(q,ref,title)=>addReminder(subtopicIdx,q,ref,title)} remindBusy={remindBusy}
               onDeleteReminder={guestPlanId?null:(rid)=>deleteReminder(subtopicIdx,rid)}
               onRetryPoetry={()=>doLoadPoetry(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)} onTunePoetry={tunePoetry}
               isInterview={isInterviewItem(curNodeItem)}
@@ -5154,7 +5226,7 @@ function sectionTitle(item){ return item?.catchy ? `${subName(item)} · ${item.c
 
 // ── Desktop режим ── every section is an "app"; inside an app you move through all the plan's topics,
 // and "Прочети още" takes the same section of the same topic one level deeper.
-const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isReminders:"🌱",isInteresting:"💡",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
+const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isReminders:"🌱",isInteresting:"💡",isCustomApp:"✨",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
 // the regular (non-news) full section list, same items as the plan's own builder
 async function buildStandardSections(topicPrompt, sub, levelMeta){
   const terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
@@ -5516,7 +5588,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -5785,6 +5857,15 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       <PoetryPanel loading={loadingLevels} data={nodeData} tuned={!!nodeData?.tunedPoetry} onTune={onTunePoetry}/>
     </div>;
   }
+  if(isCustomApp){
+    return <div className="space-y-5">
+      {head("text-yellow-300")}
+      <div className="inline-block font-mono-cal text-[10px] uppercase tracking-wide px-2 py-0.5 rounded bg-yellow-950/40 border border-yellow-800 text-yellow-400">✨ App Store · предложено от AI</div>
+      {error&&<ErrorNote message={error}/>}
+      {loadingLevels ? <Spinner label="пиша обяснението…"/> :
+        <div className="font-read text-stone-200 leading-relaxed text-lg whitespace-pre-line">{nodeData?.customText}</div>}
+    </div>;
+  }
   if(isInteresting){
     return <div className="space-y-5">
       {head("text-yellow-300")}
@@ -5902,8 +5983,8 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
-      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}
-        onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>
+      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitles}
+        onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>
     </div>;
   }
 
@@ -5944,7 +6025,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
         </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryBible}/>}
-      <BiblePanel loading={loadingLevels} verses={nodeData?.verses||[]} wwjd={nodeData?.wwjd||[]} tuned={!!nodeData?.tunedBible} onTune={onTuneBible} onAsk={onAsk} curiosityQuestions={curiosityQuestions} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
+      <BiblePanel loading={loadingLevels} verses={nodeData?.verses||[]} wwjd={nodeData?.wwjd||[]} tuned={!!nodeData?.tunedBible} onTune={onTuneBible} onAsk={onAsk} curiosityQuestions={curiosityQuestions} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitles}/>
     </div>;
   }
 
@@ -6699,23 +6780,29 @@ function HumorPanel({loading,entries,tuned,onTune}){
   </div>;
 }
 
-function RemindButton({quote,refText,onRemind,remindBusy,reminders}){
+function RemindButton({quote,refText,onRemind,remindBusy,reminders,title}){
   if(!onRemind) return null;
-  const done = (reminders||[]).some(r=>r.quote===quote);
+  const doneR = (reminders||[]).find(r=>r.quote===quote);
   const busy = remindBusy===quote;
-  return <button onClick={()=>!done&&!busy&&onRemind(quote,refText)} disabled={done||(!!remindBusy&&!busy)}
-    className={`mt-2 inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${done?"border-amber-700 text-amber-400 bg-amber-950/30":"border-stone-700 text-stone-400 hover:border-amber-500 hover:text-amber-300"} disabled:opacity-60`}>
-    {busy ? <><Loader2 size={11} className="animate-spin"/> създавам навик…</> : done ? "🌱 в Habits ✓" : "🌱 Направи навик (Habits)"}
+  const shown = doneR?.title || title;
+  return <button onClick={()=>!doneR&&!busy&&onRemind(quote,refText,title)} disabled={!!doneR||(!!remindBusy&&!busy)}
+    className={`mt-2 text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border ${doneR?"border-amber-700 bg-amber-950/30":"border-stone-700 hover:border-amber-500"} disabled:opacity-70`}>
+    <span className="pt-0.5">{busy ? <Loader2 size={13} className="animate-spin"/> : "🌱"}</span>
+    <span className="flex flex-col leading-tight">
+      <span className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400">{busy ? "Habit · създавам навика…" : doneR ? "Habit · ✓ в Habits" : "Habit · направи навик"}</span>
+      {shown ? <span className="font-read text-sm text-amber-100">{shown}</span> : (!doneR && <span className="font-read text-xs text-stone-500">подбирам навик…</span>)}
+    </span>
   </button>;
 }
 function RemindersPanel({reminders,onDelete}){
   const [copied,setCopied] = useState(null);
   if(!reminders.length) return <p className="font-read text-stone-500 text-sm">Няма добавени навици.</p>;
   const ROWS = [["time","🕒 Препоръчително време"],["freq","🔁 Колко често"],["trigger","⚡ Тригер"],["attract","✨ Как да го направиш привлекателен"],["bad","🚫 Вреден навик, който измества"],["unattract","🧱 Как да направиш вредния непривлекателен"]];
-  const asText = r => [`Цитат: ${r.citat}`,`Мотивационно послание: ${r.message}`,`Навик за изграждане: ${r.habit}`,...ROWS.filter(([k])=>r[k]).map(([k,l])=>`${l.replace(/^\S+\s/,"")}: ${r[k]}`)].join("\n");
+  const asText = r => [...(r.title?[`Навик: ${r.title}`]:[]), `Цитат: ${r.citat}`,`Мотивационно послание: ${r.message}`,`Навик за изграждане: ${r.habit}`,...ROWS.filter(([k])=>r[k]).map(([k,l])=>`${l.replace(/^\S+\s/,"")}: ${r[k]}`)].join("\n");
   return <div className="space-y-4">
     {reminders.map(r=>(
       <div key={r.id} className="rounded border border-amber-900/50 bg-amber-950/10 p-4 space-y-2.5">
+        {r.title && <div className="font-display text-lg font-bold text-amber-200">🌱 {r.title}</div>}
         <p className="font-read text-stone-100 leading-relaxed"><span className="font-bold text-amber-300">Цитат:</span> <span className="italic">{r.citat}</span></p>
         <p className="font-read text-stone-200 leading-relaxed"><span className="font-bold text-amber-300">Мотивационно послание:</span> {r.message}</p>
         <p className="font-read text-stone-200 leading-relaxed"><span className="font-bold text-amber-300">Навик за изграждане:</span> {r.habit}</p>
@@ -6768,7 +6855,7 @@ function InterestingPanel({entries,onOpen,onDelete}){
               <button onClick={()=>onOpen(e)} className="text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border border-yellow-700 hover:border-yellow-400">
                 <span className="pt-0.5">{DESKTOP_ICONS[e.key]||"•"}</span>
                 <span className="flex flex-col leading-tight">
-                  <span className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-500">{PODCAST_SECTIONS[e.key]?.[0]||e.key}</span>
+                  <span className="font-mono-cal text-[10px] uppercase tracking-wide text-yellow-500">{interestLabel(e.key)}</span>
                   {e.catchy && <span className="font-read text-sm text-yellow-100">{e.catchy}</span>}
                 </span>
               </button>
@@ -6780,10 +6867,10 @@ function InterestingPanel({entries,onOpen,onDelete}){
     ))}
   </div>;
 }
-function QuoteExplorer({q,onExplore,suggestions,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
+function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
   const [open,setOpen] = useState(false);
   const keys = suggestions?.[q.quote];
-  const legacy = !!keys && keys.some(x=>typeof x==="string"); // saved before titles existed — fetch again, now with titles
+  const legacy = !!keys && (keys.some(x=>typeof x==="string") || suggestionsV!==2); // saved before titles / App Store ideas existed — fetch again once
   function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(); }
   return <div className="mt-2">
     <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>
@@ -6792,14 +6879,14 @@ function QuoteExplorer({q,onExplore,suggestions,onSuggest,suggestBusy,interestBu
                               : <span className="text-xs text-stone-500 font-read">Няма предложения.</span>)}
       {keys && keys.map(x=>{
         const k = typeof x==="string" ? x : x.key, catchy = typeof x==="string" ? "" : (x.catchy||"");
-        const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k);
-        const busy = interestBusy===`${q.quote}|${k}`;
-        return <button key={k} disabled={!!interestBusy && !busy && !done}
-          onClick={()=>done ? onOpenInterest(done) : (!busy && onExplore(q.quote, q.author, k, catchy))}
+        const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k && (k!=="isCustomApp" || e.catchy===catchy));
+        const busy = interestBusy===`${q.quote}|${k}|${catchy}`;
+        return <button key={k+catchy} disabled={!!interestBusy && !busy && !done}
+          onClick={()=>done ? onOpenInterest(done) : (!busy && onExplore(q.quote, q.author, k, catchy, x.instr))}
           className={`w-full sm:w-auto text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border disabled:opacity-50 ${done?"border-yellow-600 bg-yellow-950/30":"border-stone-700 hover:border-yellow-500"}`}>
           <span className="pt-0.5">{busy ? <Loader2 size={13} className="animate-spin"/> : (DESKTOP_ICONS[k]||"•")}</span>
           <span className="flex flex-col leading-tight">
-            <span className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400">{PODCAST_SECTIONS[k]?.[0]||k}{done?" · ✓ в Интересно":busy?" · генерирам…":""}</span>
+            <span className={`font-mono-cal text-[10px] uppercase tracking-wide ${k==="isCustomApp"?"text-yellow-500":"text-stone-400"}`}>{interestLabel(k)}{done?" · ✓ в Интересно":busy?" · генерирам…":""}</span>
             {catchy && <span className="font-read text-sm text-yellow-100">{catchy}</span>}
           </span>
         </button>;
@@ -6808,7 +6895,7 @@ function QuoteExplorer({q,onExplore,suggestions,onSuggest,suggestBusy,interestBu
     </div>}
   </div>;
 }
-function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,onExplore,suggestions,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
+function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interesting,onOpenInterest}){
   if(loading) return <Spinner label="търся подходящи цитати…"/>;
   quotes = (quotes||[]).filter(q=>!/джобс|jobs/i.test(q?.author||"")); // already-saved Steve Jobs entries are hidden too
   if(!quotes.length) return null;
@@ -6819,8 +6906,8 @@ function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,
           {q.speculative && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-500 mb-1.5">⚠ Хипотетично — не е потвърден реален цитат</div>}
           <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{q.quote}"</p>
           <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
-          <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
-          {onExplore && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>}
+          <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[q.quote]}/>
+          {onExplore && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} suggestionsV={suggestionsV} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interesting={interesting} onOpenInterest={onOpenInterest}/>}
         </div>
       ))}
     </div>
@@ -6845,7 +6932,7 @@ function BooksPanel({loading,books,tuned,onTune}){
   </div>;
 }
 
-function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions,onRemind,remindBusy,reminders}){
+function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions,onRemind,remindBusy,reminders,habitTitles}){
   if(loading) return <Spinner label="търся подходящи стихове…"/>;
   if((!verses||!verses.length)&&(!wwjd||!wwjd.length)) return null;
   return <div className="space-y-4">
@@ -6857,7 +6944,7 @@ function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions,o
           <div className="font-mono-cal text-xs text-purple-400 mb-1">{v.ref}</div>
           <p className="font-read text-stone-100 leading-relaxed text-lg italic mb-2">„{v.text}"</p>
           <p className="font-read text-stone-300 leading-relaxed text-base">{v.reflection}</p>
-          <RemindButton quote={v.text} refText={v.ref} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders}/>
+          <RemindButton quote={v.text} refText={v.ref} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[v.text]}/>
         </div>
       ))}
     </div>}
