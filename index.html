@@ -35,6 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
+const APP_VERSION = "2026-11-06 · 16:00";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -373,7 +374,7 @@ function lvMeta(level, custom){
   return c ? {...base, hero:c.hero||null, time:c.time||null, label:c.name, hint:`${c.why||c.name} — depth comparable to "${base.label}" (${base.hint})`, baseLabel:base.label} : base;
 }
 // Умен режим at the prompt: 5 depth levels made for THIS goal — what you will be able to do at each, and why stop there
-async function genGoalLevels(prompt, sourceDesc){
+async function genGoalLevels(prompt, sourceDesc, attempt=0){
   const raw = await callClaudeRaw(NOSRC+
 (sourceDesc ? `A learner pasted a text to study — "${prompt}": ${sourceDesc}. The levels below are about how deeply they want to take in THIS text (from catching its point to mastering every idea in it), and why.\n` : "")+
 `A learner wants to learn: "${prompt}". Instead of generic abstraction levels (analogy, example, mechanics, definition, depth), define 5 levels of DEPTH made for THIS specific subject and the purpose implied by the prompt — how deeply they want to learn it, and why.
@@ -386,6 +387,8 @@ For each level give:
 Write in the SAME language as the prompt (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, that means ENGLISH specifically). Never use the " character.
 Output EXACTLY in this format, nothing before the first marker or after the last one: ###H1### hero ###N1### name ###W1### why ###T1### time ###H2### hero ###N2### name ###W2### why ###T2### time ###H3### hero ###N3### name ###W3### why ###T3### time ###H4### hero ###N4### name ###W4### why ###T4### time ###H5### hero ###N5### name ###W5### why ###T5### time ###END###`, 1600);
   const f = extractSequentialFields(raw, [1,2,3,4,5].flatMap(n=>[`H${n}`,`N${n}`,`W${n}`,`T${n}`]));
+  const got = [1,2,3,4,5].filter(n=>(f[`N${n}`]||"").trim()).length;
+  if(got<4 && attempt<1){ console.warn("goal levels unreadable, retrying", raw.slice(0,300)); return genGoalLevels(prompt, sourceDesc, attempt+1); }
   const clean = t => (t||"").replace(/^[„“"']+|[“”"']+$/g,"").trim();
   return LEVELS.map(m=>{
     const name = (f[`N${m.level}`]||"").replace(/^[„“"']+|[“”"']+$/g,"").trim() || m.label;
@@ -636,6 +639,7 @@ function extractField(raw, name){
 }
 // extract multiple SEQUENTIAL fields (###NAME1### text ###NAME2### text ... ###END###) — no per-field _END markers
 function extractSequentialFields(raw, names){
+  raw = (raw||"").replace(/#{3}\s*([A-Z]+[0-9]*(?:_END)?)\s*#{3}/g, "###$1###");
   const positions = names.map(n=>({n, pos:raw.indexOf(`###${n}###`)}));
   const result={};
   for(let i=0;i<positions.length;i++){
@@ -4811,6 +4815,7 @@ function Aperture() {
           className={`font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border transition-colors ${storageMode==="supabase"?"border-emerald-800 text-emerald-500 bg-emerald-950/30":"border-amber-800 text-amber-500 bg-amber-950/30"}`}>
           {storageMode==="supabase"?"☁ Supabase":"📱 Local"}
         </button>}
+        <span className="font-mono-cal text-[10px] text-stone-600" title="версия на файла">v {APP_VERSION}</span>
       </header>
       <main className="max-w-2xl mx-auto px-4 py-8">
         {guestMissing?<ErrorNote message="Споделеният план не е намерен — линкът може да е грешен или планът вече не се споделя."/>
