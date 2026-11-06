@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-06 · 18:40";
+const APP_VERSION = "2026-11-06 · 22:20";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -232,6 +232,7 @@ ${user}`;
 }
 // pasted text vs a prompt: long, multi-sentence or multi-paragraph input is treated as a source text
 // the source text as a list of sentences (the "[Част N]" headers are dropped) — quotes are cut from these verbatim
+function cleanQuoteText(t){ return (t||"").replace(/\[\d+\]/g,"").replace(/\s+([,.;:!?])/g,"$1").replace(/^["“”]+|["“”]+$/g,"").replace(/\s{2,}/g," ").trim(); }
 function sourceSentences(text){
   const out = [];
   (text||"").split(/\n+/).map(l=>l.trim()).filter(l=>l && !/^\[Част \d+/.test(l)).forEach(par=>{
@@ -876,7 +877,7 @@ ${sents.map((t,i)=>`[${i+1}] ${t}`).join("\n")}`, {1:600,2:900,3:1400,4:2000}[lv
       picked.push({a, b, author:(m[3]||"").trim()||"Из текста", role:(m[4]||"").trim()});
     }
     picked.sort((x,y)=>x.a-y.a);
-    return picked.map(p=>({ quote:sents.slice(p.a-1, p.b).join(" "), author:p.author, role:p.role, speculative:false, pos:p.a }));
+    return picked.map(p=>({ quote:cleanQuoteText(sents.slice(p.a-1, p.b).join(" ")), author:p.author, role:p.role, speculative:false, pos:p.a }));
   }
   const levelPart = levelHint ? ` Match the depth/register the learner chose: "${levelHint.label}" (${levelHint.hint}).` : "";
   const raw = await callClaudeRaw(
@@ -1006,29 +1007,42 @@ function quoteHash(t){ let h=0; for(const c of (t||"")) h=((h<<5)-h+c.charCodeAt
 function interestItem(e){ return { name:e.key==="isCustomApp" ? "App Store" : (PODCAST_SECTIONS[e.key]?.[0]||e.key), [e.key]:true, catchy: e.catchy || `„${(e.quote||"").length>70?e.quote.slice(0,70)+"…":e.quote}“` }; }
 
 // Habits (stored as sub.reminders / isReminders for compatibility): a chosen quote / verse turned into a life habit
+// value stored for a quote that does not lend itself to a habit — its habit option is not shown
+const NO_HABIT = "__none";
 async function genHabitTitles(topicLabel, subtopicName, items){
   const raw = await callClaudeRaw(NOSRC+
-`The learner studies "${subtopicName}" (within "${topicLabel}"). For EACH quote below, propose ONE concrete habit for everyday LIFE (work, relationships, health, money, stress, family, decisions — not about reading or studying) that the quote could inspire.
-Give only its title: 3-8 words, specific and practical, saying what you will actually do and ideally in which moment (e.g. „Жест на оставяне при стрес“, „Пауза от 10 секунди преди отговор“). No generic titles like „Бъди благодарен“ or „Молитва сутрин“.
+`The learner studies "${subtopicName}" (within the plan "${topicLabel}"). For EACH quote below decide whether it can honestly inspire a habit for everyday LIFE (work, relationships, health, money, stress, family, decisions — not about reading or studying).
+First find what the quote can TEACH us — the idea or lesson behind it, even when the quote is descriptive (e.g. a capital built to rival Constantinople → setting a high standard for your own work). Then propose ONE concrete habit that grows directly from that lesson.
+The link must be real and easy to see: someone reading the quote, the lesson and the habit together must say „yes, that follows“. If you cannot find such a link without forcing it, answer NONE for that quote — that is expected and fine for purely factual lines (dates, names, lists).
+Habit title: 3-8 words, specific and practical, what you will actually do and ideally in which moment. No generic titles like „Бъди благодарен“ or „Молитва сутрин“.
+Lesson: 3-8 words, what the quote teaches.
 Quotes:
 ${items.map((q,i)=>`${i+1}. ${q.quote}${q.ref?` — ${q.ref}`:""}`).join("\n")}
 Write in BULGARIAN. Never use the " character.
-Output one line per quote: NUMBER | habit title — nothing else, wrapped exactly like this: ###TEXT###the lines###TEXT_END###`, 120+40*items.length, 0, 4000);
-  const out = {};
+Output one line per quote: NUMBER | lesson | habit title — or NUMBER | NONE — nothing else, wrapped exactly like this: ###TEXT###the lines###TEXT_END###`, 160+60*items.length, 0, 4000);
+  const out = {}, lessons = {};
+  const clean = t => (t||"").trim().replace(/^[„“"']+|[“”"']+$/g,"");
   for(const line of extractField(raw,"TEXT").split("\n")){
     const m = line.match(/^\s*(\d+)\s*[|.)]\s*(.+)$/);
     if(!m) continue;
     const n = Number(m[1])-1;
-    if(n>=0 && n<items.length) out[items[n].quote] = m[2].trim().replace(/^[„“"']+|[“”"']+$/g,"");
+    if(n<0 || n>=items.length) continue;
+    const parts = m[2].split("|").map(clean).filter(Boolean);
+    if(!parts.length || /^(NONE|НЯМА)$/i.test(parts[0])){ out[items[n].quote] = NO_HABIT; continue; }
+    if(parts.length>=2){ lessons[items[n].quote] = parts[0]; out[items[n].quote] = parts[1]; }
+    else out[items[n].quote] = parts[0];
   }
-  return out;
+  // quotes the AI skipped count as "no habit" — never a forced one
+  items.forEach(x=>{ if(!(x.quote in out)) out[x.quote] = NO_HABIT; });
+  return {titles:out, lessons};
 }
 
-async function genReminder(topicLabel, subtopicName, quote, ref, title) {
+async function genReminder(topicLabel, subtopicName, quote, ref, title, lesson) {
   const raw = await callClaudeRaw(
 `The learner studies "${subtopicName}" (within "${topicLabel}") and picked this quote to turn into a habit for their everyday life:
 QUOTE: ${quote}
-SOURCE / REFERENCE: ${ref||"—"}${title?`
+SOURCE / REFERENCE: ${ref||"—"}${lesson?`
+WHAT IT TEACHES (keep this link visible in the message): ${lesson}`:""}${title?`
 THE HABIT TO BUILD (already chosen — develop exactly this one): ${title}`:""}
 Write in BULGARIAN a short message in exactly this structure:
 CITAT — the chosen quote, quoted exactly (in Bulgarian; if it is a Bible verse use the standard Bulgarian wording you know), followed by " – " and its reference / author.
@@ -4063,25 +4077,29 @@ function Aperture() {
     if(!id || !nd || GUEST || guestPlanId || interestOpen || loadingL) return;
     if(SOURCE_TEXT && nd.quotes?.length && nd.quotesV!==3) return; // old quotes about to be redone — wait for the new ones
     const items = (nd.quotes?.length ? nd.quotes.map(q=>({quote:q.quote, ref:q.author})) : (nd.verses||[]).map(v=>({quote:v.text, ref:v.ref}))).filter(x=>x.quote);
-    const missing = items.filter(x=>!(nd.habitTitles||{})[x.quote]);
+    const fresh = nd.habitTitlesV===2;
+    const missing = items.filter(x=>!fresh || !((nd.habitTitles||{})[x.quote]));
     if(!missing.length || habitTitlesRef.current[id]) return;
     habitTitlesRef.current[id] = true;
     const sub = hierarchy?.[subtopicIdx];
-    genHabitTitles(currentTopic.prompt||currentTopic.name, sub?.name||"", missing).then(async map=>{
-      if(!Object.keys(map).length) return;
+    genHabitTitles(currentTopic.prompt||currentTopic.name, sub?.name||"", missing).then(async ({titles, lessons})=>{
+      if(!Object.keys(titles).length) return;
       const latest = await loadJSON(`node:${id}`, nd);
-      const updated = {...latest, habitTitles:{...(latest.habitTitles||{}), ...map}};
+      const keepOld = latest.habitTitlesV===2;
+      const updated = {...latest, habitTitlesV:2,
+        habitTitles:{...(keepOld?latest.habitTitles||{}:{}), ...titles},
+        habitLessons:{...(keepOld?latest.habitLessons||{}:{}), ...lessons}};
       await saveJSON(`node:${id}`, updated);
-      if(isCur(id)) setNodeData(cur=>cur ? {...cur, habitTitles:updated.habitTitles} : cur);
+      if(isCur(id)) setNodeData(cur=>cur ? {...cur, habitTitlesV:2, habitTitles:updated.habitTitles, habitLessons:updated.habitLessons} : cur);
     }).catch(e=>console.warn("habit titles", e)).finally(()=>{ delete habitTitlesRef.current[id]; });
   }, [nodeId, nodeData?.quotes, nodeData?.verses, loadingL]);
 
-  async function addReminder(subIdx, quote, ref, title){
+  async function addReminder(subIdx, quote, ref, title, lesson){
     const sub = hierarchy?.[subIdx];
     if(!sub || !planData || remindBusy) return;
     setRemindBusy(quote); setNodeError(null);
     try{
-      const r = await genReminder(currentTopic.prompt||currentTopic.name, sub.name, quote, ref, title);
+      const r = await genReminder(currentTopic.prompt||currentTopic.name, sub.name, quote, ref, title, lesson || nodeData?.habitLessons?.[quote]);
       const item = {id:uid(), quote, ref:ref||"", ...r, createdAt:Date.now()};
       const updSub = {...sub, reminders:[...(sub.reminders||[]), item]};
       const H = hierarchy.map((x,i)=>i===subIdx?updSub:x);
@@ -4938,7 +4956,7 @@ function Aperture() {
               onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy} interestErr={interestErr}
               onSuggestQuotes={suggestQuoteSections} suggestBusy={suggestBusy}
               reminders={hierarchy[subtopicIdx].reminders||[]}
-              onRemind={guestPlanId?null:(q,ref,title)=>addReminder(subtopicIdx,q,ref,title)} remindBusy={remindBusy}
+              onRemind={guestPlanId?null:(q,ref,title,lesson)=>addReminder(subtopicIdx,q,ref,title,lesson)} remindBusy={remindBusy}
               onDeleteReminder={guestPlanId?null:(rid)=>deleteReminder(subtopicIdx,rid)}
               onRetryPoetry={()=>doLoadPoetry(nodeId,hierarchy[subtopicIdx].name,hierarchy[subtopicIdx].activeLevel,nodeData)} onTunePoetry={tunePoetry}
               isInterview={isInterviewItem(curNodeItem)}
@@ -6161,7 +6179,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
-      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitles}
+      <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitlesV===2?nodeData?.habitTitles:null} habitLessons={nodeData?.habitLessons}
         onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>
     </div>;
   }
@@ -6203,7 +6221,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
         </button>}
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryBible}/>}
-      <BiblePanel loading={loadingLevels} verses={nodeData?.verses||[]} wwjd={nodeData?.wwjd||[]} tuned={!!nodeData?.tunedBible} onTune={onTuneBible} onAsk={onAsk} curiosityQuestions={curiosityQuestions} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitles}/>
+      <BiblePanel loading={loadingLevels} verses={nodeData?.verses||[]} wwjd={nodeData?.wwjd||[]} tuned={!!nodeData?.tunedBible} onTune={onTuneBible} onAsk={onAsk} curiosityQuestions={curiosityQuestions} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitlesV===2?nodeData?.habitTitles:null} habitLessons={nodeData?.habitLessons}/>
     </div>;
   }
 
@@ -6958,17 +6976,19 @@ function HumorPanel({loading,entries,tuned,onTune}){
   </div>;
 }
 
-function RemindButton({quote,refText,onRemind,remindBusy,reminders,title}){
+function RemindButton({quote,refText,onRemind,remindBusy,reminders,title,lesson}){
   if(!onRemind) return null;
   const doneR = (reminders||[]).find(r=>r.quote===quote);
+  if(title===NO_HABIT && !doneR) return null;
   const busy = remindBusy===quote;
   const shown = doneR?.title || title;
-  return <button onClick={()=>!doneR&&!busy&&onRemind(quote,refText,title)} disabled={!!doneR||(!!remindBusy&&!busy)}
+  return <button onClick={()=>!doneR&&!busy&&onRemind(quote,refText,title,lesson)} disabled={!!doneR||(!!remindBusy&&!busy)}
     className={`mt-2 text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border ${doneR?"border-amber-700 bg-amber-950/30":"border-stone-700 hover:border-amber-500"} disabled:opacity-70`}>
     <span className="pt-0.5">{busy ? <Loader2 size={13} className="animate-spin"/> : "🌱"}</span>
     <span className="flex flex-col leading-tight">
       <span className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400">{busy ? "Habit · създавам навика…" : doneR ? "Habit · ✓ в Habits" : "Habit · направи навик"}</span>
-      {shown ? <span className="font-read text-sm text-amber-100">{shown}</span> : (!doneR && <span className="font-read text-xs text-stone-500">подбирам навик…</span>)}
+      {shown && shown!==NO_HABIT ? <span className="font-read text-sm text-amber-100">{shown}</span> : (!doneR && <span className="font-read text-xs text-stone-500">подбирам навик…</span>)}
+      {lesson && !doneR && <span className="font-read text-xs text-amber-200/80 italic mt-0.5">↳ урокът: {lesson}</span>}
     </span>
   </button>;
 }
@@ -7176,7 +7196,7 @@ function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBu
     </div>}
   </div>;
 }
-function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
+function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,habitLessons,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   if(loading) return <Spinner label="търся подходящи цитати…"/>;
   quotes = (quotes||[]).filter(q=>!/джобс|jobs/i.test(q?.author||"")); // already-saved Steve Jobs entries are hidden too
   if(!quotes.length) return null;
@@ -7185,9 +7205,9 @@ function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,
       {quotes.map((q,i)=>(
         <div key={i} className="rounded border border-pink-900/50 bg-pink-950/10 p-4">
           {q.speculative && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-500 mb-1.5">⚠ Хипотетично — не е потвърден реален цитат</div>}
-          <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{q.quote}"</p>
+          <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{cleanQuoteText(q.quote)}“</p>
           <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
-          <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[q.quote]}/>
+          <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[q.quote]} lesson={habitLessons?.[q.quote]}/>
           {onExplore && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} suggestionsV={suggestionsV} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>}
         </div>
       ))}
@@ -7213,7 +7233,7 @@ function BooksPanel({loading,books,tuned,onTune}){
   </div>;
 }
 
-function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions,onRemind,remindBusy,reminders,habitTitles}){
+function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions,onRemind,remindBusy,reminders,habitTitles,habitLessons}){
   if(loading) return <Spinner label="търся подходящи стихове…"/>;
   if((!verses||!verses.length)&&(!wwjd||!wwjd.length)) return null;
   return <div className="space-y-4">
@@ -7225,7 +7245,7 @@ function BiblePanel({loading,verses,wwjd,tuned,onTune,onAsk,curiosityQuestions,o
           <div className="font-mono-cal text-xs text-purple-400 mb-1">{v.ref}</div>
           <p className="font-read text-stone-100 leading-relaxed text-lg italic mb-2">„{v.text}"</p>
           <p className="font-read text-stone-300 leading-relaxed text-base">{v.reflection}</p>
-          <RemindButton quote={v.text} refText={v.ref} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[v.text]}/>
+          <RemindButton quote={v.text} refText={v.ref} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[v.text]} lesson={habitLessons?.[v.text]}/>
         </div>
       ))}
     </div>}
