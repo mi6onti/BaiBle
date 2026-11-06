@@ -290,7 +290,35 @@ async function callClaude(user, maxTokens=600, attempt=0) {
   let clean=text.replace(/```json/gi,"").replace(/```/g,"").trim();
   const fi=clean.indexOf("{"),la=clean.lastIndexOf("}");
   if(fi!==-1&&la>fi)clean=clean.slice(fi,la+1);
-  try{return JSON.parse(clean);}catch(e){throw new Error(`[json] ${e.message} | raw=${text.slice(0,100)}`);}
+  try{return JSON.parse(clean);}catch(e){
+    try{ return JSON.parse(repairJSON(clean)); }
+    catch(e2){ throw new Error(`[json] ${e.message} | raw=${text.slice(0,100)}`); }
+  }
+}
+// AI JSON often breaks on quotes inside text (e.g. „Златен век" closed with a plain "). Make such quotes harmless:
+// a " inside a string only ends it when followed by , } ] or : — otherwise it is escaped.
+function repairJSON(str){
+  str = str.replace(/„([^"“”„\n]{0,300})"/g, "„$1“");
+  let out = "", inStr = false;
+  for(let i=0;i<str.length;i++){
+    const c = str[i];
+    if(inStr){
+      if(c==="\\"){ out += c + (str[i+1]||""); i++; continue; }
+      if(c==="\n"){ out += "\\n"; continue; }
+      if(c==='"'){
+        let j=i+1; while(j<str.length && /\s/.test(str[j])) j++;
+        const nx = str[j];
+        if(nx===undefined || nx===","||nx==="}"||nx==="]"||nx===":"){ inStr=false; out+=c; }
+        else out += '\\"';
+        continue;
+      }
+      out += c;
+    } else {
+      if(c==='"') inStr = true;
+      out += c;
+    }
+  }
+  return out;
 }
 
 /* ── Generation ──────────────────────────────────────────────────────── */
@@ -906,10 +934,18 @@ For each app give: an emoji icon, an app-like general name (1-3 words, like a re
 Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, and for your apps QUOTE_NUMBER | APP | emoji | app name | kind | purpose | hook — nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, 2400);
   const out = {};
   for(const line of extractField(raw,"PLAN").split("\n")){
-    const ma = line.match(/(\d+)\s*\|\s*APP\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)(?:\|\s*(.+))?/i);
+    const ma = line.match(/(\d+)\s*\|\s*APP\s*\|(.+)/i);
     if(ma){
-      const n = Number(ma[1])-1, icon = ma[2].trim().slice(0,4), t = ma[3].trim().replace(/^[„“"']+|[“”"']+$/g,"");
-      const kind = (ma[4].trim().toLowerCase().match(/cards|steps|choice|reveal|compare|journal/)||["reveal"])[0], ins = ma[5].trim(), hook = (ma[6]||"").trim();
+      const parts = ma[2].split("|").map(x=>x.trim()).filter(Boolean);
+      const KINDS = /^(cards|steps|choice|reveal|compare|journal)$/i;
+      let ki = parts.findIndex(x=>KINDS.test(x));
+      const before = ki>=0 ? parts.slice(0,ki) : parts.slice(0,2), after = ki>=0 ? parts.slice(ki+1) : parts.slice(3);
+      const kind = ki>=0 ? parts[ki].toLowerCase() : ((parts[2]||"").toLowerCase().match(/cards|steps|choice|reveal|compare|journal/)||["reveal"])[0];
+      const head = before.join(" ");
+      const em = head.match(/^\s*((?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:\uFE0F|\u200D|\p{Extended_Pictographic}|\p{Emoji_Modifier})*)\s*/u);
+      const icon = em ? em[1] : "✨";
+      const t = (em ? head.slice(em[0].length) : head).trim().replace(/^[„“"']+|[“”"']+$/g,"");
+      const n = Number(ma[1])-1, ins = (after[0]||"").trim(), hook = (after[1]||"").trim();
       if(n<0 || n>=quotes.length || !t) continue;
       const q = quotes[n].quote; out[q] = out[q] || [];
       if(out[q].filter(x=>x.key==="isCustomApp").length<2) out[q].push({key:"isCustomApp", catchy:t, instr:ins, icon, kind, hook});
@@ -3936,7 +3972,7 @@ function Aperture() {
     setSuggestBusy(true);
     try{
       const map = await genQuoteSuggestions(currentTopic.prompt||currentTopic.name, sub.name, base.quotes);
-      const updated = {...base, quoteSuggest:{...(base.quoteSuggest||{}), ...map}, quoteSuggestV:4};
+      const updated = {...base, quoteSuggest:{...(base.quoteSuggest||{}), ...map}, quoteSuggestV:5};
       if(isCur(id)) setNodeData(updated);
       await saveJSON(`node:${id}`, updated);
     }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
@@ -3985,7 +4021,7 @@ function Aperture() {
       const P = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:H}};
       setHierarchy(H); setPlanData(P);
       saveJSON(`plan:${currentTopic.id}`, P).catch(e=>console.warn(e));
-    }catch(e){ setInterestErr({quote, msg:`Не успях да генерирам: ${e.message}`}); }
+    }catch(e){ setInterestErr({quote, msg: /\[json\]/.test(e.message) ? "AI-ят върна повреден отговор" : `Не успях да генерирам: ${e.message.slice(0,120)}`}); }
     finally{ setInterestBusy(null); }
   }
   // open an Интересно entry (from the Интересно list, or a ✓ chip under a quote)
@@ -7108,7 +7144,7 @@ function InterestingPanel({entries,onOpen,onDelete}){
 function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   const [open,setOpen] = useState(false);
   const keys = suggestions?.[q.quote];
-  const legacy = !!keys && (keys.some(x=>typeof x==="string") || suggestionsV!==4); // saved before titles / App Store apps / hooks existed — fetch again once
+  const legacy = !!keys && (keys.some(x=>typeof x==="string") || suggestionsV!==5); // older suggestion formats — fetch again once — fetch again once
   function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(); }
   return <div className="mt-2">
     <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>
