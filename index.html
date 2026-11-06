@@ -929,6 +929,18 @@ const APP_KINDS = {
   compare: `{"intro":"...","left":"column title","right":"column title","rows":[{"l":"...","r":"..."}]}  — 4-7 rows`,
   journal: `{"intro":"...","prompts":[{"q":"a personal question","hint":"a nudge, 1 sentence"}]}  — 2-4 prompts`,
 };
+async function genRefineApp(def, feedback){
+  const raw = await callClaudeRaw(NOSRC+
+`A learner liked a tiny learning app and wants to keep it as their own, with an improvement.
+App: name „${def.name}“; kind ${def.kind} (one of cards, steps, choice, reveal, compare, journal); icon ${def.icon||"✨"}; what it does with ANY input: ${def.purpose}
+Their feedback: ${feedback}
+Rewrite the app definition so it follows the feedback. Keep it a GENERAL tool that works on any idea, quote, topic or situation. Keep the kind unless the feedback clearly needs another one of the six.
+Write in BULGARIAN. Never use the " character.
+Output EXACTLY: ###ICON### one emoji ###NAME### app name, 1-3 words ###KIND### kind ###PURPOSE### what it does with any input, 1-2 sentences, including the improvement ###END###`, 400);
+  const f = extractSequentialFields(raw, ["ICON","NAME","KIND","PURPOSE"]);
+  const kind = ((f.KIND||"").toLowerCase().match(/cards|steps|choice|reveal|compare|journal/)||[def.kind])[0];
+  return { icon:(f.ICON||"").trim().slice(0,4)||def.icon, name:(f.NAME||"").trim().replace(/^[„“"']+|[“”"']+$/g,"")||def.name, kind, purpose:(f.PURPOSE||"").trim()||def.purpose };
+}
 // an app = a general definition {name, purpose, kind}; running it on an input produces the content shown
 async function genAppRun(def, input, fromSource){
   const k = APP_KINDS[def.kind] ? def.kind : "reveal";
@@ -937,6 +949,7 @@ async function genAppRun(def, input, fromSource){
 It is a "${k}" app. Apply it to this input:
 ${input}
 Return JSON exactly in this shape: ${APP_KINDS[k]}
+Add to that JSON one more field, "hook": 1-2 sentences, placed first, that show precisely how THIS input connects with what the app does — something specific and intriguing that makes the learner want to start (no generic praise).
 Everything must serve the app's purpose for THIS input. ${fromSource?"The input comes from the source text — stay faithful to it, no invented facts about it.":"The input is the learner's own (a situation, an idea, another quote or topic) — work with it as given."} No filler. Short, concrete, warm.
 Write in the SAME language as the input (if Cyrillic, that means BULGARIAN specifically, never Russian).`;
   const spec = await callClaude(fromSource ? prompt : NOSRC+prompt, 1800);
@@ -1892,9 +1905,21 @@ function visibleSections(subItem){ return (getSubsubList(subItem)||[]).filter(it
 // Умен режим (non-news): extra relevant sections kept behind "Прочети още" — how many are still hidden
 function hiddenMoreCount(subItem){ return subItem?.showMore ? 0 : (getSubsubList(subItem)||[]).filter(it=>it.more && guestHasNode(subItem,it) && !hiddenByOtherLevel(subItem,it)).length; }
 function isSmartSub(sub){ return !!(sub && (sub.isNewsStory || sub.smart)); }
+// the learner's own apps (saved from App Store) — offered in every topic of every plan and under every quote
+let MY_APPS = [];
+function isMyAppItem(item){ return typeof item==="object" && item!==null && !!item.isMyApp; }
+// "по текст" plans: a topic starts with only Общ преглед + Цитати (Habits / Интересно / Любопитно appear later)
+function sourceSectionList(){ return [{name:"Общ преглед", isOverview:true}, {name:"Цитати", isQuotes:true}]; }
 function getDisplayList(subItem){
-  const base = visibleSections(subItem);
+  let base = visibleSections(subItem);
   const extra = [];
+  if(SOURCE_TEXT){
+    base = base.filter(it=>isOverviewItem(it)||isQuotesItem(it));
+    if(!base.some(isOverviewItem)) base.unshift({name:"Общ преглед", isOverview:true});
+    if(!base.some(isQuotesItem)) base.push({name:"Цитати", isQuotes:true});
+  } else if(!GUEST && subItem && !isTrailerItem(subItem)){
+    MY_APPS.forEach(a=>extra.push({ name:`⭐ ${a.name}`, isMyApp:true, appId:a.id, icon:a.icon }));
+  }
   if(subItem?.curiosityQuestions?.length && !GUEST) extra.push({ name:"Любопитно", isCurious:true });
   if(subItem?.reminders?.length) extra.push({ name:"Habits", isReminders:true });
   if(subItem?.interesting?.length) extra.push({ name:"Интересно", isInteresting:true });
@@ -2024,6 +2049,7 @@ function Aperture() {
       const p=await loadJSON("prefs",{abstraction:{},personality:{}});
       const seenIds=new Set();
       const clean=(t||[]).filter(x=>x&&!seenIds.has(x.id)&&seenIds.add(x.id));
+      try{ const ma = await loadJSON("myApps", []); setMyApps(Array.isArray(ma)?ma:[]); }catch(e){}
       setTopics(clean);setPrefs(p);setBooting(false);
       if(GUEST){ setGuestPlanId(GUEST.topic.id); resumeTopic(GUEST.topic); }
     })();
@@ -2276,7 +2302,7 @@ function Aperture() {
   function prefetchItem(sub, item, H){
     try{
       if(!sub || !item || !currentTopic || !sub.activeLevel) return;
-      if(isCuriousItem(item) || isRemindersItem(item) || isSimulationItem(item)) return;
+      if(isCuriousItem(item) || isRemindersItem(item) || isSimulationItem(item) || isMyAppItem(item) || isInterestingItem(item)) return;
       const L = sub.activeLevel;
       const id = nodeIdFor(sub, L, item);
       const R = prefetchRef.current; R.done = R.done || {};
@@ -2343,7 +2369,7 @@ function Aperture() {
   // Умен режим: build the section lists of ALL topics still missing one, with a single AI call (see genSmartFocusBatch).
   // Concurrent callers share the same call. Returns the updated hierarchy + plan.
   async function ensureSmartLists(H, P){
-    if(!P?.smartMode || !H || !currentTopic) return {H, P};
+    if(!P?.smartMode || !H || !currentTopic || P.isSource) return {H, P};
     const missing = H.map((x,i)=>({x,i})).filter(t=>!isTrailerItem(t.x) && !t.x.isNewsStory && !(deskList(t.x, P.activeLevel)||[]).length);
     if(!missing.length) return {H, P};
     const tag = `${currentTopic.id}|${P.activeLevel}`;
@@ -2644,7 +2670,7 @@ function Aperture() {
       setPrefs(updPrefs); await saveJSON("prefs",updPrefs);
 
       const levelMeta = lvMeta(topicLevel);
-      const rawSubsubtopics = (sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const rawSubsubtopics = (SOURCE_TEXT||sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
       const resourcesItem = { name:"Ресурси", isResources:true };
@@ -2672,8 +2698,8 @@ function Aperture() {
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
-      const smartBuild = (sub?.isNewsStory||planData?.smartMode) ? await buildSmartSections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : null;
-      const subsubtopics = smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const smartBuild = (!SOURCE_TEXT && (sub?.isNewsStory||planData?.smartMode)) ? await buildSmartSections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : null;
+      const subsubtopics = SOURCE_TEXT ? sourceSectionList() : smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [topicLevel]:subsubtopics}, activeLevel:topicLevel, ...(smartBuild?{smartPlan:smartBuild.smartPlan, ...(sub.isNewsStory?{}:{smart:true})}:{})};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===i ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -2735,7 +2761,7 @@ function Aperture() {
     setSubtopicOverview(prev=>({...prev, confirming:true, error:null}));
     try{
       const levelMeta = lvMeta(level);
-      const rawSubsubtopics = (sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
+      const rawSubsubtopics = (SOURCE_TEXT||sub?.isNewsStory||planData?.smartMode) ? [] : await genSubsubtopicsFor(currentTopic.prompt||currentTopic.name, sub.name, levelMeta);
       const overviewItem = { name:"Общ преглед", isOverview:true };
       const examplesItem = { name:"Практически примери", isExamples:true };
       const resourcesItem = { name:"Ресурси", isResources:true };
@@ -2763,8 +2789,8 @@ function Aperture() {
       const butterflyItem = { name:"Butterfly Effect", isButterfly:true };
       const experimentsItem = { name:"Експерименти", isExperiments:true };
       const interviewItem = { name:"Интервю", isInterview:true };
-      const smartBuild = (sub?.isNewsStory||planData?.smartMode) ? await buildSmartSections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : null;
-      const subsubtopics = smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
+      const smartBuild = (!SOURCE_TEXT && (sub?.isNewsStory||planData?.smartMode)) ? await buildSmartSections(currentTopic.prompt||currentTopic.name, sub, levelMeta) : null;
+      const subsubtopics = SOURCE_TEXT ? sourceSectionList() : smartBuild ? smartBuild.list : [prefaceItem, glossaryItem, overviewItem, examplesItem, resourcesItem, encyclopediaItem, beforeItem, timelineItem, butterflyItem, compareItem, quotesItem, poetryItem, booksItem, bibleItem, socraticItem, confessionItem, interviewItem, humorItem, actionPlanItem, experimentsItem, simulationItem, gamesItem, appIdeasItem, testItem, shoppingItem, nextItem, inceptionItem];
       const updatedSub = {...sub, byLevel:{...sub.byLevel, [level]:subsubtopics}, activeLevel:level, ...(smartBuild?{smartPlan:smartBuild.smartPlan, ...(sub.isNewsStory?{}:{smart:true})}:{})};
       const updatedHierarchy = hierarchy.map((s,idx)=> idx===subIdx ? updatedSub : s);
       setHierarchy(updatedHierarchy);
@@ -2808,6 +2834,24 @@ function Aperture() {
     }
 
     if(isRemindersItem(subsubItem) || isInterestingItem(subsubItem)){ setNodeId(null); setNodeData({}); return; }
+
+    if(isMyAppItem(subsubItem)){
+      const def = MY_APPS.find(a=>a.id===subsubItem.appId);
+      const id = `${currentTopic.id}/${slugify(sub)}/L${subLevel}/myapp-${subsubItem.appId}`;
+      setNodeId(id);
+      if(!def){ setNodeData({}); setNodeError("Това приложение вече не е в „Моите приложения“."); return; }
+      const cached = await loadJSON(`node:${id}`, null);
+      if(cached?.app){ setNodeData({...cached, appDef:def, appTitle:def.name, appIcon:def.icon}); return; }
+      setNodeData(null); setLoadingL(true);
+      try{
+        const app = await genAppRun(def, `Тема: ${sub} (от плана „${currentTopic.name||currentTopic.prompt}“)`, !!SOURCE_TEXT);
+        const nd = {appDef:def, app, appTitle:def.name, appIcon:def.icon, runs:[], myAppId:def.id, unitConfused:false};
+        if(isCur(id)) setNodeData(nd);
+        await saveJSON(`node:${id}`, nd); trackNodeKey(id);
+      }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
+      finally{ if(isCur(id)) setLoadingL(false); }
+      return;
+    }
 
     const id=`${currentTopic.id}/${slugify(sub)}/L${subLevel}/${slugify(subsub)}`;
     setNodeId(id);
@@ -3829,6 +3873,32 @@ function Aperture() {
   }
   // Reminders: turn a chosen quote / verse into message + habit, kept on the topic (shown as its own section)
   const [remindBusy,setRemindBusy] = useState(null);
+  const [myApps,_setMyApps] = useState([]);
+  const setMyApps = v => { MY_APPS = v||[]; _setMyApps(MY_APPS); };
+  const [savingMine,setSavingMine] = useState(false);
+  async function saveMyApp(feedback){
+    const base = nodeData, id = nodeId;
+    if(!base?.app || savingMine) return;
+    const def0 = base.appDef || {name:base.appTitle, purpose:interestOpen?.instr||"", kind:base.app.kind, icon:base.appIcon};
+    setSavingMine(true); setNodeError(null);
+    try{
+      const fb = (feedback||"").trim();
+      const def = fb ? await genRefineApp(def0, fb) : def0;
+      const app = {id:uid(), name:def.name, icon:def.icon||"✨", kind:def.kind, purpose:def.purpose, feedback:fb, createdAt:Date.now()};
+      const list = [...MY_APPS.filter(a=>a.name!==app.name), app];
+      setMyApps(list);
+      await saveJSON("myApps", list);
+      const updated = {...base, myAppId:app.id};
+      if(isCur(id)) setNodeData(updated);
+      if(id) saveJSON(`node:${id}`, updated).catch(()=>{});
+    }catch(e){ setNodeError(`Грешка: ${e.message}`); }
+    finally{ setSavingMine(false); }
+  }
+  async function removeMyApp(appId){
+    const list = MY_APPS.filter(a=>a.id!==appId);
+    setMyApps(list);
+    await saveJSON("myApps", list);
+  }
   // План по текст: explore a single quote through another section; results live in the topic's "Интересно" section
   const [interestOpen,setInterestOpen] = useState(null);   // the opened Интересно entry, or null
   const [interestBusy,setInterestBusy] = useState(null);   // `${quote}|${key}` being generated
@@ -4505,6 +4575,8 @@ function Aperture() {
         const p = await genPoetry(topicPrompt, subItem.name, subLevelMeta);
         await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), poemText:p.poem, poemTitle:p.title, poemAuthor:p.author, poemReal:p.real, poemNote:p.note, poemLevel:subLevel, tunedPoetry:existing?.tunedPoetry||false});
       }
+    } else if(isMyAppItem(item) || isInterestingItem(item)){
+      // opened on demand
     } else if(isRemindersItem(item)){
       // nothing to generate — reminders are added by hand from quotes
     } else if(isExperimentsItem(item)){
@@ -4796,7 +4868,8 @@ function Aperture() {
               isExperiments={isExperimentsItem(curNodeItem)}
               isPoetry={isPoetryItem(curNodeItem)}
               isReminders={isRemindersItem(curNodeItem)}
-              isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp} onRunApp={guestPlanId?null:runAppOn} appRunBusy={appRunBusy} interesting={hierarchy[subtopicIdx].interesting||[]}
+              isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp || isMyAppItem(curNodeItem)} onRunApp={guestPlanId?null:runAppOn} appRunBusy={appRunBusy}
+              onSaveMine={guestPlanId?null:saveMyApp} onRemoveMine={guestPlanId?null:removeMyApp} savingMine={savingMine} myApps={myApps} interesting={hierarchy[subtopicIdx].interesting||[]}
               onOpenInterest={openInterestEntry} onDeleteInterest={guestPlanId?null:deleteInterestEntry}
               onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy}
               onSuggestQuotes={suggestQuoteSections} suggestBusy={suggestBusy}
@@ -5245,6 +5318,7 @@ function smartEntriesToList(entries){
 
 async function buildSmartSections(topicPrompt, sub, levelMeta){
   const L = levelMeta?.level||1;
+  if(SOURCE_TEXT) return {smartPlan:null, list:sourceSectionList()};
   if(!sub.isNewsStory){
     const entries = await genSmartFocusPlan(topicPrompt, sub.name, levelMeta, smartAllowedSections({...sub, byLevel:{}}));
     const terms = entries.some(p=>p.key==="isGlossary") ? await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta) : null;
@@ -5265,6 +5339,7 @@ function sectionTitle(item){ return item?.catchy ? `${subName(item)} · ${item.c
 const DESKTOP_ICONS = {isPreface:"📜",isGlossary:"📖",isOverview:"🔭",isInvestment:"💹",isPrediction:"🔮",isExamples:"🛠️",isResources:"🔗",isEncyclopedia:"📚",isBefore:"⏳",isTimeline:"🗓️",isButterfly:"🦋",isCompare:"⚖️",isQuotes:"💬",isPoetry:"🪶",isReminders:"🌱",isInteresting:"💡",isCustomApp:"✨",isBooks:"📕",isBible:"✝️",isSocratic:"🏛️",isConfession:"🤖",isInterview:"🎙️",isHumor:"😄",isActionPlan:"🧭",isExperiments:"🧪",isSimulation:"🎛️",isGames:"🧩",isAppIdeas:"📱",isTest:"✅",isShopping:"🛒",isNext:"🔀",isInception:"🌀"};
 // the regular (non-news) full section list, same items as the plan's own builder
 async function buildStandardSections(topicPrompt, sub, levelMeta){
+  if(SOURCE_TEXT) return sourceSectionList();
   const terms = await genSubsubtopicsFor(topicPrompt, sub.name, levelMeta);
   return PODCAST_DEFAULT_ORDER.filter(k=>k!=="isInvestment"&&k!=="isPrediction")
     .map(k=>({name:PODCAST_SECTIONS[k][0], [k]:true, ...(k==="isGlossary"?{terms}:{})}));
@@ -5288,7 +5363,7 @@ function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLev
   const unknownCount = realTopics.length - known.length;
   const habitsCount = realTopics.filter(x=>x.reminders?.length).length;
   const interestCount = realTopics.filter(x=>x.interesting?.length).length;
-  const apps = [...PODCAST_DEFAULT_ORDER.filter(k=>(hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || !known.length || relCount(k)>0)),
+  const apps = [...PODCAST_DEFAULT_ORDER.filter(k=>topic?.isSource ? (k==="isOverview"||k==="isQuotes") : ((hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || !known.length || relCount(k)>0))),
     ...(habitsCount?["isReminders"]:[]), ...(interestCount?["isInteresting"]:[])];
   const badge = k => k==="isReminders" ? habitsCount : k==="isInteresting" ? interestCount : (smartDesk && known.length ? relCount(k)+unknownCount : count);
   if(embedded) return <div className="space-y-3 rounded-lg border border-amber-900/50 bg-stone-900/40 p-4">
@@ -5624,7 +5699,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,onSuggestQuotes,suggestBusy}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -5900,7 +5975,8 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </button>
       {error&&<ErrorNote message={error}/>}
       {loadingLevels ? <Spinner label="отварям приложението…"/> :
-        nodeData?.app ? <QuoteApp app={nodeData.app} runs={nodeData.runs||[]} def={nodeData.appDef} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`} onRun={onRunApp} running={appRunBusy}/> :
+        nodeData?.app ? <QuoteApp app={nodeData.app} runs={nodeData.runs||[]} def={nodeData.appDef} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`} onRun={onRunApp} running={appRunBusy}
+          mine={(myApps||[]).find(a=>a.id===nodeData.myAppId) || (myApps||[]).find(a=>a.name===nodeData.appTitle)} onSaveMine={onSaveMine} onRemoveMine={onRemoveMine} savingMine={savingMine}/> :
         <div className="font-read text-stone-200 leading-relaxed text-lg whitespace-pre-line">{nodeData?.customText}</div>}
     </div>;
   }
@@ -6880,7 +6956,8 @@ function PoetryPanel({loading,data,tuned,onTune}){
 }
 
 // App Store app for a quote — a few simple kinds, each with a clear purpose
-function QuoteApp({app,runs,def,icon,name,storeKey,onRun,running}){
+function QuoteApp({app,runs,def,icon,name,storeKey,onRun,running,mine,onSaveMine,onRemoveMine,savingMine}){
+  const [fb,setFb] = useState("");
   const all = [{id:"q", label:"Цитатът", app}, ...(runs||[]).map((r,i)=>({id:r.id, label:r.input.length>28?r.input.slice(0,28)+"…":r.input, app:r.app}))];
   const [tab,setTab] = useState(0);
   const [input,setInput] = useState("");
@@ -6905,6 +6982,19 @@ function QuoteApp({app,runs,def,icon,name,storeKey,onRun,running}){
         {running ? <><Loader2 size={12} className="animate-spin"/> пускам…</> : "▶ Пусни"}
       </button>
     </div>}
+    {onSaveMine && (mine
+      ? <div className="flex items-center gap-3 rounded-lg border border-yellow-800 bg-yellow-950/20 p-3">
+          <span className="font-read text-sm text-yellow-100 flex-1">⭐ „{mine.name}“ е в Моите приложения — появява се като секция в темите на всички планове и под цитатите.</span>
+          {onRemoveMine && <button onClick={()=>onRemoveMine(mine.id)} className="font-mono-cal text-[11px] text-stone-500 hover:text-red-400">премахни</button>}
+        </div>
+      : <div className="rounded-lg border border-stone-700 p-3 space-y-2">
+          <div className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400">⭐ Запази като мое приложение</div>
+          <textarea value={fb} onChange={e=>setFb(e.target.value)} rows={2} placeholder="Кратка обратна връзка или подобрение (по желание) — напр. по-кратки въпроси, добави пример…"
+            className="w-full bg-stone-950 border border-stone-800 rounded px-3 py-2 font-read text-sm text-stone-100 focus:outline-none focus:border-yellow-700"/>
+          <button onClick={()=>onSaveMine(fb)} disabled={savingMine} className="inline-flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide border border-yellow-600 text-yellow-300 hover:bg-yellow-950/40 disabled:opacity-50 px-3 py-1.5 rounded">
+            {savingMine ? <><Loader2 size={12} className="animate-spin"/> {fb.trim()?"подобрявам и запазвам…":"запазвам…"}</> : "⭐ Запази"}
+          </button>
+        </div>)}
   </div>;
 }
 function QuoteAppRun({app,storeKey}){
@@ -6915,6 +7005,7 @@ function QuoteAppRun({app,storeKey}){
   const k = app.kind;
   const card = "rounded-lg border border-stone-800 bg-stone-900/60 p-4";
   return <div className="space-y-4">
+    {app.hook && <p className="font-read text-yellow-100 leading-relaxed border-l-2 border-yellow-600 pl-3">{app.hook}</p>}
     {app.intro && <p className="font-read text-stone-400 text-sm italic">{app.intro}</p>}
     {k==="cards" && <div className="grid sm:grid-cols-2 gap-3">{(app.cards||[]).map((c,i)=>(
       <button key={i} onClick={()=>setFlip({...flip,[i]:!flip[i]})} className={`${card} text-left min-h-[96px] hover:border-yellow-700`}>
@@ -6995,7 +7086,7 @@ function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBu
     {open && <div className="mt-2 flex flex-wrap gap-2">
       {!keys && (suggestBusy ? <span className="flex items-center gap-1 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> подбирам подходящите секции…</span>
                               : <span className="text-xs text-stone-500 font-read">Няма предложения.</span>)}
-      {keys && keys.map(x=>{
+      {keys && [...keys, ...MY_APPS.filter(a=>!keys.some(x=>typeof x!=="string" && x.key==="isCustomApp" && x.catchy===a.name)).map(a=>({key:"isCustomApp", catchy:a.name, instr:a.purpose, icon:a.icon, kind:a.kind, mine:true}))].map(x=>{
         const k = typeof x==="string" ? x : x.key, catchy = typeof x==="string" ? "" : (x.catchy||"");
         const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k && (k!=="isCustomApp" || e.catchy===catchy));
         const busy = interestBusy===`${q.quote}|${k}|${catchy}`;
@@ -7007,7 +7098,7 @@ function QuoteExplorer({q,onExplore,suggestions,suggestionsV,onSuggest,suggestBu
             : <span className="pt-0.5">{busy ? <Loader2 size={13} className="animate-spin"/> : (DESKTOP_ICONS[k]||"•")}</span>}
           <span className="flex flex-col leading-tight">
             {k==="isCustomApp" && catchy && <span className="font-display text-sm font-bold text-yellow-100">{catchy}</span>}
-            <span className={`font-mono-cal text-[10px] uppercase tracking-wide ${k==="isCustomApp"?"text-yellow-500":"text-stone-400"}`}>{interestLabel(k)}{done?" · ✓ в Интересно":busy?" · генерирам…":""}</span>
+            <span className={`font-mono-cal text-[10px] uppercase tracking-wide ${k==="isCustomApp"?"text-yellow-500":"text-stone-400"}`}>{x.mine ? "⭐ Мое приложение" : interestLabel(k)}{done?" · ✓ в Интересно":busy?" · генерирам…":""}</span>
             {k==="isCustomApp" ? (x.instr && <span className="font-read text-xs text-stone-400">{x.instr}</span>) : (catchy && <span className="font-read text-sm text-yellow-100">{catchy}</span>)}
           </span>
         </button>;
