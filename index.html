@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-08 · 01:00";
+const APP_VERSION = "2026-11-09 · 22:00";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -236,7 +236,7 @@ function cleanQuoteText(t){ return (t||"").replace(/\[\d+\]/g,"").replace(/\s+([
 function sourceSentences(text){
   const out = [];
   (text||"").split(/\n+/).map(l=>l.trim()).filter(l=>l && !/^\[Част \d+/.test(l)).forEach(par=>{
-    par.split(/(?<=[.!?…]["»“”']?)\s+(?=["„«“'(\[—–-]?\s*[A-ZА-ЯЁЇІЄҐ0-9])/u).map(x=>x.trim()).filter(Boolean).forEach(x=>out.push(x));
+    par.split(/(?<=[.!?…]["»“”']?(?:\[\d+\])*)\s+(?=["„«“'(\[—–-]?\s*[A-ZА-ЯЁЇІЄҐ0-9])/u).map(x=>x.trim()).filter(Boolean).forEach(x=>out.push(x));
   });
   return out;
 }
@@ -255,6 +255,56 @@ Write in the SAME language as the text (if Cyrillic, that means BULGARIAN specif
 Output EXACTLY: ###NAME### title ###DESC### description ###PART### part title ###END###`, 500);
   const f = extractSequentialFields(raw, ["NAME","DESC","PART"]);
   return { name:(f.NAME||"").trim()||"План по текст", desc:(f.DESC||"").trim(), part:(f.PART||"").trim() };
+}
+// План по текст: the quotes come first. The level decides HOW MANY (lowest: only the key ones, highest: all
+// quotable passages); then they are grouped by what they share — those groups ARE the topics. Every quote is in
+// exactly one topic (no repeats), and the number of topics follows from the quotes, not from the level.
+async function genSourceQuoteGroups(sents, levelHint, existingTitles){
+  const n = sents.length, lvl = levelHint?.level || 3;
+  const clamp = (x,a,b)=>Math.max(a, Math.min(b, Math.round(x)));
+  const want = {1:clamp(n*0.06,3,10), 2:clamp(n*0.12,5,18), 3:clamp(n*0.22,8,30), 4:clamp(n*0.4,12,50)}[lvl];
+  const pick = want
+    ? `Choose about ${want} passages — ${lvl<=2?"only the most essential ones, the key ideas of the whole text":"the important ones, covering the whole text"}.`
+    : `Choose ALL the passages worth quoting — every meaningful statement, image, definition or turning point; skip only filler.`;
+  const raw = await callClaudeRaw(NOSRC+
+`Below is a text split into numbered sentences.
+1) ${pick} A passage is ONE sentence, or a run of up to 3 consecutive sentences that belong together. Refer to passages ONLY by their numbers: N, or N-M.
+2) Group the chosen passages into topics by what they have in common (the same idea, theme, person or question). Every passage goes into exactly ONE topic. The number of topics must follow from the passages themselves — as many groups as the material naturally forms, never padded, never split just to have more; a topic normally holds at least 2 passages (one is fine only if it truly stands apart).${existingTitles?.length?` The plan already has these topics — do not reuse their titles: ${existingTitles.join("; ")}.`:""}
+3) Order topics by where their first passage appears in the text; inside a topic list passages in text order.
+Topic title: under 6 words, specific to what the passages share. For each passage also: who says it in the text (the author, a character or a person quoted there; if unclear write Из текста) and one short line on why it matters.
+Write in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
+Output, nothing else, wrapped exactly like this:
+###TEXT###
+TOPIC | topic title
+NUMBERS | who | why it matters
+NUMBERS | who | why it matters
+TOPIC | next topic title
+...
+###TEXT_END###
+
+NUMBERED TEXT:
+${sents.map((t,i)=>`[${i+1}] ${t}`).join("\n")}`, want ? Math.min(6000, 400+want*90) : 8000, 0, 14000);
+  const groups = [], used = [];
+  let cur = null;
+  for(const line of extractField(raw,"TEXT").split("\n")){
+    const tm = line.match(/^\s*TOPIC\s*[|:]\s*(.+)$/i);
+    if(tm){ cur = {name:tm[1].trim().replace(/^[„“"']+|[“”"']+$/g,""), quotes:[]}; groups.push(cur); continue; }
+    const m = line.match(/^\s*\[?(\d+)\]?\s*(?:[-–]\s*\[?(\d+)\]?)?\s*\|\s*([^|]*)\|?\s*(.*)$/);
+    if(!m || !cur) continue;
+    let a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+    if(b<a) [a,b]=[b,a];
+    if(a<1 || b>n || b-a>3) continue;
+    if(used.some(u=>!(b<u.a || a>u.b))) continue; // already in another topic — never repeat a quote
+    used.push({a,b});
+    cur.quotes.push({quote:cleanQuoteText(sents.slice(a-1,b).join(" ")), author:(m[3]||"").trim()||"Из текста", role:(m[4]||"").trim(), speculative:false, pos:a});
+  }
+  const out = groups.filter(g=>g.name && g.quotes.length).map(g=>({...g, quotes:g.quotes.sort((x,y)=>x.pos-y.pos)}))
+    .sort((x,y)=>x.quotes[0].pos-y.quotes[0].pos);
+  // unique titles (they are part of the saved ids)
+  const seen = new Set(existingTitles||[]);
+  out.forEach(g=>{ let t=g.name, k=2; while(seen.has(t)) t=`${g.name} (${k++})`; g.name=t; seen.add(t); });
+  if(!out.length) throw new Error("не успях да подбера цитатите");
+  return out;
 }
 // topics that follow the text's own structure — as many as it genuinely needs, even just one
 async function genSourceTopicNames(levelHint, partNo, existing){
@@ -984,7 +1034,7 @@ async function genFreeApp(def, input, fromSource, feedback){
 `Build a tiny web app called „${def.name}“. What it does with ANY input: ${def.purpose||"help the learner understand and use it"}.${feedback?`\nIMPROVE it following the learner's feedback: ${feedback}`:""}
 First use: ${input}
 Write ONE complete self-contained HTML file: inline <style> and <script> only — no external files, fonts, images or libraries, no network, no localStorage/cookies.
-The app must read ALL its content from window.APP_DATA (a JSON object you design) and work with ANY data of that shape — never hardcode the content in the HTML. If it should remember progress or answers, read window.APP_STATE (may be null) and save with window.APP_SAVE(object).
+The app must read ALL its content from window.APP_DATA (a JSON object you design) and work with ANY data of that shape — never hardcode the content in the HTML, and NEVER assign window.APP_DATA yourself (Aperture sets it before your script runs). If it should remember progress or answers, read window.APP_STATE (may be null) and save with window.APP_SAVE(object).
 Design: mobile-first (360px wide), dark theme — background #0c0a09, cards #1c1917, text #e7e5e4, muted #a8a29e, accent #ca8a04; rounded corners, big tap targets, no horizontal scroll. UI text in BULGARIAN. Keep it under 250 lines, one clear meaningful interaction that serves the purpose — no gimmicks, no fake loading.
 Also give: SCHEMA — a short description of the APP_DATA shape (so other content can be made for the same app later); DATA — the APP_DATA JSON for the first use above (never use the " character inside its text values — use „ “); HOOK — 1-2 intriguing sentences on how exactly this input connects with what the app does.
 ${fromSource?"The first use comes from the source text — stay faithful to it, no invented facts about it.":""}
@@ -1181,6 +1231,14 @@ Output EXACTLY in this format, nothing before the first marker or after the last
   return { before: fields.BEFORE||"", comparisons };
 }
 
+// "name / line / paragraph" blocks — tolerant of extra or missing blank lines in the AI answer
+function tripleBlocks(text){
+  const blocks = (text||"").split(/\n\s*\n/).map(b=>b.split("\n").map(l=>l.trim()).filter(Boolean)).filter(b=>b.length);
+  if(blocks.length && blocks.every(b=>b.length>=3)) return blocks;
+  const lines = blocks.flat(), out = [];
+  for(let i=0;i+2<lines.length;i+=3) out.push(lines.slice(i,i+3));
+  return out;
+}
 // Сравнения: positions the topic against OTHER real approaches/methods/fields people commonly compare it to
 // or confuse it with (e.g. "Harness engineering" vs "Prompt engineering", vs "Model scaling") — sharpens what
 // makes THIS approach distinct and when to actually reach for it versus the alternative.
@@ -1199,10 +1257,7 @@ Output as blocks separated by a blank line, each block being exactly 3 lines: na
     Math.min(3800, 500+hi*Number(count.split("-").pop())*2)
   );
   const raw2 = extractField(raw, "TEXT");
-  return raw2.split(/\n\s*\n/).map(b=>b.trim()).filter(Boolean).map(b=>{
-    const lines = b.split("\n").map(l=>l.trim()).filter(Boolean);
-    return { name:lines[0]||"", keyDiff:lines[1]||"", text:lines[2]||"" };
-  }).filter(c=>c.name && c.text);
+  return tripleBlocks(raw2).map(lines=>({ name:(lines[0]||"").replace(/^\s*\d+[.)]\s*/,""), keyDiff:lines[1]||"", text:lines.slice(2).join(" ") })).filter(c=>c.name && c.text);
 }
 
 // Timeline: chronological development of the topic through real years/periods — a dedicated, ordered
@@ -1959,6 +2014,11 @@ function isCompareItem(item){ return typeof item==="object" && item!==null && !!
 function isTimelineItem(item){ return typeof item==="object" && item!==null && !!item.isTimeline; }
 function isButterflyItem(item){ return typeof item==="object" && item!==null && !!item.isButterfly; }
 function isPoetryItem(item){ return typeof item==="object" && item!==null && !!item.isPoetry; }
+function nodeHasContent(nd){
+  if(!nd) return false;
+  return Object.entries(nd).some(([k,v])=>!/Level$|^tuned|Confused$|^quoteSuggest|^habit|^app(State|Hook)s?$/.test(k) &&
+    ((Array.isArray(v) && v.length) || (typeof v==="string" && v.trim().length>30) || (v && typeof v==="object" && !Array.isArray(v) && Object.keys(v).length)));
+}
 function isInterestingItem(item){ return typeof item==="object" && item!==null && !!item.isInteresting; }
 function isRemindersItem(item){ return typeof item==="object" && item!==null && !!item.isReminders; }
 function isExperimentsItem(item){ return typeof item==="object" && item!==null && !!item.isExperiments; }
@@ -2259,10 +2319,11 @@ function Aperture() {
       try{
         const levelMeta = lvMeta(level, pd.levelNames);
         // a news plan keeps its real headlines at every level — never swap them for AI-invented subtopics
-        const names = pd.newsStories ? pd.newsStories.map(st=>st.title) : await genSubtopicNames(pd.prompt, null, levelMeta);
+        const groups = pd.isSource ? await genSourceQuoteGroups(sourceSentences(sourceJoin(pd.sourceParts)), levelMeta) : null;
+        const names = pd.newsStories ? pd.newsStories.map(st=>st.title) : groups ? groups.map(g=>g.name) : await genSubtopicNames(pd.prompt, null, levelMeta);
         const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
       const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
-      const subtopics = [...(pd.newsStories?[]:[trailerItem]), ...(pd.newsStories ? pd.newsStories.map(st=>{ const prev=Object.values(pd.byLevel||{}).flat().filter(x=>x&&x.name===st.title&&x.readSections); const rs=Object.assign({},...prev.map(x=>x.readSections)); return Object.keys(rs).length?{...newsStorySubtopic(st),readSections:rs}:newsStorySubtopic(st); }) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
+      const subtopics = groups ? groups.map(g=>({name:g.name, overviewLevels:null, byLevel:{}, activeLevel:null, sourceQuotes:g.quotes})) : [...(pd.newsStories?[]:[trailerItem]), ...(pd.newsStories ? pd.newsStories.map(st=>{ const prev=Object.values(pd.byLevel||{}).flat().filter(x=>x&&x.name===st.title&&x.readSections); const rs=Object.assign({},...prev.map(x=>x.readSections)); return Object.keys(rs).length?{...newsStorySubtopic(st),readSections:rs}:newsStorySubtopic(st); }) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
         const updated = {...pd, byLevel:{...pd.byLevel, [level]:subtopics}, activeLevel:level};
         setPlanData(updated); setHierarchy(subtopics);
         await saveJSON(`plan:${id}`, updated);
@@ -2284,10 +2345,11 @@ function Aperture() {
     setLoadingH(true);
     try{
       const levelMeta = lvMeta(level, (smart||source) ? topicOverview.levels : null);
-      const names = newsStories ? newsStories.map(st=>st.title) : source ? await genSourceTopicNames(levelMeta) : await genSubtopicNames(prompt, learningProfile, levelMeta);
+      const groups = source ? await genSourceQuoteGroups(sourceSentences(SOURCE_TEXT), levelMeta) : null;
+      const names = newsStories ? newsStories.map(st=>st.title) : groups ? groups.map(g=>g.name) : await genSubtopicNames(prompt, learningProfile, levelMeta);
       const trailerName = "Уводен преглед: " + names.slice(0,5).join(", ") + (names.length>5?"…":"");
       const trailerItem = { name:trailerName, isTrailer:true, overviewLevels:null, byLevel:{}, activeLevel:null };
-      const subtopics = [...((smart||source)?[]:[trailerItem]), ...(newsStories ? newsStories.map(newsStorySubtopic) : names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null})))];
+      const subtopics = [...((smart||source)?[]:[trailerItem]), ...(newsStories ? newsStories.map(newsStorySubtopic) : names.map((n,i)=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null, ...(groups?{sourceQuotes:groups[i].quotes}:{})})))];
       const newPlan = {name,prompt,overviewLevels:topicOverview.levels,byLevel:{[level]:subtopics},activeLevel:level, ...(newsStories?{newsStories}:{}), ...(smart?{smartMode:true, levelNames:topicOverview.levels}:{}), ...(source?{isSource:true, sourceParts:source, levelNames:topicOverview.levels}:{})};
       setPlanData(newPlan); setHierarchy(subtopics);
       await saveJSON(`plan:${id}`, newPlan);
@@ -2305,10 +2367,9 @@ function Aperture() {
     try{
       const level = P0.activeLevel, levelMeta = lvMeta(level);
       const existing = (hierarchy||[]).filter(x=>!isTrailerItem(x)).map(x=>x.name);
-      const names = await genSourceTopicNames(levelMeta, parts.length, existing);
-      const fresh = names.map(n=>({name:n, overviewLevels:null, byLevel:{}, activeLevel:null, sourcePart:parts.length}));
-      const byLevel = {};
-      Object.entries(P0.byLevel||{}).forEach(([L,list])=>{ byLevel[L] = [...(list||[]), ...fresh]; });
+      const groups = await genSourceQuoteGroups(sourceSentences(text), levelMeta, existing);
+      const fresh = groups.map(g=>({name:g.name, overviewLevels:null, byLevel:{}, activeLevel:null, sourcePart:parts.length, sourceQuotes:g.quotes}));
+      const byLevel = {[level]:[...((P0.byLevel||{})[level]||[]), ...fresh]}; // other levels regroup the whole text when opened
       const P = {...P0, sourceParts:parts, byLevel};
       setPlanData(P); setHierarchy(byLevel[level]);
       await saveJSON(`plan:${currentTopic.id}`, P);
@@ -3784,7 +3845,8 @@ function Aperture() {
     setLoadingL(true);setNodeError(null);
     try{
       const levelMeta = lvMeta(subLevel);
-      const quotes = await genQuotes(currentTopic.prompt||currentTopic.name, sub, levelMeta);
+      const preset = SOURCE_TEXT ? (hierarchy||[]).find(x=>x.name===sub)?.sourceQuotes : null;
+      const quotes = preset?.length ? preset : await genQuotes(currentTopic.prompt||currentTopic.name, sub, levelMeta);
       const updated = {...base, quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?3:undefined};
       isCur(id)&&setNodeData(updated);
       const r=await saveJSON(`node:${id}`,updated);
@@ -4051,6 +4113,24 @@ function Aperture() {
       return next;
     });
   }
+  // the AI's code crashed — rewrite it once with the error message (same app, same data shape)
+  const [repairingApp,setRepairingApp] = useState(false);
+  async function repairFreeApp(errMsg){
+    const id = nodeId, base = nodeData;
+    if(!id || !base?.appDef?.html || repairingApp) return;
+    setRepairingApp(true); setNodeError(null);
+    try{
+      const def0 = base.appDef;
+      const g = await genFreeApp({...def0, schema:def0.schema}, `Same app, same APP_DATA shape: ${def0.schema||""}`, false,
+        `The previous code crashed with this JavaScript error: ${errMsg}. Rewrite it so it works, keep the same interaction and the SAME APP_DATA shape. Do not write any APP_DATA values into the code. Previous code for reference:\n${def0.html.slice(0,6000)}`);
+      const updated = {...base, appDef:{...def0, html:g.html}};
+      if(isCur(id)) setNodeData(updated);
+      await saveJSON(`node:${id}`, updated);
+      const mine = MY_APPS.find(a=>a.id===base.myAppId);
+      if(mine){ const list = MY_APPS.map(a=>a.id===mine.id ? {...a, html:g.html} : a); setMyApps(list); saveJSON("myApps", list).catch(()=>{}); }
+    }catch(e){ if(isCur(id)) setNodeError(`Грешка: ${e.message}`); }
+    finally{ setRepairingApp(false); }
+  }
   async function runAppOn(input){
     const id = nodeId, base = nodeData, text = (input||"").trim();
     if(!id || !base?.app || !text || appRunBusy) return;
@@ -4076,8 +4156,11 @@ function Aperture() {
       if(custom) await genCustomNode(nid, sub, quote, author, catchy, extra);
       else{
         const subject = `цитата „${quote}“${author?` (${author})`:""}${catchy?` — ъгъл: ${catchy}`:""} — в контекста на „${sub.name}“`;
-        await genSectionContent({id:nid, item:{name:PODCAST_SECTIONS[key][0], [key]:true}, subItem:{...sub, name:subject}, subLevel:L, subLevelMeta:lvMeta(L),
+        const job = ()=>genSectionContent({id:nid, item:{name:PODCAST_SECTIONS[key][0], [key]:true}, subItem:{...sub, name:subject}, subLevel:L, subLevelMeta:lvMeta(L),
           topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
+        await job();
+        if(!nodeHasContent(await loadJSON(`node:${nid}`, null))){ await job(); }
+        if(!nodeHasContent(await loadJSON(`node:${nid}`, null))) throw new Error("AI-ят не върна съдържание");
       }
       trackNodeKey(nid);
       const entry = {id:uid(), quote, author:author||"", key, catchy:catchy||"", ...(custom?{instr:extra?.instr||"", icon:extra?.icon||"✨", kind:extra?.kind||"reveal", hook:extra?.hook||""}:{}), nodeId:nid, createdAt:Date.now()};
@@ -4104,6 +4187,7 @@ function Aperture() {
         await genCustomNode(entry.nodeId, sub, entry.quote, entry.author, entry.catchy, entry);
         nd = await loadJSON(`node:${entry.nodeId}`, {});
       }
+      if(nd && entry.key!=="isCustomApp" && !nodeHasContent(nd)) nd = null; // empty result — make it again
       if(!nd){ // generation was lost — make it again
         const L = sub.activeLevel || planData.activeLevel || 1;
         await genSectionContent({id:entry.nodeId, item:{name:PODCAST_SECTIONS[entry.key][0], [entry.key]:true}, subItem:{...sub, name:`цитата „${entry.quote}“${entry.author?` (${entry.author})`:""} — в контекста на „${sub.name}“`}, subLevel:L, subLevelMeta:lvMeta(L), topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
@@ -4734,7 +4818,7 @@ function Aperture() {
       }
     } else if(isQuotesItem(item)){
       if(!existing?.quotes?.length || (SOURCE_TEXT && existing.quotesV!==3)){
-        const quotes = await genQuotes(topicPrompt, subItem.name, subLevelMeta);
+        const quotes = (SOURCE_TEXT && subItem.sourceQuotes?.length) ? subItem.sourceQuotes : await genQuotes(topicPrompt, subItem.name, subLevelMeta);
         await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), quotes, quotesLevel:subLevel, quotesV:SOURCE_TEXT?3:undefined, tunedQuotes:existing?.tunedQuotes||false});
       }
     } else if(isBooksItem(item)){
@@ -5002,7 +5086,7 @@ function Aperture() {
               isExperiments={isExperimentsItem(curNodeItem)}
               isPoetry={isPoetryItem(curNodeItem)}
               isReminders={isRemindersItem(curNodeItem)}
-              isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp || isMyAppItem(curNodeItem)} onRunApp={guestPlanId?null:runAppOn} appRunBusy={appRunBusy} onAppState={guestPlanId?null:saveAppState}
+              isInteresting={isInterestingItem(curNodeItem)} isCustomApp={!!curNodeItem?.isCustomApp || isMyAppItem(curNodeItem)} onRunApp={guestPlanId?null:runAppOn} appRunBusy={appRunBusy} onAppState={guestPlanId?null:saveAppState} onRepairApp={guestPlanId?null:repairFreeApp} repairingApp={repairingApp}
               onSaveMine={guestPlanId?null:saveMyApp} onRemoveMine={guestPlanId?null:removeMyApp} savingMine={savingMine} myApps={myApps} interesting={hierarchy[subtopicIdx].interesting||[]}
               onOpenInterest={openInterestEntry} onDeleteInterest={guestPlanId?null:deleteInterestEntry}
               onExploreQuote={(guestPlanId||!planData?.isSource||interestOpen)?null:exploreQuote} interestBusy={interestBusy} interestErr={interestErr}
@@ -5833,7 +5917,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onRepairApp,repairingApp,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -6109,7 +6193,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </button>
       {error&&<ErrorNote message={error}/>}
       {loadingLevels ? <Spinner label="отварям приложението…"/> :
-        nodeData?.app ? <QuoteApp app={nodeData.app} runs={nodeData.runs||[]} def={nodeData.appDef} states={nodeData.appStates} onState={onAppState} hookLine={nodeData.appHook} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`} onRun={onRunApp} running={appRunBusy}
+        nodeData?.app ? <QuoteApp app={nodeData.app} runs={nodeData.runs||[]} def={nodeData.appDef} states={nodeData.appStates} onState={onAppState} onRepair={onRepairApp} repairing={repairingApp} hookLine={nodeData.appHook} icon={nodeData.appIcon} name={nodeData.appTitle} storeKey={`${topic}|${subtopic}|${nodeData.appTitle}`} onRun={onRunApp} running={appRunBusy}
           mine={(myApps||[]).find(a=>a.id===nodeData.myAppId) || (myApps||[]).find(a=>a.name===nodeData.appTitle)} onSaveMine={onSaveMine} onRemoveMine={onRemoveMine} savingMine={savingMine}/> :
         <div className="font-read text-stone-200 leading-relaxed text-lg whitespace-pre-line">{nodeData?.customText}</div>}
     </div>;
@@ -7092,7 +7176,7 @@ function PoetryPanel({loading,data,tuned,onTune}){
 }
 
 // App Store app for a quote — a few simple kinds, each with a clear purpose
-function QuoteApp({app,runs,def,states,onState,hookLine,icon,name,storeKey,onRun,running,mine,onSaveMine,onRemoveMine,savingMine}){
+function QuoteApp({app,runs,def,states,onState,onRepair,repairing,hookLine,icon,name,storeKey,onRun,running,mine,onSaveMine,onRemoveMine,savingMine}){
   const [fb,setFb] = useState("");
   const all = [{id:"q", label:"Цитатът", app}, ...(runs||[]).map((r,i)=>({id:r.id, label:r.input.length>28?r.input.slice(0,28)+"…":r.input, app:r.app}))];
   const [tab,setTab] = useState(0);
@@ -7112,7 +7196,7 @@ function QuoteApp({app,runs,def,states,onState,hookLine,icon,name,storeKey,onRun
       <button key={r.id} onClick={()=>setTab(i)} className={`font-mono-cal text-[11px] px-2.5 py-1 rounded-full border ${i===tab?"border-yellow-500 text-yellow-200 bg-yellow-950/30":"border-stone-700 text-stone-400 hover:border-yellow-700"}`}>{r.label}</button>))}</div>}
     {cur.app?.kind==="free"
       ? <>{cur.app.hook && <p className="font-read text-yellow-100 leading-relaxed border-l-2 border-yellow-600 pl-3">{cur.app.hook}</p>}
-          {def?.html ? <FreeAppFrame key={cur.id} html={def.html} data={cur.app.data} state={states?.[cur.id]} onState={onState ? (st=>onState(cur.id, st)) : null}/>
+          {def?.html ? <FreeAppFrame key={cur.id+"|"+(def.html||"").length} html={def.html} data={cur.app.data} state={states?.[cur.id]} onState={onState ? (st=>onState(cur.id, st)) : null} onRepair={onRepair} repairing={repairing}/>
                      : <p className="font-read text-sm text-stone-500">Кодът на приложението липсва.</p>}</>
       : <QuoteAppRun key={cur.id} app={cur.app} storeKey={`${storeKey}|${cur.id}`}/>}
     {onRun && <div className="rounded-lg border border-dashed border-stone-700 p-3 space-y-2">
@@ -7139,19 +7223,46 @@ function QuoteApp({app,runs,def,states,onState,hookLine,icon,name,storeKey,onRun
   </div>;
 }
 // sandboxed frame for a free app: scripts only, no same-origin access, no network (CSP); reports its height
+// remove a hardcoded "window.APP_DATA = {...};" the AI sometimes writes into the code (it breaks reuse and,
+// with one stray quote, the whole script)
+function stripDataAssign(html){
+  let out = html||"";
+  for(let guard=0; guard<3; guard++){
+    const m = out.match(/(?:window\.)?APP_DATA\s*=\s*(?=[{\[])/);
+    if(!m) break;
+    let i = m.index + m[0].length, depth = 0, inS = null;
+    for(; i<out.length; i++){
+      const c = out[i];
+      if(inS){ if(c==="\\"){ i++; continue; } if(c===inS) inS = null; continue; }
+      if(c==='"'||c==="'"||c==="`"){ inS = c; continue; }
+      if(c==="{"||c==="[") depth++;
+      else if(c==="}"||c==="]"){ depth--; if(depth===0){ i++; break; } }
+    }
+    if(depth!==0){ // unbalanced (e.g. a broken string) — cut until the next line that starts a new statement
+      const rest = out.slice(m.index); const end = rest.search(/\n\s*\};?\s*\n/);
+      i = end>0 ? m.index+end+rest.slice(end).match(/\n\s*\};?\s*\n/)[0].length : i;
+    }
+    while(out[i]===";"||out[i]===" ") i++;
+    out = out.slice(0, m.index) + "/* APP_DATA comes from Aperture */" + out.slice(i);
+  }
+  return out;
+}
 function freeAppDoc(html, data, state){
+  html = stripDataAssign(html);
   const js = v => JSON.stringify(v===undefined?null:v).replace(/</g,"\\u003c");
   const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`+
     `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:">`+
     `<script>window.APP_DATA=${js(data)};window.APP_STATE=${js(state)};window.APP_SAVE=function(s){try{parent.postMessage({aperture:"state",state:s},"*")}catch(e){}};`+
     `(function(){function h(){try{parent.postMessage({aperture:"h",h:Math.max(document.body?document.body.scrollHeight:0,document.documentElement.scrollHeight)},"*")}catch(e){}}`+
-    `addEventListener("load",h);setInterval(h,700);document.addEventListener("click",function(){setTimeout(h,60)});})();<\/script>`;
+    `addEventListener("load",h);setInterval(h,700);document.addEventListener("click",function(){setTimeout(h,60)});`+
+    `window.onerror=function(m,s,l){try{parent.postMessage({aperture:"error",msg:String(m)+(l?" (ред "+l+")":"")},"*")}catch(e){}};})();<\/script>`;
   if(/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m=>m+head);
   return `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
 }
-function FreeAppFrame({html, data, state, onState}){
+function FreeAppFrame({html, data, state, onState, onRepair, repairing}){
   const ref = useRef(null);
   const [h,setH] = useState(460);
+  const [err,setErr] = useState(null);
   const doc = useMemo(()=>freeAppDoc(html, data, state), [html, data]);
   useEffect(()=>{
     const f = e=>{
@@ -7159,12 +7270,22 @@ function FreeAppFrame({html, data, state, onState}){
       const d = e.data||{};
       if(d.aperture==="h" && d.h) setH(Math.min(3000, Math.max(220, Math.ceil(d.h)+8)));
       if(d.aperture==="state" && onState) onState(d.state);
+      if(d.aperture==="error") setErr(d.msg||"грешка");
     };
     window.addEventListener("message", f);
     return ()=>window.removeEventListener("message", f);
   }, [onState]);
-  return <iframe ref={ref} title="app" sandbox="allow-scripts" srcDoc={doc}
-    style={{width:"100%", height:h, border:"1px solid #292524", borderRadius:12, background:"#0c0a09"}}/>;
+  return <div className="space-y-2">
+    {err && <div className="rounded-lg border border-red-900 bg-red-950/30 p-3 space-y-2">
+      <div className="font-read text-sm text-red-200">⚠ Приложението има грешка в кода и може да не работи.</div>
+      <div className="font-mono-cal text-[10px] text-red-300/70 break-all">{err}</div>
+      {onRepair && <button onClick={()=>{ onRepair(err); }} disabled={repairing}
+        className="inline-flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide border border-red-700 text-red-200 hover:bg-red-950/50 disabled:opacity-50 px-3 py-1.5 rounded">
+        {repairing ? <><Loader2 size={12} className="animate-spin"/> поправям…</> : "🛠 Поправи приложението"}</button>}
+    </div>}
+    <iframe ref={ref} title="app" sandbox="allow-scripts" srcDoc={doc}
+      style={{width:"100%", height:h, border:"1px solid #292524", borderRadius:12, background:"#0c0a09"}}/>
+  </div>;
 }
 function QuoteAppRun({app,storeKey}){
   const [flip,setFlip] = useState({}), [done,setDone] = useState({}), [pickd,setPickd] = useState({}), [shown,setShown] = useState({});
