@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-09 · 22:00";
+const APP_VERSION = "2026-11-09 · 22:20";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -259,7 +259,7 @@ Output EXACTLY: ###NAME### title ###DESC### description ###PART### part title ##
 // План по текст: the quotes come first. The level decides HOW MANY (lowest: only the key ones, highest: all
 // quotable passages); then they are grouped by what they share — those groups ARE the topics. Every quote is in
 // exactly one topic (no repeats), and the number of topics follows from the quotes, not from the level.
-async function genSourceQuoteGroups(sents, levelHint, existingTitles){
+async function genSourceQuoteGroups(sents, levelHint, existingTitles, attempt=0){
   const n = sents.length, lvl = levelHint?.level || 3;
   const clamp = (x,a,b)=>Math.max(a, Math.min(b, Math.round(x)));
   const want = {1:clamp(n*0.06,3,10), 2:clamp(n*0.12,5,18), 3:clamp(n*0.22,8,30), 4:clamp(n*0.4,12,50)}[lvl];
@@ -273,7 +273,7 @@ async function genSourceQuoteGroups(sents, levelHint, existingTitles){
 3) Order topics by where their first passage appears in the text; inside a topic list passages in text order.
 Topic title: under 6 words, specific to what the passages share. For each passage also: who says it in the text (the author, a character or a person quoted there; if unclear write Из текста) and one short line on why it matters.
 Write in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
-Output, nothing else, wrapped exactly like this:
+Output plain lines only (no markdown, no bullets, no numbering of topics), nothing else, wrapped exactly like this:
 ###TEXT###
 TOPIC | topic title
 NUMBERS | who | why it matters
@@ -286,11 +286,14 @@ NUMBERED TEXT:
 ${sents.map((t,i)=>`[${i+1}] ${t}`).join("\n")}`, want ? Math.min(6000, 400+want*90) : 8000, 0, 14000);
   const groups = [], used = [];
   let cur = null;
-  for(const line of extractField(raw,"TEXT").split("\n")){
-    const tm = line.match(/^\s*TOPIC\s*[|:]\s*(.+)$/i);
-    if(tm){ cur = {name:tm[1].trim().replace(/^[„“"']+|[“”"']+$/g,""), quotes:[]}; groups.push(cur); continue; }
-    const m = line.match(/^\s*\[?(\d+)\]?\s*(?:[-–]\s*\[?(\d+)\]?)?\s*\|\s*([^|]*)\|?\s*(.*)$/);
-    if(!m || !cur) continue;
+  for(let line of extractField(raw,"TEXT").split("\n")){
+    // tolerate markdown/bullets/numbering: "**TOPIC 2 | x**", "### ТЕМА: x", "- [12]–[14] | …", "12, 13 | …"
+    line = line.replace(/\*\*/g,"").replace(/^\s*(?:#{1,6}|[-*•])\s*/,"").trim();
+    const tm = line.match(/^(?:TOPIC|ТЕМА|Тема|Topic)\s*\d*\s*[|:.\-–—]\s*(.+)$/i);
+    if(tm){ cur = {name:tm[1].trim().replace(/[|]+\s*$/,"").trim().replace(/^[„“"']+|[“”"']+$/g,""), quotes:[]}; groups.push(cur); continue; }
+    const m = line.match(/^\[?(\d+)\]?\s*(?:(?:[-–—]|,|\s+до\s+)\s*\[?(\d+)\]?)?\s*[|:]\s*([^|]*)\|?\s*(.*)$/);
+    if(!m) continue;
+    if(!cur){ cur = {name:"Основни цитати", quotes:[]}; groups.push(cur); }
     let a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
     if(b<a) [a,b]=[b,a];
     if(a<1 || b>n || b-a>3) continue;
@@ -303,7 +306,11 @@ ${sents.map((t,i)=>`[${i+1}] ${t}`).join("\n")}`, want ? Math.min(6000, 400+want
   // unique titles (they are part of the saved ids)
   const seen = new Set(existingTitles||[]);
   out.forEach(g=>{ let t=g.name, k=2; while(seen.has(t)) t=`${g.name} (${k++})`; g.name=t; seen.add(t); });
-  if(!out.length) throw new Error("не успях да подбера цитатите");
+  if(!out.length){
+    console.warn("quote groups unreadable", raw.slice(0,600));
+    if(attempt<1) return genSourceQuoteGroups(sents, levelHint, existingTitles, attempt+1);
+    throw new Error("не успях да подбера цитатите");
+  }
   return out;
 }
 // topics that follow the text's own structure — as many as it genuinely needs, even just one
