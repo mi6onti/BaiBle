@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-14 · 19:30";
+const APP_VERSION = "2026-11-15 · 01:30";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -262,14 +262,14 @@ Output EXACTLY: ###NAME### title ###DESC### description ###PART### part title ##
 async function genSourceQuoteGroups(sents, levelHint, existingTitles, attempt=0){
   const n = sents.length, lvl = levelHint?.level || 3;
   const clamp = (x,a,b)=>Math.max(a, Math.min(b, Math.round(x)));
-  const want = {1:clamp(n*0.06,3,10), 2:clamp(n*0.12,5,18), 3:clamp(n*0.22,8,30), 4:clamp(n*0.4,12,50)}[lvl];
+  const want = {1:clamp(n*0.06,5,10), 2:clamp(n*0.12,5,18), 3:clamp(n*0.22,8,30), 4:clamp(n*0.4,12,50)}[lvl];
   const pick = want
     ? `Choose about ${want} passages — ${lvl<=2?"only the most essential ones, the key ideas of the whole text":"the important ones, covering the whole text"}.`
     : `Choose ALL the passages worth quoting — every meaningful statement, image, definition or turning point; skip only filler.`;
   const raw = await callClaudeRaw(NOSRC+
 `Below is a text split into numbered sentences.
 1) ${pick} A passage is ONE sentence, or a run of up to 3 consecutive sentences that belong together. Refer to passages ONLY by their numbers: N, or N-M.
-2) Group the chosen passages into topics by what they have in common (the same idea, theme, person or question). Every passage goes into exactly ONE topic. The number of topics must follow from the passages themselves — as many groups as the material naturally forms, never padded, never split just to have more; a topic normally holds at least 2 passages (one is fine only if it truly stands apart).${existingTitles?.length?` The plan already has these topics — do not reuse their titles: ${existingTitles.join("; ")}.`:""}
+2) Group the chosen passages into topics by what they have in common (the same idea, theme, person or question). Every passage goes into exactly ONE topic. The number of topics must follow from the passages themselves — as many groups as the material naturally forms, never padded, never split just to have more; EVERY topic must hold AT LEAST 5 passages — if a theme has fewer, merge it into the most closely related topic (or choose a little more passages for it, if the text really supports it).${existingTitles?.length?` The plan already has these topics — do not reuse their titles: ${existingTitles.join("; ")}.`:""}
 3) Order topics by where their first passage appears in the text; inside a topic list passages in text order.
 Topic title: under 6 words, specific to what the passages share. For each passage also: who says it in the text (the author, a character or a person quoted there; if unclear write Из текста) and one short line on why it matters.
 Write in the SAME language as the text (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
@@ -310,8 +310,20 @@ ${sents.map((t,i)=>`[${i+1}] ${t}`).join("\n")}`, want ? Math.min(6000, 400+want
     used.push({a,b});
     g.quotes.push({quote:cleanQuoteText(sents.slice(a-1,b).join(" ")), author:(who||"").trim()||"Из текста", role:(why||"").trim(), speculative:false, pos:a});
   }
-  const out = groups.filter(g=>g.name && g.quotes.length).map(g=>({...g, quotes:g.quotes.sort((x,y)=>x.pos-y.pos)}))
+  let out = groups.filter(g=>g.name && g.quotes.length).map(g=>({...g, quotes:g.quotes.sort((x,y)=>x.pos-y.pos)}))
     .sort((x,y)=>x.quotes[0].pos-y.quotes[0].pos);
+  // rule: a topic has at least 5 quotes — a smaller group joins its nearest neighbour in the text
+  const MIN_Q = 5;
+  while(out.length>1 && out.some(g=>g.quotes.length<MIN_Q)){
+    let si = 0; out.forEach((g,i)=>{ if(g.quotes.length < out[si].quotes.length) si = i; });
+    const g = out[si];
+    const mid = q => (q.quotes[0].pos + q.quotes[q.quotes.length-1].pos)/2;
+    const cand = [si-1, si+1].filter(i=>i>=0 && i<out.length);
+    const ti = cand.sort((a,b)=>Math.abs(mid(out[a])-mid(g)) - Math.abs(mid(out[b])-mid(g)))[0];
+    out[ti] = {...out[ti], quotes:[...out[ti].quotes, ...g.quotes].sort((x,y)=>x.pos-y.pos)};
+    out.splice(si, 1);
+    out.sort((x,y)=>x.quotes[0].pos-y.quotes[0].pos);
+  }
   // unique titles (they are part of the saved ids)
   const seen = new Set(existingTitles||[]);
   out.forEach(g=>{ let t=g.name, k=2; while(seen.has(t)) t=`${g.name} (${k++})`; g.name=t; seen.add(t); });
@@ -2104,6 +2116,12 @@ function notePath(map, id){
   return out;
 }
 // texts of a section split into parts (paragraphs / list items) — each part gets its own tools
+// changes only when the CONTENT of a section changes (not when suggestions / titles are cached into it)
+function contentSig(nd){
+  if(!nd) return 0;
+  const {quoteSuggest, quoteSuggestV, habitTitles, habitLessons, habitTitlesV, appStates, ...rest} = nd;
+  return JSON.stringify(rest).length;
+}
 function itemsFromNode(nd){
   if(!nd || nd.app) return [];
   const out = [];
@@ -4147,7 +4165,7 @@ function Aperture() {
   const [pendingJobs,setPendingJobs] = useState([]);       // [{id,label}] generating in the background
   const [toast,setToast] = useState(null);
   const toastTimer = useRef(null);
-  function showToast(t){ setToast(t); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(()=>setToast(null), 3500); }
+  function showToast(t){ /* no popup — the header shows what is still generating */ }
   function startJob(label){ const id = uid(); setPendingJobs(j=>[...j,{id,label}]); return id; }
   function endJob(id){ setPendingJobs(j=>j.filter(x=>x.id!==id)); }
   // update one topic from the LATEST state (several background jobs may finish in any order)
@@ -4163,9 +4181,26 @@ function Aperture() {
     saveJSON(`plan:${currentTopic.id}`, P).catch(e=>console.warn(e));
     return upd;
   }
-  // 🔖 По-късно: keep a part for later, without generating anything
-  function addLater(text, label, srcId){
+  const [highlightSrc,setHighlightSrc] = useState(null);
+  const sectionRootRef = useRef(null);
+  async function goToSource(text){
     const sub = hierarchy?.[subtopicIdx]; if(!sub || !text) return;
+    const list = getDisplayList(sub);
+    const qi = list.findIndex(isQuotesItem), oi = list.findIndex(isOverviewItem);
+    let inQuotes = (sub.sourceQuotes||[]).some(q=>q.quote===text);
+    if(!inQuotes && qi>=0){
+      const L = sub.activeLevel || planData?.activeLevel || 1;
+      const nd = await loadJSON(`node:${currentTopic.id}/${slugify(sub.name)}/L${L}/${slugify(subName(list[qi]))}`, null);
+      inQuotes = !!nd?.quotes?.some(q=>q.quote===text);
+    }
+    const idx = inQuotes ? qi : oi;
+    if(idx<0) return;
+    setInterestOpen(null); setHighlightSrc(text);
+    await openNode(subtopicIdx, idx);
+  }
+  // 🔖 По-късно: keep a part for later, without generating anything
+  function addLater(text, label, srcId, subIdxArg=null){
+    const sub = (hierRef.current||hierarchy)?.[subIdxArg ?? subtopicIdx]; if(!sub || !text) return;
     if((sub.later||[]).some(l=>l.text===text)){ mutateSub(sub.name, s=>({...s, later:(s.later||[]).filter(l=>l.text!==text)})); showToast("Махнато от „По-късно“"); return; }
     mutateSub(sub.name, s=>({...s, later:[...(s.later||[]), {id:uid(), text, label:label||"", srcId:srcId||null, createdAt:Date.now()}]}));
     showToast("🔖 Запазено в Бележки → По-късно");
@@ -4173,14 +4208,19 @@ function Aperture() {
   const [suggestBusy,setSuggestBusy]   = useState(false);
   const [interestErr,setInterestErr]   = useState(null);   // {quote, msg}
   // options for ONE quote — only when you open it (fast; nothing is prepared for quotes you never open)
-  async function suggestQuoteSections(quote, author){
-    const id = nodeId, base = nodeData, sub = hierarchy?.[subtopicIdx];
+  async function suggestQuoteSections(quote, author, subIdxArg=null){
+    const listMode = subIdxArg!=null;
+    const sub = hierarchy?.[subIdxArg ?? subtopicIdx];
+    const id = listMode ? quotesNodeId(sub) : nodeId, base = listMode ? {} : nodeData;
     const q = (base?.quotes||[]).find(x=>x.quote===quote) || {quote, author:author||""};
     if(!id || !quote || !sub || suggestBusy) return;
     setSuggestBusy(quote);
     try{
+      const saved = await loadJSON(`node:${id}`, null);
+      if(saved?.quoteSuggestV===6 && saved.quoteSuggest?.[quote]){ setSuggestStore(m=>({...m, [quote]:saved.quoteSuggest[quote]})); return; }
       const map = await genQuoteSuggestions(currentTopic.prompt||currentTopic.name, sub.name, [q]);
-      const latest = await loadJSON(`node:${id}`, base);
+      setSuggestStore(m=>({...m, [quote]:map[quote]||[]}));
+      const latest = await loadJSON(`node:${id}`, base||{});
       const prev = latest.quoteSuggestV===6 ? (latest.quoteSuggest||{}) : {};
       const updated = {...latest, quoteSuggest:{...prev, [quote]:map[quote]||[]}, quoteSuggestV:6};
       if(isCur(id)) setNodeData(cur=>cur ? {...cur, quoteSuggest:updated.quoteSuggest, quoteSuggestV:6} : cur);
@@ -4240,7 +4280,7 @@ function Aperture() {
     finally{ setAppRunBusy(false); }
   }
   async function exploreQuote(quote, author, key, catchy, extra){
-    const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
+    const subIdx = extra?.subIdx ?? subtopicIdx, sub = (hierRef.current||hierarchy)?.[subIdx];
     const bkey = `${quote}|${key}|${catchy||""}`;
     if(!sub || !planData || interestBusy[bkey]) return;
     const L = sub.activeLevel || planData.activeLevel || 1;
@@ -4267,8 +4307,9 @@ function Aperture() {
     finally{ setInterestBusy(b=>{ const n={...b}; delete n[bkey]; return n; }); endJob(job); }
   }
   // open an Интересно entry (from the Интересно list, or a ✓ chip under a quote)
-  async function openInterestEntry(entry){
-    const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
+  async function openInterestEntry(entry, subIdxArg=null){
+    const subIdx = subIdxArg ?? subtopicIdx, sub = hierarchy?.[subIdx];
+    if(subIdx!==subtopicIdx){ if(subtopicIdx==null) setListReturn(true); setSubtopicIdx(subIdx); }
     if(!sub) return;
     const idx = getDisplayList(sub).findIndex(it=>isInterestingItem(it)||isNotesItem(it));
     if(idx<0) return;
@@ -4300,28 +4341,16 @@ function Aperture() {
     await saveJSON(`plan:${currentTopic.id}`, P);
     if(SOURCE_TEXT ? !notesOf(updSub).length : !updSub.interesting.length){ setSubsubIdx(null); setNodeData(null); }
   }
-  const habitTitlesRef = useRef({});
-  useEffect(()=>{
-    const id = nodeId, nd = nodeData;
-    if(!id || !nd || GUEST || guestPlanId || interestOpen || loadingL) return;
-    if(SOURCE_TEXT && nd.quotes?.length && nd.quotesV!==3) return; // old quotes about to be redone — wait for the new ones
-    const items = (nd.quotes?.length ? nd.quotes.map(q=>({quote:q.quote, ref:q.author})) : (nd.verses||[]).map(v=>({quote:v.text, ref:v.ref}))).filter(x=>x.quote);
-    const fresh = nd.habitTitlesV===2;
-    const missing = items.filter(x=>!fresh || !((nd.habitTitles||{})[x.quote]));
-    if(!missing.length || habitTitlesRef.current[id]) return;
-    habitTitlesRef.current[id] = true;
+  // 🌱 a habit is proposed only when you ask for it (one small call for that one piece of text)
+  const habitCacheRef = useRef({});
+  async function suggestHabit(text, label){
+    if(habitCacheRef.current[text]) return habitCacheRef.current[text];
     const sub = hierarchy?.[subtopicIdx];
-    genHabitTitles(currentTopic.prompt||currentTopic.name, sub?.name||"", missing).then(async ({titles, lessons})=>{
-      if(!Object.keys(titles).length) return;
-      const latest = await loadJSON(`node:${id}`, nd);
-      const keepOld = latest.habitTitlesV===2;
-      const updated = {...latest, habitTitlesV:2,
-        habitTitles:{...(keepOld?latest.habitTitles||{}:{}), ...titles},
-        habitLessons:{...(keepOld?latest.habitLessons||{}:{}), ...lessons}};
-      await saveJSON(`node:${id}`, updated);
-      if(isCur(id)) setNodeData(cur=>cur ? {...cur, habitTitlesV:2, habitTitles:updated.habitTitles, habitLessons:updated.habitLessons} : cur);
-    }).catch(e=>console.warn("habit titles", e)).finally(()=>{ delete habitTitlesRef.current[id]; });
-  }, [nodeId, nodeData?.quotes, nodeData?.verses, loadingL]);
+    const {titles, lessons} = await genHabitTitles(currentTopic.prompt||currentTopic.name, sub?.name||"", [{quote:text, ref:label||""}]);
+    const r = {title:titles[text], lesson:lessons[text]};
+    habitCacheRef.current[text] = r;
+    return r;
+  }
 
   async function addReminder(subIdx, quote, ref, title, lesson, srcId){
     const sub = hierarchy?.[subIdx];
@@ -4337,20 +4366,41 @@ function Aperture() {
     finally{ setRemindBusy(b=>b===quote?null:b); endJob(job); }
   }
   // tools for any piece of text: ❓ question · 🌱 habit · 💡 explore · 🔖 later — srcId = the note it comes from
-  function makeTools(){
+  // subIdxArg: used by the list view of text plans (all topics on one screen)
+  const [suggestStore,setSuggestStore] = useState({});
+  function quotesNodeId(sub){ return `${currentTopic?.id}/${slugify(sub?.name||"")}/L${sub?.activeLevel||planData?.activeLevel||1}/${slugify("Цитати")}`; }
+  function makeTools(subIdxArg=null){
     if(guestPlanId || !planData) return null;
-    const sub = hierarchy?.[subtopicIdx];
+    const listMode = subIdxArg!=null;
+    const sIdx = subIdxArg ?? subtopicIdx;
+    const sub = hierarchy?.[sIdx];
     return {
-      ask:(q, text, label, srcId)=>askCuriosityQuestion(q, null, text, label, srcId),
-      habit:(text, label, srcId)=>addReminder(subtopicIdx, text, label, undefined, undefined, srcId),
-      later:(text, label, srcId)=>addLater(text, label, srcId),
+      ask:(q, text, label, srcId)=>askCuriosityQuestion(q, null, text, label, srcId, sIdx),
+      habit:(text, label, srcId, title, lesson)=>addReminder(sIdx, text, label, title, lesson, srcId),
+      suggestHabit,
+      later:(text, label, srcId)=>addLater(text, label, srcId, sIdx),
       isLater:text=>(sub?.later||[]).some(l=>l.text===text),
       hasHabit:text=>(sub?.reminders||[]).some(r=>r.quote===text),
       remindBusy,
-      explore: planData?.isSource ? exploreQuote : null,
-      suggestions: nodeData?.quoteSuggest, suggestionsV: nodeData?.quoteSuggestV, onSuggest: suggestQuoteSections, suggestBusy,
-      interestBusy, interestErr, interesting: sub?.interesting||[], onOpenInterest: openInterestEntry,
+      explore: planData?.isSource ? (q,a,k,c,x)=>exploreQuote(q,a,k,c,{...(x||{}), subIdx:sIdx}) : null,
+      suggestions: listMode ? suggestStore : {...(nodeData?.quoteSuggest||{}), ...suggestStore},
+      suggestionsV: listMode ? 6 : (nodeData?.quoteSuggestV ?? 6),
+      onSuggest: (t,a)=>suggestQuoteSections(t, a, listMode ? sIdx : null), suggestBusy,
+      interestBusy, interestErr, interesting: sub?.interesting||[], onOpenInterest: e=>openInterestEntry(e, sIdx),
     };
+  }
+  // list view: open a section (Общ преглед / Бележки) of one topic, then come back to the list
+  const [listReturn,setListReturn] = useState(false);
+  async function openTopicPart(i, which){
+    const P0 = planRef.current || planData, H0 = hierRef.current || hierarchy;
+    const sub = H0?.[i]; if(!sub || !P0) return;
+    const L = sub.activeLevel || P0.activeLevel || 1;
+    const upd = mutateSub(sub.name, s=>({...s, activeLevel:L, byLevel:{...(s.byLevel||{}), [L]:(s.byLevel?.[L]?.length ? s.byLevel[L] : sourceSectionList())}}));
+    const list = getDisplayList(upd);
+    const idx = list.findIndex(it=> which==="notes" ? isNotesItem(it) : which==="quotes" ? isQuotesItem(it) : isOverviewItem(it));
+    if(idx<0) return;
+    setListReturn(true);
+    await openNode(i, idx, hierRef.current, planRef.current);
   }
 
   async function deleteReminder(subIdx, rid){
@@ -4690,20 +4740,23 @@ function Aperture() {
     }
   }
 
-  async function askCuriosityQuestion(questionText, parentId=null, quote="", about="", srcId=null){
+  async function askCuriosityQuestion(questionText, parentId=null, quote="", about="", srcId=null, subIdxArg=null){
     const q = questionText.trim();
-    if(!q || subtopicIdx==null || !currentTopic || !planData) return;
-    const subItem = hierarchy[subtopicIdx];
+    const sIdx = subIdxArg ?? subtopicIdx;
+    if(!q || sIdx==null || !currentTopic || !planData) return;
+    const H0 = hierRef.current || hierarchy, P0 = planRef.current || planData;
+    const subItem = H0[sIdx];
     const newQ = { id: uid(), q, answer:"", answered:false, parentId, ...(quote?{quote}:{}), ...(about?{about}:{}), ...(srcId?{srcId}:{}), createdAt:Date.now() };
     const updatedQuestions = [...(subItem.curiosityQuestions||[]), newQ];
     const updatedSub = {...subItem, curiosityQuestions:updatedQuestions};
-    const updatedHierarchy = hierarchy.map((s,idx)=> idx===subtopicIdx ? updatedSub : s);
+    const updatedHierarchy = H0.map((s,idx)=> idx===sIdx ? updatedSub : s);
+    const updatedPlan = {...P0, byLevel:{...P0.byLevel, [P0.activeLevel]:updatedHierarchy}};
+    hierRef.current = updatedHierarchy; planRef.current = updatedPlan;
     setHierarchy(updatedHierarchy);
-    const updatedPlan = {...planData, byLevel:{...planData.byLevel, [planData.activeLevel]:updatedHierarchy}};
     setPlanData(updatedPlan);
     if(nodeIdRef.current===curiousNodeId(subItem)) setNodeData(cur=>cur ? {...cur, questions:updatedQuestions} : cur);
     await saveJSON(`plan:${currentTopic.id}`, updatedPlan);
-    generateCuriosityAnswers(subtopicIdx, updatedHierarchy, updatedPlan); // answer now, in the background
+    generateCuriosityAnswers(sIdx, updatedHierarchy, updatedPlan); // answer now, in the background
   }
 
   function curiousNodeId(sub){ return `${currentTopic?.id}/${slugify(sub?.name||"")}/L${sub?.activeLevel||planData?.activeLevel||1}/${SOURCE_TEXT?"бележки":"любопитно"}`; }
@@ -5119,11 +5172,7 @@ function Aperture() {
   /* render */
   return (
     <div className="min-h-screen bg-stone-950 text-stone-200">
-      {(pendingJobs.length>0 || toast) && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 pointer-events-none" style={{position:"fixed", pointerEvents:"none"}}>
-        {pendingJobs.length>0 && <div className="rounded-full bg-stone-900/95 border border-amber-800 px-4 py-2 shadow-lg shadow-black/50 font-mono-cal text-xs text-amber-200 flex items-center gap-2">
-          <Loader2 size={13} className="animate-spin"/> {pendingJobs.length===1 ? `генерирам: ${pendingJobs[0].label}` : `генерирам ${pendingJobs.length} неща във фонов режим`}</div>}
-        {toast && <div className="rounded-full bg-emerald-950/95 border border-emerald-700 px-4 py-2 shadow-lg shadow-black/50 font-read text-sm text-emerald-100">{toast}</div>}
-      </div>}
+
       <header className="border-b border-stone-800 px-4 py-3 flex items-center justify-between">
         <button onClick={goHome} className="flex items-center gap-2 group">
           <span className="text-amber-500"><ApertureIcon size={20}/></span>
@@ -5134,6 +5183,7 @@ function Aperture() {
           className={`font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border transition-colors ${storageMode==="supabase"?"border-emerald-800 text-emerald-500 bg-emerald-950/30":"border-amber-800 text-amber-500 bg-amber-950/30"}`}>
           {storageMode==="supabase"?"☁ Supabase":"📱 Local"}
         </button>}
+        {pendingJobs.length>0 && <span title={pendingJobs.map(j=>j.label).join("\n")} className="flex items-center gap-1 font-mono-cal text-[10px] text-amber-400"><Loader2 size={11} className="animate-spin"/>{pendingJobs.length}</span>}
         <span className="font-mono-cal text-[10px] text-stone-600" title="версия на файла">v {APP_VERSION}</span>
       </header>
       <main className="max-w-2xl mx-auto px-4 py-8">
@@ -5159,6 +5209,8 @@ function Aperture() {
           :!hierarchy?<ErrorNote message={homeError||"Нещо се обърка."} onRetry={()=>resumeTopic(currentTopic)}/>
           :subtopicIdx===null?(
             <SubtopicList topic={currentTopic} hierarchy={hierarchy} onDesktop={guestPlanId?null:toggleDesktopMode} desktopOn={desktopMode}
+              renderGroup={false && currentTopic?.isSource && !desktopMode ? ((s,i)=> s.sourceQuotes?.length ? <SourceGroup key={i} sub={s} tools={makeTools(i)}
+                onOverview={()=>openTopicPart(i,"overview")} onNotes={()=>openTopicPart(i,"notes")}/> : null) : null}
               desktopSlot={desktopMode ? <DesktopGrid embedded topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
                 planLevel={planData?.activeLevel} preparing={deskPreparing}
                 onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (DESK_DYNAMIC[k] ? deskHasKey(x,k) : (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel)))); if(first>=0) openDesktopSection(first,k); }}/> : null}
@@ -5195,7 +5247,8 @@ function Aperture() {
           ):(
             <>{desktopApp && <DesktopBar appKey={desktopApp} hierarchy={hierarchy} subIdx={subtopicIdx} error={desktopError} smart={!!planData?.smartMode} planLevel={planData?.activeLevel}
               onPickTopic={i=>openDesktopSection(i,desktopApp)} onExit={exitDesktopApp}/>}
-            {interestOpen && planData?.isSource && <NoteTrail sub={hierarchy[subtopicIdx]} noteId={interestOpen.id} onOpen={openInterestEntry}/>}
+            <div ref={sectionRootRef}>
+            {interestOpen && planData?.isSource && <NoteTrail sub={hierarchy[subtopicIdx]} noteId={interestOpen.id} onOpen={openInterestEntry} onSource={goToSource}/>}
             <NodeView
               topic={topicLabel(currentTopic)}
               subtopic={hierarchy[subtopicIdx].name}
@@ -5241,8 +5294,8 @@ function Aperture() {
               isHumor={isHumorItem(curNodeItem)}
               isCurious={isCuriousItem(curNodeItem)}
               isNotes={isNotesItem(curNodeItem)} notesSub={hierarchy[subtopicIdx]} noteTools={makeTools()} onDeleteLater={guestPlanId?null:(lid=>mutateSub(hierarchy[subtopicIdx].name, s=>({...s, later:(s.later||[]).filter(l=>l.id!==lid)})))}
-              pendingJobs={pendingJobs}
-              onBack={interestOpen ? ()=>{setInterestOpen(null);setNodeId(null);setNodeData({});setNodeError(null);setLoadingL(false);} : desktopApp ? exitDesktopApp : ()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null);}}
+              pendingJobs={pendingJobs} onSource={goToSource} highlightSrc={highlightSrc}
+              onBack={interestOpen ? ()=>{setInterestOpen(null);setNodeId(null);setNodeData({});setNodeError(null);setLoadingL(false);} : desktopApp ? exitDesktopApp : ()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null); if(listReturn){ setSubtopicIdx(null); setListReturn(false); }}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
@@ -5326,8 +5379,13 @@ function Aperture() {
               onUnitConfused={markUnitConfused} onUnitUnconfused={unmarkUnitConfused}
               prefs={prefs} topLevel={topLevel}
               canBlend={canBlend} onGenerateBlend={()=>doGenBlend(nodeId,hierarchy[subtopicIdx].name,subName(curNodeItem))}/>
+            </div>
+            {planData?.isSource && !guestPlanId && nodeData && curNodeItem && !isQuotesItem(curNodeItem) && !isNotesItem(curNodeItem) && !curNodeItem.isCustomApp && !isMyAppItem(curNodeItem) && !loadingL &&
+              <InlineItemTools rootRef={sectionRootRef} tools={makeTools()} srcId={interestOpen?.id||null} highlight={highlightSrc}
+                label={interestOpen ? (interestOpen.catchy || interestLabel(interestOpen.key)) : subName(curNodeItem)}
+                sig={`${nodeId}|${subsubIdx}|${interestOpen?.id||""}|${contentSig(nodeData)}|${tab}`}/>}
             {planData?.isSource && !guestPlanId && nodeData && curNodeItem && !isQuotesItem(curNodeItem) && !isNotesItem(curNodeItem) &&
-              <SectionParts nd={nodeData} tools={makeTools()} srcId={interestOpen?.id||null}
+              <SectionParts nd={nodeData} tools={makeTools()} srcId={interestOpen?.id||null} highlight={highlightSrc}
                 label={interestOpen ? (interestOpen.catchy || interestLabel(interestOpen.key)) : subName(curNodeItem)}
                 anchor={interestOpen?.quote || ""}/>}
             {interestOpen && !planData?.isSource && !guestPlanId && <div className="mt-5 rounded border border-indigo-900/50 bg-indigo-950/10 p-3">
@@ -5854,7 +5912,7 @@ function NewsAreaPicker({topics,onPick,onBack,error}){
   </div>;
 }
 
-function SubtopicList({topic,hierarchy,desktopSlot,desktopOn,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onDesktop,smartMode,onToggleSmart,onShare,shareMsg,guest}){
+function SubtopicList({topic,hierarchy,renderGroup,desktopSlot,desktopOn,onPick,onLevelCheck,loadingLevelCheck,levelCheck,levelCheckError,onDelete,onGenerateAdapted,generatingAdapted,allTopics,onNavigateTopic,onChangeLevel,currentLevel,onEvolve,evolving,onDesktop,smartMode,onToggleSmart,onShare,shareMsg,guest}){
   // T.6: find related topics
   const parentTopic = topic.parentId ? allTopics.find(t=>t.id===topic.parentId) : null;
   const childTopic  = topic.childId  ? allTopics.find(t=>t.id===topic.childId)  : null;
@@ -5905,7 +5963,7 @@ function SubtopicList({topic,hierarchy,desktopSlot,desktopOn,onPick,onLevelCheck
     </div>}
 
     <div className="flex items-center justify-between gap-2">
-      <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">Теми</div>
+      <div className="font-mono-cal text-xs uppercase tracking-wide text-stone-500">{renderGroup ? "Цитати по теми" : "Теми"}</div>
       {onLevelCheck && <button onClick={onLevelCheck} disabled={loadingLevelCheck}
         className="flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border border-stone-700 text-stone-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50 shrink-0">
         {loadingLevelCheck?<Loader2 size={12} className="animate-spin"/>:<Sparkles size={12}/>}
@@ -5933,8 +5991,10 @@ function SubtopicList({topic,hierarchy,desktopSlot,desktopOn,onPick,onLevelCheck
       </button>
     </div>}
 
-    <div className="space-y-1">
+    <div className={renderGroup ? "space-y-6" : "space-y-1"}>
       {hierarchy.map((s,i)=>{
+        const g = renderGroup && renderGroup(s,i);
+        if(g) return g;
         const isTr = isTrailerItem(s);
         if(isTr && (smartMode || hierarchy.some(x=>x.isNewsStory))) return null;
         return <button key={i} onClick={()=>onPick(i)}
@@ -6057,7 +6117,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onRepairApp,repairingApp,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy,isNotes,notesSub,noteTools,onDeleteLater,pendingJobs}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onRepairApp,repairingApp,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy,isNotes,notesSub,noteTools,onDeleteLater,pendingJobs,onSource,highlightSrc}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -6456,7 +6516,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
       <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitlesV===2?nodeData?.habitTitles:null} habitLessons={nodeData?.habitLessons}
-        onAsk={onAsk} laterTools={noteTools} onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>
+        onAsk={onAsk} laterTools={noteTools} highlight={highlightSrc} onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>
     </div>;
   }
 
@@ -6702,7 +6762,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryCurious}/>}
       <NotesPanel sub={notesSub} questions={nodeData?.questions||notesSub?.curiosityQuestions||[]} tools={noteTools ? {...noteTools, habitTitles:nodeData?.habitTitlesV===2?nodeData?.habitTitles:null, habitLessons:nodeData?.habitLessons} : null}
-        onOpenInterest={onOpenInterest} onDeleteInterest={onDeleteInterest} onDeleteReminder={onDeleteReminder} onDeleteLater={onDeleteLater} onAsk={onAsk} pendingJobs={pendingJobs}/>
+        onOpenInterest={onOpenInterest} onDeleteInterest={onDeleteInterest} onDeleteReminder={onDeleteReminder} onDeleteLater={onDeleteLater} onAsk={onAsk} pendingJobs={pendingJobs} onSource={onSource}/>
     </div>;
   }
   if(isCurious){
@@ -6856,7 +6916,7 @@ function AskQuestionBlock({onAsk,curiosityQuestions}){
         </div>}
       </div>
     </div>
-    {questions.length>0 && <div className="rounded border border-indigo-900/40 bg-indigo-950/10 p-3 space-y-2">
+    {questions.length>0 && <div data-no-tools className="rounded border border-indigo-900/40 bg-indigo-950/10 p-3 space-y-2">
       <div className="font-mono-cal text-xs uppercase tracking-wide text-indigo-400">Твоите въпроси ({questions.length})</div>
       <div className="space-y-1.5">
         {questions.map((item,i)=>(
@@ -7274,12 +7334,13 @@ function RemindButton({quote,refText,onRemind,remindBusy,reminders,title,lesson}
   if(title===NO_HABIT && !doneR) return null;
   const busy = remindBusy===quote;
   const shown = doneR?.title || title;
+  // no title prepared (nothing is generated in advance) — the AI proposes it when you press
   return <button onClick={()=>!doneR&&!busy&&onRemind(quote,refText,title,lesson)} disabled={!!doneR||(!!remindBusy&&!busy)}
     className={`mt-2 text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border ${doneR?"border-amber-700 bg-amber-950/30":"border-stone-700 hover:border-amber-500"} disabled:opacity-70`}>
     <span className="pt-0.5">{busy ? <Loader2 size={13} className="animate-spin"/> : "🌱"}</span>
     <span className="flex flex-col leading-tight">
       <span className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-400">{busy ? "Habit · създавам навика…" : doneR ? "Habit · ✓ в Habits" : "Habit · направи навик"}</span>
-      {shown && shown!==NO_HABIT ? <span className="font-read text-sm text-amber-100">{shown}</span> : (!doneR && <span className="font-read text-xs text-stone-500">подбирам навик…</span>)}
+      {shown && shown!==NO_HABIT ? <span className="font-read text-sm text-amber-100">{shown}</span> : (!doneR && <span className="font-read text-xs text-stone-500">натисни — AI ще предложи навик</span>)}
       {lesson && !doneR && <span className="font-read text-xs text-amber-200/80 italic mt-0.5">↳ урокът: {lesson}</span>}
     </span>
   </button>;
@@ -7559,21 +7620,23 @@ function QuoteExplorer({q,srcId,startOpen,onExplore,suggestions,suggestionsV,onS
     </div>}
   </div>;
 }
-function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,habitLessons,onAsk,laterTools,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
+function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,habitLessons,onAsk,laterTools,highlight,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   if(loading) return <Spinner label="търся подходящи цитати…"/>;
   quotes = (quotes||[]).filter(q=>!/джобс|jobs/i.test(q?.author||"")); // already-saved Steve Jobs entries are hidden too
   if(!quotes.length) return null;
   return <div className="space-y-4">
     <div className="space-y-3">
       {quotes.map((q,i)=>(
-        <div key={i} className="rounded border border-pink-900/50 bg-pink-950/10 p-4">
+        <div key={i} ref={el=>{ if(el && highlight && q.quote===highlight && !el.dataset.hl){ el.dataset.hl="1"; setTimeout(()=>el.scrollIntoView({behavior:"smooth",block:"center"}),150); } }}
+          className={`rounded border p-4 ${highlight && q.quote===highlight ? "border-amber-500 bg-amber-950/20 ring-2 ring-amber-600/40" : "border-pink-900/50 bg-pink-950/10"}`}>
+          {highlight && q.quote===highlight && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-400 mb-1.5">↳ източникът на бележката</div>}
           {q.speculative && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-500 mb-1.5">⚠ Хипотетично — не е потвърден реален цитат</div>}
           <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{cleanQuoteText(q.quote)}“</p>
           <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
+          {laterTools ? <ItemTools text={q.quote} label={`Цитат · ${q.author||"Из текста"}`} srcId={null} tools={laterTools}/> : <>
           <RemindButton quote={q.quote} refText={q.author} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} title={habitTitles?.[q.quote]} lesson={habitLessons?.[q.quote]}/>
-          {onAsk && <QuoteAsk quote={q.quote} onAsk={onAsk}/>}
-          {laterTools && <LaterButton text={q.quote} label={`Цитат · ${q.author||"Из текста"}`} tools={laterTools}/>}
-          {onExplore && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} suggestionsV={suggestionsV} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>}
+          {onAsk && <QuoteAsk quote={q.quote} onAsk={onAsk}/>}</>}
+          {onExplore && !laterTools && <QuoteExplorer q={q} onExplore={onExplore} suggestions={suggestions} suggestionsV={suggestionsV} onSuggest={onSuggest} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>}
         </div>
       ))}
     </div>
@@ -8288,17 +8351,34 @@ function LaterButton({text,label,srcId,tools}){
 // ❓ 🌱 💡 🔖 for any piece of text (paragraph, list item, answer, whole section)
 function ItemTools({text,label,srcId,tools,compact}){
   const [open,setOpen] = useState(null);
+  const [hab,setHab] = useState(null); // null | "loading" | "none" | "err" | {title,lesson}
   if(!tools || !text) return null;
   const habitOn = tools.hasHabit(text), habitBusy = tools.remindBusy===text;
+  function habitClick(){
+    if(habitOn || habitBusy) return;
+    setOpen(open==="habit"?null:"habit");
+    if(!hab || hab==="err"){ setHab("loading"); tools.suggestHabit(text, label).then(r=>setHab(r?.title && r.title!==NO_HABIT ? r : "none")).catch(()=>setHab("err")); }
+  }
   const btn = on => `inline-flex items-center gap-1 font-mono-cal text-[10px] uppercase tracking-wide px-2 py-1 rounded border ${on?"border-amber-600 text-amber-200 bg-amber-950/30":"border-stone-700 text-stone-400 hover:border-amber-600 hover:text-amber-200"}`;
   return <div className={compact?"mt-1.5":"mt-2"}>
     <div className="flex flex-wrap gap-1.5">
       <button onClick={()=>setOpen(open==="ask"?null:"ask")} className={btn(open==="ask")}>❓ Въпрос</button>
-      <button onClick={()=>!habitOn && !habitBusy && tools.habit(text, label, srcId)} className={btn(habitOn)}>{habitBusy ? <><Loader2 size={10} className="animate-spin"/> навик…</> : habitOn ? "🌱 Навик ✓" : "🌱 Навик"}</button>
+      <button onClick={habitClick} className={btn(habitOn||open==="habit")}>{habitBusy ? <><Loader2 size={10} className="animate-spin"/> навик…</> : habitOn ? "🌱 Навик ✓" : "🌱 Навик"}</button>
       {tools.explore && <button onClick={()=>setOpen(open==="explore"?null:"explore")} className={btn(open==="explore")}>💡 Разгледай</button>}
       <button onClick={()=>tools.later(text, label, srcId)} className={btn(tools.isLater(text))}>{tools.isLater(text)?"🔖 ✓":"🔖 По-късно"}</button>
     </div>
-    {open==="ask" && <QuoteAsk quote={text} about={label} srcId={srcId} onAsk={(q,_p,t,ab,sid)=>tools.ask(q,t,ab,sid)}/>}
+    {open==="ask" && <QuoteAsk startOpen quote={text} about={label} srcId={srcId} onAsk={(q,_p,t,ab,sid)=>tools.ask(q,t,ab,sid)}/>}
+    {open==="habit" && !habitOn && <div className="mt-2 rounded border border-amber-900/50 bg-amber-950/10 p-2.5">
+      {hab==="loading" && <span className="flex items-center gap-1.5 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> търся смислен навик…</span>}
+      {hab==="none" && <span className="font-read text-xs text-stone-400">Тук няма смислена връзка с навик — по-добре пробвай с друга част.</span>}
+      {hab==="err" && <span className="font-read text-xs text-red-300">Не успях — натисни 🌱 отново.</span>}
+      {hab && typeof hab==="object" && <div className="space-y-1.5">
+        <div className="font-read text-sm text-amber-100">🌱 {hab.title}</div>
+        {hab.lesson && <div className="font-read text-xs text-amber-200/80 italic">↳ урокът: {hab.lesson}</div>}
+        <button onClick={()=>{ tools.habit(text, label, srcId, hab.title, hab.lesson); setOpen(null); }} disabled={habitBusy}
+          className="font-mono-cal text-[10px] uppercase tracking-wide px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-stone-950">Създай навика</button>
+      </div>}
+    </div>}
     {open==="explore" && tools.explore && <QuoteExplorerOpen q={{quote:text, author:label}} srcId={srcId} tools={tools}/>}
   </div>;
 }
@@ -8307,23 +8387,94 @@ function QuoteExplorerOpen({q,srcId,tools}){
   return <QuoteExplorer q={q} srcId={srcId} startOpen onExplore={tools.explore} suggestions={tools.suggestions} suggestionsV={tools.suggestionsV} onSuggest={tools.onSuggest}
     suggestBusy={tools.suggestBusy} interestBusy={tools.interestBusy} interestErr={tools.interestErr} interesting={tools.interesting} onOpenInterest={tools.onOpenInterest}/>;
 }
+// text plans, plan screen: one topic = its title + all its quotes (with tools); overview / notes one tap away
+function SourceGroup({sub,tools,onOverview,onNotes}){
+  const nNotes = notesOf(sub).length;
+  return <section className="space-y-3">
+    <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-stone-800 pb-1.5">
+      <h3 className="font-display text-lg font-bold text-amber-200">{sub.name}</h3>
+      <div className="flex gap-1.5">
+        <button onClick={onOverview} className="font-mono-cal text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-stone-700 text-stone-400 hover:border-amber-600 hover:text-amber-200">🔭 Общ преглед</button>
+        {nNotes>0 && <button onClick={onNotes} className="font-mono-cal text-[10px] uppercase tracking-wide px-2 py-1 rounded border border-stone-700 text-stone-400 hover:border-amber-600 hover:text-amber-200">📒 Бележки · {nNotes}</button>}
+      </div>
+    </div>
+    {sub.sourceQuotes.map((q,i)=>(
+      <div key={i} className="rounded border border-pink-900/50 bg-pink-950/10 p-4">
+        <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{cleanQuoteText(q.quote)}“</p>
+        <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
+        <ItemTools text={q.quote} label={`Цитат · ${q.author||"Из текста"}`} srcId={null} tools={tools}/>
+      </div>
+    ))}
+  </section>;
+}
+// puts the tool row (❓ 🌱 💡 🔖) INTO each card / paragraph of the section that is on screen
+function InlineItemTools({rootRef, sig, tools, label, srcId, highlight}){
+  const [hosts,setHosts] = useState([]);
+  useEffect(()=>{
+    const root = rootRef.current; if(!root || !tools) return;
+    let created = [];
+    const timer = setTimeout(()=>{
+      const skip = el => el.closest("[data-tools-host],[data-no-tools],.sticky,iframe");
+      const okItem = k => !["BUTTON","SPAN","A","SVG","svg"].includes(k.tagName) && (k.innerText||"").trim().length>=25
+        && !k.querySelector("input,textarea,iframe,select,button");
+      // list items = repeated siblings of the same kind (cards, timeline steps, paragraphs …)
+      const groups = [];
+      [root, ...root.querySelectorAll("*")].forEach(par=>{
+        if(par!==root && skip(par)) return;
+        const kids = [...par.children].filter(k=>!k.dataset?.toolsHost && !skip(k));
+        if(kids.length<2) return;
+        const sigOf = k => k.tagName+"|"+(typeof k.className==="string"?k.className:"");
+        const counts = {}; kids.forEach(k=>{ counts[sigOf(k)] = (counts[sigOf(k)]||0)+1; });
+        const best = Object.entries(counts).sort((x,y)=>y[1]-x[1])[0];
+        if(!best || best[1]<2) return;
+        const its = kids.filter(k=>sigOf(k)===best[0] && okItem(k));
+        if(its.length>=2) groups.push({par, its});
+      });
+      const accepted = [];
+      groups.forEach(g=>{ if(!accepted.some(a=>a.its.some(it=>it.contains(g.par)))) accepted.push(g); }); // outer lists win
+      let items = accepted.flatMap(g=>g.its.map(el=>({el, after: el.tagName==="P"})));
+      if(!items.length){ // one block of text — tools per long paragraph
+        items = [...root.querySelectorAll("p")].filter(el=>!skip(el) && !el.closest("button") && (el.innerText||"").trim().length>=80).map(el=>({el, after:true}));
+      }
+      items.slice(0,50).forEach(({el, after})=>{
+        const text = (el.innerText||"").trim().replace(/\s+\n/g,"\n");
+        const host = document.createElement("div");
+        host.dataset.toolsHost = "1";
+        if(after) el.after(host); else el.appendChild(host);
+        if(highlight && text.includes(highlight.slice(0,60))){
+          el.style.outline = "2px solid #d97706"; el.style.outlineOffset = "4px"; el.style.borderRadius = "6px";
+          setTimeout(()=>el.scrollIntoView({behavior:"smooth", block:"center"}), 200);
+        }
+        created.push({host, text});
+      });
+      setHosts(created);
+    }, 150);
+    return ()=>{ clearTimeout(timer); created.forEach(h=>h.host.remove()); };
+  }, [sig]);
+  if(!tools) return null;
+  return <>{hosts.map((h,i)=>ReactDOM.createPortal(<ItemTools text={h.text} label={label} srcId={srcId} tools={tools} compact/>, h.host, "it"+i))}</>;
+}
 // every section of a text plan: tools for the whole section + for each of its parts
-function SectionParts({nd,tools,srcId,label,anchor}){
-  const [openParts,setOpenParts] = useState(false);
+function SectionParts({nd,tools,srcId,label,anchor,highlight}){
+  const parts = (nd && !nd.app) ? itemsFromNode(nd) : [];
+  const hit = highlight && parts.includes(highlight);
+  const [openParts,setOpenParts] = useState(!!hit);
+  useEffect(()=>{ if(hit) setOpenParts(true); }, [hit]);
   if(!tools || !nd) return null;
-  const parts = itemsFromNode(nd);
   const whole = (anchor ? `„${anchor.slice(0,200)}“ — ` : "") + `${label}: ` + (parts.slice(0,3).join(" ").slice(0,500) || "");
   return <div className="mt-6 space-y-3">
-    <div className="rounded-lg border border-amber-900/50 bg-amber-950/10 p-3">
+    <div data-no-tools className="rounded-lg border border-amber-900/50 bg-amber-950/10 p-3">
       <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-400">Цялата секция „{label}“</div>
       <ItemTools text={whole} label={label} srcId={srcId} tools={tools}/>
     </div>
-    {parts.length>0 && <div className="rounded-lg border border-stone-800 p-3">
+    {false && parts.length>0 && <div className="rounded-lg border border-stone-800 p-3">
       <button onClick={()=>setOpenParts(o=>!o)} className="w-full flex items-center justify-between font-mono-cal text-[11px] uppercase tracking-wide text-stone-300">
         <span>🧩 По части — въпрос, навик, разглеждане на всяка ({parts.length})</span><span>{openParts?"▴":"▾"}</span>
       </button>
       {openParts && <div className="mt-3 space-y-3">{parts.map((t,i)=>(
-        <div key={i} className="border-l-2 border-stone-700 pl-3">
+        <div key={i} ref={el=>{ if(el && t===highlight && !el.dataset.hl){ el.dataset.hl="1"; setTimeout(()=>el.scrollIntoView({behavior:"smooth",block:"center"}),150); } }}
+          className={`border-l-2 pl-3 ${t===highlight?"border-amber-500 bg-amber-950/20 rounded-r py-1":"border-stone-700"}`}>
+          {t===highlight && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-400 mb-1">↳ източникът на бележката</div>}
           <p className="font-read text-sm text-stone-300 leading-relaxed">{t.length>420?t.slice(0,420)+"…":t}</p>
           <ItemTools text={t} label={label} srcId={srcId} tools={tools} compact/>
         </div>))}</div>}
@@ -8331,15 +8482,16 @@ function SectionParts({nd,tools,srcId,label,anchor}){
   </div>;
 }
 // where a note comes from — the whole chain, so you never lose the context
-function NoteTrail({sub,noteId,onOpen}){
+function NoteTrail({sub,noteId,onOpen,onSource}){
   const list = notesOf(sub); const map = Object.fromEntries(list.map(n=>[n.id,n]));
   const path = notePath(map, noteId); if(!path.length) return null;
   const depth = path.length, root = path[0];
   const rootText = root.anchor || root.text || "";
-  return <div className="mb-4 rounded-lg border border-stone-800 bg-stone-900/50 p-3 space-y-1.5">
+  return <div data-no-tools className="mb-4 rounded-lg border border-stone-800 bg-stone-900/50 p-3 space-y-1.5">
     <div className="flex items-center gap-2">
       <DepthBadge depth={depth}/>
-      <span className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-500">откъде идваш</span>
+      <span className="font-mono-cal text-[10px] uppercase tracking-wide text-stone-500 flex-1">откъде идваш</span>
+      {onSource && rootText && <button onClick={()=>onSource(rootText)} className="font-mono-cal text-[10px] uppercase tracking-wide px-2 py-0.5 rounded border border-stone-700 text-stone-300 hover:border-amber-600 hover:text-amber-200">↗ Виж източника</button>}
     </div>
     {rootText && <div className="font-read text-xs text-stone-500 italic">„{rootText.length>120?rootText.slice(0,120)+"…":rootText}“</div>}
     <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -8358,7 +8510,7 @@ function DepthBadge({depth}){
     {deep?"🔥 ":""}{depth} {depth===1?"ниво":"нива"}</span>;
 }
 // 📒 Бележки: everything you made for this topic, filterable, deepest first when you want
-function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDeleteReminder,onDeleteLater,onAsk,pendingJobs}){
+function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDeleteReminder,onDeleteLater,onAsk,pendingJobs,onSource}){
   const [filter,setFilter] = useState("all");
   const [openId,setOpenId] = useState(null);
   const base = notesOf({...sub, curiosityQuestions:questions});
@@ -8395,7 +8547,11 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
             {rootText && path.length===1 && n.type!=="question" && <div className="font-read text-xs text-stone-500 italic mt-0.5">„{rootText.length>110?rootText.slice(0,110)+"…":rootText}“</div>}
             {n.type==="question" && n.anchor && <div className="font-read text-xs text-stone-500 italic mt-0.5">„{n.anchor.length>110?n.anchor.slice(0,110)+"…":n.anchor}“</div>}
           </button>
-          <DepthBadge depth={n.depth}/>
+          <div className="flex flex-col items-end gap-1">
+            <DepthBadge depth={n.depth}/>
+            {onSource && (rootText || n.anchor) && <button onClick={()=>onSource(n.type==="question" && path.length===1 ? (n.anchor||rootText) : rootText)}
+              className="font-mono-cal text-[10px] text-stone-500 hover:text-amber-300 whitespace-nowrap">↗ източник</button>}
+          </div>
         </div>
         {isOpen && n.type==="question" && <div className="pl-1">
           {n.ref.answered ? <><p className="font-read text-stone-300 leading-relaxed">{n.ref.answer}</p><ItemTools text={n.ref.answer} label={`Отговор: ${n.ref.q}`} srcId={n.id} tools={tools}/></>
@@ -8413,8 +8569,8 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
   </div>;
 }
 // "ask about this quote" — the answer goes to Любопитно
-function QuoteAsk({quote,about,srcId,onAsk}){
-  const [open,setOpen] = useState(false), [val,setVal] = useState(""), [sent,setSent] = useState(false);
+function QuoteAsk({quote,about,srcId,onAsk,startOpen}){
+  const [open,setOpen] = useState(!!startOpen), [val,setVal] = useState(""), [sent,setSent] = useState(false);
   function submit(){ const t=val.trim(); if(!t) return; onAsk(t, null, quote, about, srcId); setVal(""); setOpen(false); setSent(true); }
   return <div className="mt-2">
     {!open ? <button onClick={()=>{setOpen(true);setSent(false);}} className="inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border border-stone-700 text-stone-400 hover:border-indigo-500 hover:text-indigo-300">❓ Задай въпрос</button>
