@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-15 · 01:30";
+const APP_VERSION = "2026-11-16 · 02:00";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -992,22 +992,34 @@ Output EXACTLY: ###KIND### REAL or ORIGINAL ###TITLE### title ###AUTHOR### autho
 
 // План по текст → Цитати: for each quote, the section types that would genuinely illuminate THAT quote
 const QUOTE_EXPLORE_EXCLUDED = ["isQuotes","isSimulation","isAppIdeas","isInvestment","isPrediction","isPreface","isNext","isInception"];
-async function genQuoteSuggestions(topicLabel, subtopicName, quotes){
+async function genQuoteSuggestions(topicLabel, subtopicName, quotes, ctx){
   const pool = PODCAST_DEFAULT_ORDER.filter(k=>!QUOTE_EXPLORE_EXCLUDED.includes(k));
   const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
   const raw = await callClaudeRaw(NOSRC+
 `A learner reads ${quotes.length===1?"a quote":"quotes"} from a text (plan "${topicLabel}", topic "${subtopicName}") and wants to explore single quotes deeper through one of the sections below — e.g. a Timeline of just that quote's idea, or a Comparison of that quote with other views.
 Quotes:
 ${quotes.map((q,i)=>`${i+1}. ${q.quote}${q.author?` — ${q.author}`:""}`).join("\n")}
+${ctx?.currentKey ? `The learner is reading these items INSIDE the section „${PODCAST_SECTIONS[ctx.currentKey]?.[0]||ctx.currentKey}${ctx.currentTitle?` — ${ctx.currentTitle}`:""}“ — do NOT suggest that same section (${ctx.currentKey}) again and nothing that would repeat it; go into a DIFFERENT direction.\n` : ""}${ctx?.existing?.length ? `Already explored in this topic (do not suggest these again, nor near-copies of them): ${ctx.existing.slice(0,30).join("; ")}.\n` : ""}If an item starts with "Тема:", it is a WHOLE TOPIC (its quotes follow) — for it, ALWAYS choose isOverview first, with a catchy title for the overview of the whole topic.
 For EACH quote choose the 2 to 5 sections that would be genuinely interesting and fitting for THAT quote (different quotes usually get different sections); leave out everything that does not truly fit. Order by how interesting they are.
 For each choice also write a catchy, specific title (3-7 words) saying what that section would reveal about THAT quote — intriguing but honest, no clickbait, no invented facts, in the SAME language as the quotes (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
 Menu (KEY — name: what it contains) — choose ONLY from these:
 ${menu}
 ALSO, App Store: for EACH quote suggest 1 or 2 tiny APPS (not in the menu). An app is a GENERAL, reusable tool with ONE concrete purpose — it would work just as well on any other quote, idea, topic or life situation; this quote is only the first thing it is used on. Think of the kind of tool that fits this quote best (practise an idea, decide with it, apply it to a real situation, test understanding, translate old words to today, see something in contrast) — but the app's name and purpose must be general and must NOT mention this quote or its content. Not games for fun, not a plain essay. The app will be built freely with its own interface (anything a small web app can do: sliders, timelines to arrange, sorting, matching, a decision wheel, a guided dialogue, a tracker…) — choose the interaction that serves the purpose best, but keep it simple and meaningful.
 For each app give: an emoji icon, an app-like general name (1-3 words, like a real app: „Днешен превод“, „Решение за 30 сек“, „Тест на разбирането“), the word free as its kind, its general purpose in one short sentence (what it does with ANY input and how you interact with it), and a HOOK — one intriguing sentence on how exactly THIS quote and this topic connect with the app (what the learner will discover by running it on this quote; specific, sparks curiosity).
+ALSO, a habit: for EACH item decide whether it can honestly inspire a habit for everyday LIFE (work, relationships, health, money, stress, family, decisions — not about reading or studying). Find what it can TEACH, then one concrete habit that grows directly from that lesson (3-8 words, what you will actually do and ideally in which moment). If the link would be forced, answer NONE. Write it as: QUOTE_NUMBER | HABIT | lesson (3-8 words) | habit title — or QUOTE_NUMBER | HABIT | NONE.
 Output one line per choice in the form QUOTE_NUMBER | KEY | catchy title, and for your apps QUOTE_NUMBER | APP | emoji | app name | kind | purpose | hook — nothing else, wrapped exactly like this: ###PLAN###the lines###PLAN_END###`, Math.min(2400, 300+500*quotes.length));
   const out = {};
   for(const line of extractField(raw,"PLAN").split("\n")){
+    const mh = line.match(/(\d+)\s*\|\s*HABIT\s*\|\s*(.+)/i);
+    if(mh){
+      const n = Number(mh[1])-1; if(n<0 || n>=quotes.length) continue;
+      const parts = mh[2].split("|").map(x=>x.trim().replace(/^[„“"']+|[“”"']+$/g,"")).filter(Boolean);
+      const q = quotes[n].quote; out[q] = out[q] || [];
+      if(out[q].some(x=>x.key==="isHabit")) continue;
+      if(!parts.length || /^(NONE|НЯМА)$/i.test(parts[0])) out[q].push({key:"isHabit", none:true});
+      else out[q].push({key:"isHabit", lesson: parts.length>=2 ? parts[0] : "", catchy: parts.length>=2 ? parts[1] : parts[0]});
+      continue;
+    }
     const ma = line.match(/(\d+)\s*\|\s*APP\s*\|(.+)/i);
     if(ma){
       const parts = ma[2].split("|").map(x=>x.trim()).filter(Boolean);
@@ -2092,7 +2104,7 @@ function isSmartSub(sub){ return !!(sub && (sub.isNewsStory || sub.smart)); }
 let MY_APPS = [];
 function isMyAppItem(item){ return typeof item==="object" && item!==null && !!item.isMyApp; }
 // "по текст" plans: a topic starts with only Общ преглед + Цитати (Habits / Интересно / Любопитно appear later)
-function sourceSectionList(){ return [{name:"Общ преглед", isOverview:true}, {name:"Цитати", isQuotes:true}]; }
+function sourceSectionList(){ return [{name:"Цитати", isQuotes:true}]; }
 // ── Бележки (text plans): Интересно + Habits + Любопитно + По-късно in one place. Every note may point to the
 // note it was made from (srcId) — that chain is its DEPTH (quote → Речник → Timeline → въпрос = 3 levels).
 function isNotesItem(item){ return typeof item==="object" && item!==null && !!item.isNotes; }
@@ -2144,8 +2156,7 @@ function getDisplayList(subItem){
   let base = visibleSections(subItem);
   const extra = [];
   if(SOURCE_TEXT){
-    base = base.filter(it=>isOverviewItem(it)||isQuotesItem(it));
-    if(!base.some(isOverviewItem)) base.unshift({name:"Общ преглед", isOverview:true});
+    base = base.filter(it=>isQuotesItem(it));
     if(!base.some(isQuotesItem)) base.push({name:"Цитати", isQuotes:true});
   } else if(!GUEST && subItem && !isTrailerItem(subItem)){
     MY_APPS.forEach(a=>extra.push({ name:`⭐ ${a.name}`, isMyApp:true, appId:a.id, icon:a.icon }));
@@ -4193,7 +4204,7 @@ function Aperture() {
       const nd = await loadJSON(`node:${currentTopic.id}/${slugify(sub.name)}/L${L}/${slugify(subName(list[qi]))}`, null);
       inQuotes = !!nd?.quotes?.some(q=>q.quote===text);
     }
-    const idx = inQuotes ? qi : oi;
+    const idx = inQuotes ? qi : (oi>=0 ? oi : qi);
     if(idx<0) return;
     setInterestOpen(null); setHighlightSrc(text);
     await openNode(subtopicIdx, idx);
@@ -4208,7 +4219,7 @@ function Aperture() {
   const [suggestBusy,setSuggestBusy]   = useState(false);
   const [interestErr,setInterestErr]   = useState(null);   // {quote, msg}
   // options for ONE quote — only when you open it (fast; nothing is prepared for quotes you never open)
-  async function suggestQuoteSections(quote, author, subIdxArg=null){
+  async function suggestQuoteSections(quote, author, subIdxArg=null, ctx=null){
     const listMode = subIdxArg!=null;
     const sub = hierarchy?.[subIdxArg ?? subtopicIdx];
     const id = listMode ? quotesNodeId(sub) : nodeId, base = listMode ? {} : nodeData;
@@ -4218,7 +4229,7 @@ function Aperture() {
     try{
       const saved = await loadJSON(`node:${id}`, null);
       if(saved?.quoteSuggestV===6 && saved.quoteSuggest?.[quote]){ setSuggestStore(m=>({...m, [quote]:saved.quoteSuggest[quote]})); return; }
-      const map = await genQuoteSuggestions(currentTopic.prompt||currentTopic.name, sub.name, [q]);
+      const map = await genQuoteSuggestions(currentTopic.prompt||currentTopic.name, sub.name, [q], ctx);
       setSuggestStore(m=>({...m, [quote]:map[quote]||[]}));
       const latest = await loadJSON(`node:${id}`, base||{});
       const prev = latest.quoteSuggestV===6 ? (latest.quoteSuggest||{}) : {};
@@ -4291,7 +4302,7 @@ function Aperture() {
     try{
       if(custom) await genCustomNode(nid, sub, quote, author, catchy, extra);
       else{
-        const subject = `${extra?.srcId?"частта":"цитата"} „${quote}“${author?` (${author})`:""}${catchy?` — ъгъл: ${catchy}`:""} — в контекста на „${sub.name}“`;
+        const subject = extra?.topicLevel ? `${sub.name}${catchy?` — ъгъл: ${catchy}`:""}` : `${extra?.srcId?"частта":"цитата"} „${quote}“${author?` (${author})`:""}${catchy?` — ъгъл: ${catchy}`:""} — в контекста на „${sub.name}“`;
         const gen = ()=>genSectionContent({id:nid, item:{name:PODCAST_SECTIONS[key][0], [key]:true}, subItem:{...sub, name:subject}, subLevel:L, subLevelMeta:lvMeta(L),
           topicPrompt:currentTopic.prompt||currentTopic.name, subsubList:[], curHierarchy:hierarchy});
         await gen();
@@ -4374,6 +4385,11 @@ function Aperture() {
     const listMode = subIdxArg!=null;
     const sIdx = subIdxArg ?? subtopicIdx;
     const sub = hierarchy?.[sIdx];
+    const exploreCtx = {
+      currentKey: (!listMode && interestOpen && interestOpen.key!=="isCustomApp") ? interestOpen.key : null,
+      currentTitle: (!listMode && interestOpen) ? (interestOpen.catchy||"") : "",
+      existing: (sub?.interesting||[]).map(e=>`${e.key==="isCustomApp"?"App":(PODCAST_SECTIONS[e.key]?.[0]||e.key)}: ${e.catchy||""}`),
+    };
     return {
       ask:(q, text, label, srcId)=>askCuriosityQuestion(q, null, text, label, srcId, sIdx),
       habit:(text, label, srcId, title, lesson)=>addReminder(sIdx, text, label, title, lesson, srcId),
@@ -4385,7 +4401,8 @@ function Aperture() {
       explore: planData?.isSource ? (q,a,k,c,x)=>exploreQuote(q,a,k,c,{...(x||{}), subIdx:sIdx}) : null,
       suggestions: listMode ? suggestStore : {...(nodeData?.quoteSuggest||{}), ...suggestStore},
       suggestionsV: listMode ? 6 : (nodeData?.quoteSuggestV ?? 6),
-      onSuggest: (t,a)=>suggestQuoteSections(t, a, listMode ? sIdx : null), suggestBusy,
+      onSuggest: (t,a)=>suggestQuoteSections(t, a, listMode ? sIdx : null, exploreCtx), suggestBusy,
+      exclude: (!listMode && interestOpen) ? {key:interestOpen.key, catchy:interestOpen.catchy||""} : null,
       interestBusy, interestErr, interesting: sub?.interesting||[], onOpenInterest: e=>openInterestEntry(e, sIdx),
     };
   }
@@ -5214,7 +5231,7 @@ function Aperture() {
               desktopSlot={desktopMode ? <DesktopGrid embedded topic={currentTopic} hierarchy={hierarchy} error={desktopError} smart={!!planData?.smartMode}
                 planLevel={planData?.activeLevel} preparing={deskPreparing}
                 onOpen={k=>{ const sm=!!planData?.smartMode; const first=hierarchy.findIndex(x=>!isTrailerItem(x) && (DESK_DYNAMIC[k] ? deskHasKey(x,k) : (!(sm||x.isNewsStory) || deskHasKey(x,k,planData?.activeLevel)))); if(first>=0) openDesktopSection(first,k); }}/> : null}
-              onPick={pickSubtopic}
+              onPick={i=> currentTopic?.isSource && !desktopMode ? openTopicPart(i,"quotes") : pickSubtopic(i)}
               onLevelCheck={guestPlanId?null:runLevelCheck} loadingLevelCheck={loadingLC}
               levelCheck={levelCheck} levelCheckError={lcError}
               onDelete={guestPlanId?null:()=>softDeleteTopic(currentTopic.id)}
@@ -5295,7 +5312,8 @@ function Aperture() {
               isCurious={isCuriousItem(curNodeItem)}
               isNotes={isNotesItem(curNodeItem)} notesSub={hierarchy[subtopicIdx]} noteTools={makeTools()} onDeleteLater={guestPlanId?null:(lid=>mutateSub(hierarchy[subtopicIdx].name, s=>({...s, later:(s.later||[]).filter(l=>l.id!==lid)})))}
               pendingJobs={pendingJobs} onSource={goToSource} highlightSrc={highlightSrc}
-              onBack={interestOpen ? ()=>{setInterestOpen(null);setNodeId(null);setNodeData({});setNodeError(null);setLoadingL(false);} : desktopApp ? exitDesktopApp : ()=>{setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null); if(listReturn){ setSubtopicIdx(null); setListReturn(false); }}}
+              onOpenNotes={planData?.isSource ? (()=>openTopicPart(subtopicIdx,"notes")) : null}
+              onBack={interestOpen ? ()=>{setInterestOpen(null);setNodeId(null);setNodeData({});setNodeError(null);setLoadingL(false);} : desktopApp ? exitDesktopApp : ()=>{ if(planData?.isSource && isNotesItem(curNodeItem)){ openTopicPart(subtopicIdx,"quotes"); return; } setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null); if(listReturn || planData?.isSource){ setSubtopicIdx(null); setListReturn(false); }}}
               tab={tab} setTab={switchTab} nodeData={nodeData}
               loadingLevels={loadingL} loadingBlend={loadingB}
               error={nodeError}
@@ -5779,7 +5797,7 @@ function DesktopGrid({topic,hierarchy,onOpen,onExit,error,smart,embedded,planLev
   const unknownCount = realTopics.length - known.length;
   const habitsCount = realTopics.filter(x=>x.reminders?.length).length;
   const interestCount = realTopics.filter(x=>x.interesting?.length).length;
-  const apps = [...PODCAST_DEFAULT_ORDER.filter(k=>topic?.isSource ? (k==="isOverview"||k==="isQuotes") : ((hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || !known.length || relCount(k)>0))),
+  const apps = [...PODCAST_DEFAULT_ORDER.filter(k=>topic?.isSource ? (k==="isQuotes") : ((hasNews || (k!=="isInvestment" && k!=="isPrediction")) && !(smartDesk && SMART_EXCLUDED.includes(k)) && (!smartDesk || !known.length || relCount(k)>0))),
     ...(topic?.isSource ? (realTopics.some(x=>notesOf(x).length)?["isNotes"]:[]) : [...(habitsCount?["isReminders"]:[]), ...(interestCount?["isInteresting"]:[])])];
   const badge = k => k==="isNotes" ? realTopics.filter(x=>notesOf(x).length).length : k==="isReminders" ? habitsCount : k==="isInteresting" ? interestCount : (smartDesk && known.length ? relCount(k)+unknownCount : count);
   if(embedded) return <div className="space-y-3 rounded-lg border border-amber-900/50 bg-stone-900/40 p-4">
@@ -6117,7 +6135,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onRepairApp,repairingApp,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy,isNotes,notesSub,noteTools,onDeleteLater,pendingJobs,onSource,highlightSrc}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onRepairApp,repairingApp,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy,isNotes,notesSub,noteTools,onDeleteLater,pendingJobs,onSource,highlightSrc,onOpenNotes}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -6516,7 +6534,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       <p className="font-read text-stone-500 text-sm italic">AI-генерирано — провери точността на цитатите и авторството преди да ги ползваш другаде.</p>
       {error&&<ErrorNote message={error} onRetry={onRetryQuotes}/>}
       <QuotesPanel loading={loadingLevels} quotes={nodeData?.quotes||[]} tuned={!!nodeData?.tunedQuotes} onTune={onTuneQuotes} onRemind={onRemind} remindBusy={remindBusy} reminders={reminders} habitTitles={nodeData?.habitTitlesV===2?nodeData?.habitTitles:null} habitLessons={nodeData?.habitLessons}
-        onAsk={onAsk} laterTools={noteTools} highlight={highlightSrc} onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>
+        onAsk={onAsk} laterTools={noteTools} highlight={highlightSrc} topicName={subtopic} notesCount={notesSub ? notesOf(notesSub).length : 0} onOpenNotes={onOpenNotes} onExplore={onExploreQuote} suggestions={nodeData?.quoteSuggest} suggestionsV={nodeData?.quoteSuggestV} onSuggest={onSuggestQuotes} suggestBusy={suggestBusy} interestBusy={interestBusy} interestErr={interestErr} interesting={interesting} onOpenInterest={onOpenInterest}/>
     </div>;
   }
 
@@ -7583,7 +7601,7 @@ function InterestingPanel({entries,onOpen,onDelete}){
     ))}
   </div>;
 }
-function QuoteExplorer({q,srcId,startOpen,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
+function QuoteExplorer({q,srcId,startOpen,topicLevel,habitTools,exclude,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   const [open,setOpen] = useState(!!startOpen);
   useEffect(()=>{ if(startOpen){ const k=suggestions?.[q.quote]; if((!k || k.some?.(x=>typeof x==="string") || suggestionsV!==6) && !suggestBusy) onSuggest(q.quote, q.author); } }, []);
   const keys = suggestions?.[q.quote];
@@ -7591,16 +7609,22 @@ function QuoteExplorer({q,srcId,startOpen,onExplore,suggestions,suggestionsV,onS
   const mineBusy = suggestBusy===q.quote;
   function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(q.quote, q.author); }
   return <div className="mt-2">
-    <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>
+    {!startOpen && <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>}
     {open && <div className="mt-2 flex flex-wrap gap-2">
       {(!keys || legacy) && (mineBusy ? <span className="flex items-center gap-1 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> подбирам подходящите секции…</span>
                               : <span className="text-xs text-stone-500 font-read">Няма предложения.</span>)}
-      {keys && !legacy && [...keys, ...MY_APPS.filter(a=>!keys.some(x=>typeof x!=="string" && x.key==="isCustomApp" && x.catchy===a.name)).map(a=>({key:"isCustomApp", catchy:a.name, instr:a.purpose, icon:a.icon, kind:a.kind, mine:true}))].map(x=>{
+      {keys && !legacy && [...(topicLevel ? [keys.find(x=>typeof x!=="string" && x.key==="isOverview") || {key:"isOverview", catchy:"Голямата картина на темата"}] : []),
+        ...(habitTools ? [keys.find(x=>typeof x!=="string" && x.key==="isHabit") || {key:"isHabit"}] : []),
+        ...keys.filter(x=>!(topicLevel && typeof x!=="string" && x.key==="isOverview") && !(typeof x!=="string" && x.key==="isHabit")
+          && !(exclude && typeof x!=="string" && (exclude.key===x.key && (x.key!=="isCustomApp" || normT(x.catchy)===normT(exclude.catchy))))
+          && !(exclude && typeof x!=="string" && x.catchy && normT(x.catchy)===normT(exclude.catchy))), ...MY_APPS.filter(a=>!keys.some(x=>typeof x!=="string" && x.key==="isCustomApp" && x.catchy===a.name)).map(a=>({key:"isCustomApp", catchy:a.name, instr:a.purpose, icon:a.icon, kind:a.kind, mine:true}))].map(x=>{
         const k = typeof x==="string" ? x : x.key, catchy = typeof x==="string" ? "" : (x.catchy||"");
-        const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k && (k!=="isCustomApp" || e.catchy===catchy));
+        if(k==="isHabit") return x.none ? null : <HabitChip key="habit" x={x} q={q} srcId={srcId} tools={habitTools}/>;
+        const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k && (k!=="isCustomApp" || e.catchy===catchy))
+          || (catchy && (interesting||[]).find(e=>e.key===k && normT(e.catchy)===normT(catchy))); // same section + same title elsewhere → open it
         const busy = !!(interestBusy && interestBusy[`${q.quote}|${k}|${catchy}`]);
         return <button key={k+catchy}
-          onClick={()=>done ? onOpenInterest(done) : (!busy && onExplore(q.quote, q.author, k, catchy, {...x, srcId}))}
+          onClick={()=>done ? onOpenInterest(done) : (!busy && onExplore(q.quote, q.author, k, catchy, {...x, srcId, topicLevel}))}
           className={`w-full sm:w-auto text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border disabled:opacity-50 ${done?"border-yellow-600 bg-yellow-950/30":"border-stone-700 hover:border-yellow-500"}`}>
           {k==="isCustomApp"
             ? <span className="w-9 h-9 shrink-0 rounded-xl bg-gradient-to-br from-yellow-700/60 to-stone-900 border border-yellow-800 flex items-center justify-center text-lg">{busy ? <Loader2 size={14} className="animate-spin"/> : (x.icon||"✨")}</span>
@@ -7620,11 +7644,20 @@ function QuoteExplorer({q,srcId,startOpen,onExplore,suggestions,suggestionsV,onS
     </div>}
   </div>;
 }
-function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,habitLessons,onAsk,laterTools,highlight,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
+function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,habitTitles,habitLessons,onAsk,laterTools,highlight,topicName,notesCount,onOpenNotes,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   if(loading) return <Spinner label="търся подходящи цитати…"/>;
   quotes = (quotes||[]).filter(q=>!/джобс|jobs/i.test(q?.author||"")); // already-saved Steve Jobs entries are hidden too
   if(!quotes.length) return null;
   return <div className="space-y-4">
+    {laterTools && onOpenNotes && notesCount>0 && <button onClick={onOpenNotes}
+      className="w-full text-left rounded-lg border border-amber-800 bg-stone-900/60 hover:border-amber-500 px-3 py-2.5 flex items-center justify-between">
+      <span className="font-read text-stone-100">📒 Бележки към темата</span>
+      <span className="font-mono-cal text-xs text-amber-300">{notesCount} →</span>
+    </button>}
+    {laterTools && topicName && quotes.length>0 && <div data-no-tools className="rounded-lg border border-amber-900/50 bg-amber-950/10 p-3">
+      <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-400">Цялата тема „{topicName}“ — 💡 Разгледай започва с Общ преглед</div>
+      <ItemTools text={`Тема: ${topicName}\n${quotes.map(q=>"„"+cleanQuoteText(q.quote)+"“").join("\n").slice(0,1500)}`} label={`Тема · ${topicName}`} srcId={null} tools={laterTools} topicLevel/>
+    </div>}
     <div className="space-y-3">
       {quotes.map((q,i)=>(
         <div key={i} ref={el=>{ if(el && highlight && q.quote===highlight && !el.dataset.hl){ el.dataset.hl="1"; setTimeout(()=>el.scrollIntoView({behavior:"smooth",block:"center"}),150); } }}
@@ -8349,7 +8382,7 @@ function LaterButton({text,label,srcId,tools}){
     className={`mt-2 ml-1 inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${on?"border-sky-600 text-sky-300 bg-sky-950/30":"border-stone-700 text-stone-400 hover:border-sky-600 hover:text-sky-300"}`}>🔖 {on?"По-късно ✓":"По-късно"}</button>;
 }
 // ❓ 🌱 💡 🔖 for any piece of text (paragraph, list item, answer, whole section)
-function ItemTools({text,label,srcId,tools,compact}){
+function ItemTools({text,label,srcId,tools,compact,topicLevel}){
   const [open,setOpen] = useState(null);
   const [hab,setHab] = useState(null); // null | "loading" | "none" | "err" | {title,lesson}
   if(!tools || !text) return null;
@@ -8363,7 +8396,7 @@ function ItemTools({text,label,srcId,tools,compact}){
   return <div className={compact?"mt-1.5":"mt-2"}>
     <div className="flex flex-wrap gap-1.5">
       <button onClick={()=>setOpen(open==="ask"?null:"ask")} className={btn(open==="ask")}>❓ Въпрос</button>
-      <button onClick={habitClick} className={btn(habitOn||open==="habit")}>{habitBusy ? <><Loader2 size={10} className="animate-spin"/> навик…</> : habitOn ? "🌱 Навик ✓" : "🌱 Навик"}</button>
+      {!tools.explore && <button onClick={habitClick} className={btn(habitOn||open==="habit")}>{habitBusy ? <><Loader2 size={10} className="animate-spin"/> навик…</> : habitOn ? "🌱 Навик ✓" : "🌱 Навик"}</button>}
       {tools.explore && <button onClick={()=>setOpen(open==="explore"?null:"explore")} className={btn(open==="explore")}>💡 Разгледай</button>}
       <button onClick={()=>tools.later(text, label, srcId)} className={btn(tools.isLater(text))}>{tools.isLater(text)?"🔖 ✓":"🔖 По-късно"}</button>
     </div>
@@ -8379,13 +8412,38 @@ function ItemTools({text,label,srcId,tools,compact}){
           className="font-mono-cal text-[10px] uppercase tracking-wide px-2.5 py-1 rounded bg-amber-700 hover:bg-amber-600 text-stone-950">Създай навика</button>
       </div>}
     </div>}
-    {open==="explore" && tools.explore && <QuoteExplorerOpen q={{quote:text, author:label}} srcId={srcId} tools={tools}/>}
+    {open==="explore" && tools.explore && <QuoteExplorerOpen q={{quote:text, author:label}} srcId={srcId} tools={tools} topicLevel={topicLevel}/>}
   </div>;
 }
-function QuoteExplorerOpen({q,srcId,tools}){
+function QuoteExplorerOpen({q,srcId,tools,topicLevel}){
   // an explorer that starts opened (used inside the tool row)
-  return <QuoteExplorer q={q} srcId={srcId} startOpen onExplore={tools.explore} suggestions={tools.suggestions} suggestionsV={tools.suggestionsV} onSuggest={tools.onSuggest}
-    suggestBusy={tools.suggestBusy} interestBusy={tools.interestBusy} interestErr={tools.interestErr} interesting={tools.interesting} onOpenInterest={tools.onOpenInterest}/>;
+  return <QuoteExplorer q={q} srcId={srcId} startOpen topicLevel={topicLevel} onExplore={tools.explore} suggestions={tools.suggestions} suggestionsV={tools.suggestionsV} onSuggest={tools.onSuggest}
+    suggestBusy={tools.suggestBusy} interestBusy={tools.interestBusy} interestErr={tools.interestErr} interesting={tools.interesting} onOpenInterest={tools.onOpenInterest}
+    habitTools={tools} exclude={tools.exclude}/>;
+}
+function normT(t){ return (t||"").toLowerCase().replace(/[„“"'«»:;,.!?—–-]/g," ").replace(/\s+/g," ").trim(); }
+// 🌱 the habit as one of the options in 💡 Разгледай
+function HabitChip({x,q,srcId,tools}){
+  const [prop,setProp] = useState(null); // for older suggestions without a habit: proposed on press
+  const done = tools.hasHabit(q.quote), busy = tools.remindBusy===q.quote;
+  const title = x.catchy || (prop && typeof prop==="object" ? prop.title : "");
+  const lesson = x.lesson || (prop && typeof prop==="object" ? prop.lesson : "");
+  if(prop==="none") return <span className="w-full font-read text-xs text-stone-500">🌱 Тук няма смислена връзка с навик.</span>;
+  function press(){
+    if(done || busy) return;
+    if(title){ tools.habit(q.quote, q.author, srcId, title, lesson); return; }
+    setProp("loading");
+    tools.suggestHabit(q.quote, q.author).then(r=>setProp(r?.title && r.title!==NO_HABIT ? r : "none")).catch(()=>setProp(null));
+  }
+  return <button onClick={press}
+    className={`w-full sm:w-auto text-left inline-flex items-start gap-2 px-3 py-2 rounded-lg border ${done?"border-emerald-700 bg-emerald-950/30":"border-stone-700 hover:border-emerald-600"}`}>
+    <span className="pt-0.5">{busy||prop==="loading" ? <Loader2 size={13} className="animate-spin"/> : "🌱"}</span>
+    <span className="flex flex-col leading-tight">
+      <span className="font-mono-cal text-[10px] uppercase tracking-wide text-emerald-500">Навик{done?" · ✓ в Бележки":busy?" · създавам…":prop==="loading"?" · търся смислен навик…":title?"":" · AI ще предложи"}</span>
+      {title && <span className="font-read text-sm text-emerald-100">{title}</span>}
+      {lesson && <span className="font-read text-xs text-emerald-200/70 italic">↳ урокът: {lesson}</span>}
+    </span>
+  </button>;
 }
 // text plans, plan screen: one topic = its title + all its quotes (with tools); overview / notes one tap away
 function SourceGroup({sub,tools,onOverview,onNotes}){
