@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-16 · 02:00";
+const APP_VERSION = "2026-11-16 · 02:30";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -7615,7 +7615,9 @@ function QuoteExplorer({q,srcId,startOpen,topicLevel,habitTools,exclude,onExplor
                               : <span className="text-xs text-stone-500 font-read">Няма предложения.</span>)}
       {keys && !legacy && [...(topicLevel ? [keys.find(x=>typeof x!=="string" && x.key==="isOverview") || {key:"isOverview", catchy:"Голямата картина на темата"}] : []),
         ...(habitTools ? [keys.find(x=>typeof x!=="string" && x.key==="isHabit") || {key:"isHabit"}] : []),
-        ...keys.filter(x=>!(topicLevel && typeof x!=="string" && x.key==="isOverview") && !(typeof x!=="string" && x.key==="isHabit")
+        // 📖 Речник is always offered (except inside a Речник itself)
+        ...(exclude?.key==="isGlossary" ? [] : [keys.find(x=>typeof x!=="string" && x.key==="isGlossary") || {key:"isGlossary", catchy:"Ключовите думи и понятия тук"}]),
+        ...keys.filter(x=>!(topicLevel && typeof x!=="string" && x.key==="isOverview") && !(typeof x!=="string" && x.key==="isHabit") && !(typeof x!=="string" && x.key==="isGlossary")
           && !(exclude && typeof x!=="string" && (exclude.key===x.key && (x.key!=="isCustomApp" || normT(x.catchy)===normT(exclude.catchy))))
           && !(exclude && typeof x!=="string" && x.catchy && normT(x.catchy)===normT(exclude.catchy))), ...MY_APPS.filter(a=>!keys.some(x=>typeof x!=="string" && x.key==="isCustomApp" && x.catchy===a.name)).map(a=>({key:"isCustomApp", catchy:a.name, instr:a.purpose, icon:a.icon, kind:a.kind, mine:true}))].map(x=>{
         const k = typeof x==="string" ? x : x.key, catchy = typeof x==="string" ? "" : (x.catchy||"");
