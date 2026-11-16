@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-16 · 03:00";
+const APP_VERSION = "2026-11-16 · 09:55";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -353,7 +353,7 @@ async function callClaude(user, maxTokens=600, attempt=0) {
   try {
     res = await fetch(CLAUDE_PROXY,{method:"POST",
       headers:{"Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_KEY}`},
-      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:withSource(`${JSON_SYS}\n\n${user}`)}]})});
+      body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTokens,messages:[{role:"user",content:withSource(user.startsWith(NOSRC) ? `${NOSRC}${JSON_SYS}\n\n${user.slice(NOSRC.length)}` : `${JSON_SYS}\n\n${user}`)}]})});
   } catch(e) {
     if(attempt<3){await sleep(700*(attempt+1));return callClaude(user,maxTokens,attempt+1);}
     throw new Error(`[fetch] ${e.message}`);
@@ -625,6 +625,17 @@ async function genSubsubtopicsFor(prompt, subtopicName, levelHint) {
   return s.subsubtopics||[];
 }
 
+// terms for a Речник of ONE passage: read the whole passage (heading and every sentence of the body) and pick the words in it a learner may not know
+async function genPassageTerms(subject, levelHint){
+  const lvl = levelHint?.level || 3;
+  const n = lvl<=1 ? "3-4" : lvl===2 ? "4-5" : lvl===3 ? "5-6" : "6-8";
+  const s = await callClaude(NOSRC+`A learner selected this passage (its heading AND its full body):
+${subject}
+Read the WHOLE passage — every sentence of the body, not only its heading/first line — and pick ${n} terms, concepts or less-common words that ACTUALLY APPEAR in it and that a learner would need explained to understand it. Prefer terms from the body. Use each term in its base form, in the passage's language (Cyrillic = BULGARIAN). Never use " inside.
+Return: {"terms":["..."]}`, 300);
+  const t = (s.terms||[]).filter(x=>typeof x==="string" && x.trim());
+  return t.length ? t : await genSubsubtopicsFor(subject, subject, levelHint);
+}
 // Речник: ONE explanation per term, all in a single request, at the subtopic's chosen abstraction level
 // (see AUTO_SELECT_LEVEL config) — replaces browsing all 5 abstraction levels per term.
 async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
@@ -1131,6 +1142,21 @@ function interestItem(e){ return { name:e.key==="isCustomApp" ? "App Store" : (P
 // Habits (stored as sub.reminders / isReminders for compatibility): a chosen quote / verse turned into a life habit
 // value stored for a quote that does not lend itself to a habit — its habit option is not shown
 const NO_HABIT = "__none";
+// an article-like title for a section made about one item (e.g. a Речник of a single term) — never "Думите в …"
+async function genArticleTitle(sectionName, item, topicName, node){
+  const body = JSON.stringify(node||{}).replace(/["{}\[\]]/g," ").replace(/\s+/g," ").slice(0,1500);
+  const raw = await callClaudeRaw(NOSRC+`Write ONE title in Bulgarian for a "${sectionName}" section that was made about this single item:
+"${(item||"").slice(0,400)}"
+(topic: "${topicName}")
+Content excerpt: ${body}
+The title must read like the name of a short magazine article — specific, catchy, 3–8 words, about what this content actually explains.
+Do NOT start with "Думите в", "Речник", "Термини", "Понятия" and do not just repeat the item. No quotes, no emoji.
+Reply with the title only.`, 60);
+  const t = (raw||"").split("\n").map(x=>x.trim()).find(Boolean)||"";
+  const clean = t.replace(/^(заглавие|title)\s*:\s*/i,"").replace(/^["„“'«]+|["“”'»]+$/g,"").replace(/\.$/,"").trim();
+  if(!clean || /^(думите в|речник)/i.test(clean) || clean.length>90) return "";
+  return clean;
+}
 async function genHabitTitles(topicLabel, subtopicName, items){
   const raw = await callClaudeRaw(NOSRC+
 `The learner studies "${subtopicName}" (within the plan "${topicLabel}"). For EACH quote below decide whether it can honestly inspire a habit for everyday LIFE (work, relationships, health, money, stress, family, decisions — not about reading or studying).
@@ -4310,6 +4336,7 @@ function Aperture() {
         if(!nodeHasContent(await loadJSON(`node:${nid}`, null))) throw new Error("AI-ят не върна съдържание");
       }
       trackNodeKey(nid);
+      if(!custom && extra?.autoTitle && !catchy){ try{ catchy = await genArticleTitle(PODCAST_SECTIONS[key][0], quote, sub.name, await loadJSON(`node:${nid}`, null)); }catch(_){ } }
       const entry = {id:uid(), quote, author:author||"", key, catchy:catchy||"", ...(custom?{instr:extra?.instr||"", icon:extra?.icon||"✨", kind:extra?.kind||"reveal", hook:extra?.hook||""}:{}), srcId:extra?.srcId||null, nodeId:nid, createdAt:Date.now()};
       const same = e => e.quote===quote && e.key===key && (!custom || e.catchy===(catchy||""));
       mutateSub(sub.name, s=>({...s, interesting:[...(s.interesting||[]).filter(e=>!same(e)), entry]}));
@@ -4339,6 +4366,14 @@ function Aperture() {
         nd = await loadJSON(`node:${entry.nodeId}`, {});
       }
       if(isCur(entry.nodeId)) setNodeData(nd||{});
+      // older item-Речник entries got a static "Думите в „…“" title — give them a real, article-like one (once)
+      if(entry.key==="isGlossary" && /^Думите в „/.test(entry.catchy||"") && nd && nodeHasContent(nd)){
+        genArticleTitle(PODCAST_SECTIONS.isGlossary[0], entry.quote, sub.name, nd).then(t=>{
+          if(!t) return;
+          mutateSub(sub.name, s=>({...s, interesting:(s.interesting||[]).map(e=>e.id===entry.id ? {...e, catchy:t} : e)}));
+          setInterestOpen(o=>o && o.id===entry.id ? {...o, catchy:t} : o);
+        }).catch(()=>{});
+      }
     }catch(e){ if(isCur(entry.nodeId)) setNodeError(`Грешка: ${e.message}`); }
     finally{ if(isCur(entry.nodeId)) setLoadingL(false); }
   }
@@ -5066,7 +5101,10 @@ function Aperture() {
       }
     } else if(isGlossaryItem(item)){
       if(!existing?.terms?.length){
-        const terms = await genGlossary(topicPrompt, subItem.name, (item.terms&&item.terms.length) ? item.terms : await genSubsubtopicsFor(topicPrompt, subItem.name, subLevelMeta), subLevelMeta);
+        // a Речник made from one passage/item: the terms come from the WHOLE passage (heading + body), not from a topic list
+        const passage = /^(частта|цитата) „/.test(subItem.name||"");
+        const terms = await genGlossary(topicPrompt, subItem.name, (item.terms&&item.terms.length) ? item.terms
+          : passage ? await genPassageTerms(subItem.name, subLevelMeta) : await genSubsubtopicsFor(topicPrompt, subItem.name, subLevelMeta), subLevelMeta);
         await saveJSON(`node:${id}`, {...(existing||{unitConfused:false}), terms, glossaryLevel:subLevel, tunedGlossary:existing?.tunedGlossary||false});
       }
     } else if(isConfessionItem(item)){
@@ -7614,7 +7652,9 @@ function QuoteExplorer({q,srcId,startOpen,topicLevel,habitTools,exclude,onExplor
     const head = (q.quote||"").replace(/^Тема:\s*/,"").split(/[\n:—–]/)[0].trim().split(/\s+/).slice(0,5).join(" ");
     const sameAsHere = ai && exclude && normT(ai.catchy)===normT(exclude.catchy);
     if(ai && !inside && !sameAsHere) return ai;
-    return {key:"isGlossary", catchy: inside||sameAsHere ? `Думите в „${head}${head.split(" ").length>=5?"…":""}“` : (ai?.catchy || "Ключовите думи и понятия тук")};
+    // inside a Речник (or same title as here): the title is written by the AI after the content is made — like an article name
+    if(inside||sameAsHere) return {key:"isGlossary", catchy:"", autoTitle:true, hint:`само за „${head}${head.split(" ").length>=5?"…":""}“ — заглавието идва с текста`};
+    return {key:"isGlossary", catchy: ai?.catchy || "", autoTitle: !ai?.catchy, hint: ai?.catchy ? "" : "ключовите думи тук — заглавието идва с текста"};
   }
   function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(q.quote, q.author); }
   return <div className="mt-2">
@@ -7645,7 +7685,8 @@ function QuoteExplorer({q,srcId,startOpen,topicLevel,habitTools,exclude,onExplor
             {k==="isCustomApp" ? <>
                 {x.instr && <span className="font-read text-xs text-stone-400">{x.instr}</span>}
                 {x.hook && <span className="font-read text-xs text-yellow-200/90 italic mt-0.5">↳ {x.hook}</span>}
-              </> : (catchy && <span className="font-read text-sm text-yellow-100">{catchy}</span>)}
+              </> : (catchy ? <span className="font-read text-sm text-yellow-100">{catchy}</span>
+                     : x.hint ? <span className="font-read text-xs text-stone-400 italic">{x.hint}</span> : null)}
           </span>
         </button>;
       })}
