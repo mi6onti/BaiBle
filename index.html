@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-16 · 14:10";
+const APP_VERSION = "2026-11-17 · 12:40";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -248,6 +248,20 @@ function looksLikeSourceText(t){
   return s.length>=1000 || sentences>=6 || paras>=3;
 }
 // title + one-line description of a pasted text (description becomes the plan's prompt)
+// a "text" that is really just a prompt or a few lines: the AI first writes a full overview (Общ преглед) of the
+// subject, and that overview becomes the plan's source — the quotes are then cut from it like from any pasted text
+const SOURCE_MIN_WORDS = 200;
+function needsExpansion(text){ return (text||"").trim().split(/\s+/).filter(Boolean).length < SOURCE_MIN_WORDS; }
+async function genExpandedSource(seed, planName, alreadyText){
+  const raw = await callClaudeRaw(NOSRC+`A learner wants to study this, but gave only a short prompt / a few lines:
+"""${seed}"""
+${planName ? `It belongs to the study plan „${planName}“.\n` : ""}${alreadyText ? `The plan already contains a text about: ${alreadyText.slice(0,600)}… — do NOT repeat that, cover what this new prompt adds.\n` : ""}Write a rich, accurate GENERAL OVERVIEW of the subject (like a good encyclopedia/magazine overview), about 900-1300 words, that DEVELOPS the topic well beyond the prompt: the key ideas, how they work, why they matter, concrete examples, common misconceptions, connections. If the prompt contains its own text, keep and build on its ideas.
+Write it as plain prose paragraphs ONLY — no headings, no lists, no markdown, no title. Every sentence must be complete, self-contained and worth quoting on its own (it will be cut into quotes). Only facts you are sure of, no invented quotes or numbers.
+Write in the SAME language as the prompt (if Cyrillic, that means BULGARIAN specifically, never Russian; if Latin, ENGLISH).`, 4000, 0, 8000);
+  const t = (raw||"").replace(/^#+\s.*$/gm,"").replace(/^\s*[-*•]\s+/gm,"").replace(/\*\*/g,"").trim();
+  if(t.split(/\s+/).length < 120) throw new Error("не успях да развия темата");
+  return t;
+}
 async function genSourceMeta(){
   const raw = await callClaudeRaw(
 `Look at the SOURCE TEXT above. Give: a short title for a study plan based on it (under 8 words — if it is a book excerpt or chapter and you can tell which, name it), a 1-2 sentence description of what the text is about, and a short title for this part of the text (under 6 words).
@@ -632,13 +646,19 @@ async function genPassageTerms(subject, levelHint, avoid){
   const lines = inner.split("\n").map(x=>x.trim()).filter(Boolean);
   const heading = lines.length>1 && lines[0].split(/\s+/).length<=8 ? lines[0] : "";
   const words = inner.split(/\s+/).length;
-  const n = words<60 ? "2-4" : lvl<=1 ? "3-4" : lvl===2 ? "4-5" : lvl===3 ? "5-6" : "6-8";
+  const n = words<60 ? "3-5" : lvl<=1 ? "3-4" : lvl===2 ? "4-5" : lvl===3 ? "5-6" : "6-8";
   const s = await callClaude(NOSRC+`A learner selected this passage (its heading AND its full body):
 ${subject}
-${heading ? `Its first line „${heading}“ is the term/heading that this passage ALREADY explains — do NOT include it, its synonyms or its inflected forms.\n` : ""}${avoid?.length ? `Also already explained right here (do NOT include): ${avoid.slice(0,30).join(", ")}.\n` : ""}Read the WHOLE passage — every sentence of the body, not only its heading/first line — and pick ${n} OTHER terms, concepts or less-common words that ACTUALLY APPEAR in it and that a learner would need explained to understand it. Prefer terms from the body. Use each term in its base form, in the passage's language (Cyrillic = BULGARIAN). Never use " inside.
+Use the heading AND the body together as the context.${heading ? `
+The heading „${heading}“ is the KEY concept: the list MUST start with it (or with its core word/parts, e.g. for a two-word term both the whole term and its main word) — it is the reason the learner wants this glossary.` : ""}${avoid?.length ? `
+The learner comes from a glossary that already gave a short definition of: ${avoid.slice(0,30).join(", ")}. You may include those terms (the heading one is required), but they will be explained DEEPER and from a new angle, not repeated.` : ""}
+Then read the WHOLE body — every sentence — and add the other terms, concepts or less-common words that ACTUALLY APPEAR in it and that a learner would need explained to understand it — so that the list has ${n} terms in total. Use each term in its base form, in the passage's language (Cyrillic = BULGARIAN). Never use " inside.
 Return: {"terms":["..."]}`, 300);
-  const t = (s.terms||[]).filter(x=>typeof x==="string" && x.trim());
-  return t.length ? t : await genSubsubtopicsFor(subject, subject, levelHint);
+  let t = (s.terms||[]).filter(x=>typeof x==="string" && x.trim());
+  if(!t.length) t = await genSubsubtopicsFor(subject, subject, levelHint);
+  // the heading concept is always there, first
+  if(heading && !t.some(x=>normT(x).includes(normT(heading)) || normT(heading).includes(normT(x)) && normT(x).length>3)) t = [heading, ...t];
+  return t;
 }
 // Речник: ONE explanation per term, all in a single request, at the subtopic's chosen abstraction level
 // (see AUTO_SELECT_LEVEL config) — replaces browsing all 5 abstraction levels per term.
@@ -653,7 +673,7 @@ async function genGlossary(topicLabel, subtopicName, termNames, levelHint) {
   const raw = await callClaudeRaw(
     `Topic: "${topicLabel}" > "${subtopicName}". Write ONE VERY SHORT explanation for EACH of these ${termNames.length} terms, each STRICTLY ${lo}-${hi} words (this is a hard limit — count your words, this must be brief, just enough to orient, not a full explanation), all at level "${meta.label}" (${meta.hint}) — this is the depth/register the learner already chose for this subtopic.
 Terms, in order: ${termNames.map((t,i)=>`${i+1}. ${t}`).join("; ")}.${/^(частта|цитата) „/.test(subtopicName||"") ? `
-These terms were taken from the passage above: explain each term ON ITS OWN, the way it is used in that passage — do NOT retell or paraphrase the passage itself.` : ""}
+These terms were taken from the passage above (its heading is the key concept — keep it central). Explain each term ON ITS OWN, the way it is used in that passage, and go one step DEEPER than the passage (an example, an intuition, how it connects to the heading concept) — do NOT just retell or paraphrase the passage.` : ""}
 Any example or analogy you use must fit strictly within the exact context/scenario given above — never substitute a different generic scenario. Write all explanations in the SAME language as the topic/subtopic above (detect it and match exactly — if written in Cyrillic script, that means BULGARIAN specifically, never Russian or any other Cyrillic language; if written in Latin script, that means ENGLISH specifically).
 Never use the " character inside the text.
 Output EXACTLY in this format, nothing before the first marker or after the last one, no extra commentary:
@@ -1015,7 +1035,7 @@ async function genQuoteSuggestions(topicLabel, subtopicName, quotes, ctx){
 `A learner reads ${quotes.length===1?"a quote":"quotes"} from a text (plan "${topicLabel}", topic "${subtopicName}") and wants to explore single quotes deeper through one of the sections below — e.g. a Timeline of just that quote's idea, or a Comparison of that quote with other views.
 Quotes:
 ${quotes.map((q,i)=>`${i+1}. ${q.quote}${q.author?` — ${q.author}`:""}`).join("\n")}
-${ctx?.currentKey ? `The learner is reading these items INSIDE the section „${PODCAST_SECTIONS[ctx.currentKey]?.[0]||ctx.currentKey}${ctx.currentTitle?` — ${ctx.currentTitle}`:""}“ — do NOT suggest that same section (${ctx.currentKey}) again and nothing that would repeat it; go into a DIFFERENT direction.${ctx.currentKey==="isGlossary" ? ` The only exception: ALWAYS add isGlossary for EACH item, but as a glossary of the OTHER words used inside that item's explanation (never the item's own heading term) — with its own article-like title that is different from the current one.` : ""}\n` : ""}ALWAYS include isGlossary for EACH item, with a title that reads like the name of a short magazine article about the words it explains (never "Думите в…", never just "Речник").\n${ctx?.existing?.length ? `Already explored in this topic (do not suggest these again, nor near-copies of them): ${ctx.existing.slice(0,30).join("; ")}.\n` : ""}If an item starts with "Тема:", it is a WHOLE TOPIC (its quotes follow) — for it, ALWAYS choose isOverview first, with a catchy title for the overview of the whole topic.
+${ctx?.currentKey ? `The learner is reading these items INSIDE the section „${PODCAST_SECTIONS[ctx.currentKey]?.[0]||ctx.currentKey}${ctx.currentTitle?` — ${ctx.currentTitle}`:""}“ — do NOT suggest that same section (${ctx.currentKey}) again and nothing that would repeat it; go into a DIFFERENT direction.${ctx.currentKey==="isGlossary" ? ` The only exception: ALWAYS add isGlossary for EACH item, but as a glossary of that ONE item: its heading concept (central, explained deeper) plus the words used in its explanation — with its own article-like title that names the heading concept and is different from the current one.` : ""}\n` : ""}ALWAYS include isGlossary for EACH item, with a title that reads like the name of a short magazine article about the words it explains (never "Думите в…", never just "Речник").\n${ctx?.existing?.length ? `Already explored in this topic (do not suggest these again, nor near-copies of them): ${ctx.existing.slice(0,30).join("; ")}.\n` : ""}If an item starts with "Тема:", it is a WHOLE TOPIC (its quotes follow) — for it, ALWAYS choose isOverview first, with a catchy title for the overview of the whole topic.
 For EACH quote choose the 2 to 5 sections that would be genuinely interesting and fitting for THAT quote (different quotes usually get different sections); leave out everything that does not truly fit. Order by how interesting they are.
 For each choice also write a catchy, specific title (3-7 words) saying what that section would reveal about THAT quote — intriguing but honest, no clickbait, no invented facts, in the SAME language as the quotes (if Cyrillic, that means BULGARIAN specifically, never Russian). Never use the " character.
 Menu (KEY — name: what it contains) — choose ONLY from these:
@@ -1154,7 +1174,7 @@ async function genArticleTitle(sectionName, item, topicName, node){
 "${(item||"").slice(0,400)}"
 (topic: "${topicName}")
 Content excerpt: ${body}
-The title must read like the name of a short magazine article — specific, catchy, 3–8 words, about what this content actually explains.
+The title must read like the name of a short magazine article — specific, catchy, 3–8 words, about what this content actually explains. If the item starts with a heading/term, the title MUST name that key concept.
 Do NOT start with "Думите в", "Речник", "Термини", "Понятия" and do not just repeat the item. No quotes, no emoji.
 Reply with the title only.`, 60);
   const t = (raw||"").split("\n").map(x=>x.trim()).find(Boolean)||"";
@@ -2371,9 +2391,11 @@ function Aperture() {
     setSubtopicIdx(null);setSubsubIdx(null);
     setNodeId(null);setNodeData(null);setLevelCheck(null);setTopicInput("");setSourceOverride(null);
     setCurrentTopic(null);setSubtopicOverview(null);
-    setTopicOverview({loading:true, levels:[], prompt:"текст"});
+    const seed = needsExpansion(text) ? text : null;
+    setTopicOverview({loading:true, levels:[], prompt: seed ? "развивам темата в общ преглед…" : "текст"});
     SOURCE_TEXT = text;
     try{
+      if(seed){ text = await genExpandedSource(seed); SOURCE_TEXT = text; } // short text / prompt → the quotes come from an AI overview
       const meta = await genSourceMeta();
       const label = meta.desc || meta.name;
       const id = slugify(meta.name)+"-"+Date.now().toString(36);
@@ -2381,7 +2403,7 @@ function Aperture() {
       setCurrentTopic(newTopic);
       const levels = await genGoalLevels(meta.name, label);
       setTopicOverview({loading:false, levels, prompt:label, name:meta.name, id, newTopic, learningProfile:null, smart:smartStart,
-        source:[{title:meta.part||meta.name, text, addedAt:Date.now()}]});
+        source:[{title:meta.part||meta.name, text, addedAt:Date.now(), ...(seed?{expandedFrom:seed}:{})}]});
     }catch(e){
       SOURCE_TEXT = null;
       setTopicOverview(null);
@@ -2487,10 +2509,13 @@ function Aperture() {
   // update this SAME topic in place (name/prompt change), then regenerate fresh content at the same level
   async function addSourceText(text){
     const P0 = planData;
-    const parts = [...(P0.sourceParts||[]), {title:"", text, addedAt:Date.now()}];
-    SOURCE_TEXT = sourceJoin(parts);
     setLoadingH(true);
+    let parts;
     try{
+      const seed = needsExpansion(text) ? text : null;
+      if(seed) text = await genExpandedSource(seed, P0.name, sourceJoin(P0.sourceParts));
+      parts = [...(P0.sourceParts||[]), {title:"", text, addedAt:Date.now(), ...(seed?{expandedFrom:seed}:{})}];
+      SOURCE_TEXT = sourceJoin(parts);
       const level = P0.activeLevel, levelMeta = lvMeta(level);
       const existing = (hierarchy||[]).filter(x=>!isTrailerItem(x)).map(x=>x.name);
       const groups = await genSourceQuoteGroups(sourceSentences(text), levelMeta, existing);
@@ -5477,9 +5502,9 @@ function HomeScreen({topicInput,setTopicInput,onStart,topics,deletedTopics,onRes
         className="flex-1 resize-y bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-100 font-read placeholder:text-stone-500 focus:outline-none focus:border-amber-600"/>
       <button onClick={onStart} className="font-mono-cal text-xs uppercase tracking-wide bg-amber-600 hover:bg-amber-500 text-stone-950 font-medium px-4 rounded">Старт</button>
     </div>
-    {onToggleSource && topicInput.trim().length>=150 && <button onClick={onToggleSource}
+    {onToggleSource && topicInput.trim().length>=3 && <button onClick={onToggleSource}
       className={`-mt-5 flex items-center gap-1.5 font-mono-cal text-xs uppercase tracking-wide px-3 py-1.5 rounded border w-fit ${asSource?"border-emerald-600 text-emerald-300 bg-emerald-950/30":"border-stone-700 text-stone-400 hover:border-emerald-600"}`}>
-      {asSource ? "📄 Текст — планът ще е изцяло по него" : "✍️ Промпт"}
+      {asSource ? (needsExpansion(topicInput) ? "📄 Текст — кратък: AI ще развие темата" : "📄 Текст — планът ще е изцяло по него") : "✍️ Промпт"}
       <span className="normal-case tracking-normal text-[10px] text-stone-500">{asSource ? "натисни, ако е промпт" : "натисни, ако е поставен текст"}</span>
     </button>}
     {onToggleSmartStart && <button onClick={onToggleSmartStart}
