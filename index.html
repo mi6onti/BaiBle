@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-17 · 12:40";
+const APP_VERSION = "2026-11-18 · 19:05";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -158,6 +158,19 @@ async function saveJSON(key, value) {
     if(e.ownerAuth){ if(onOwnerAuthFail) onOwnerAuthFail(); return {ok:false,detail:"нужен е ключът на собственика"}; }
     try { return await legacySave(key, value); } catch(e2){ return {ok:false,detail:`${e2.name}: ${e2.message}`}; }
   }
+}
+// permanent delete of one stored key (no trash)
+async function deleteJSON(key){
+  if (GUEST) return {ok:false, detail:"guest"};
+  if (USE_LOCAL) { try{ localStorage.removeItem("aperture:"+key); return {ok:true}; }catch(e){ return {ok:false, detail:e.message}; } }
+  try { await kvCall({op:"del",key}); return {ok:true}; }
+  catch(e){
+    // the public table allows no DELETE (on purpose) — the content is erased by overwriting it with nothing
+    try { return await legacySave(key, null); } catch(e2){ return {ok:false, detail:e2.message}; }
+  }
+}
+function untrackNodeKey(id){
+  NK_CHAIN = NK_CHAIN.then(async()=>{ const k = await loadJSON("allNodeKeys", []); if(k.includes(id)) await saveJSON("allNodeKeys", k.filter(x=>x!==id)); }).catch(e=>console.warn("allNodeKeys", e));
 }
 // pick the plan level whose topics hold the most generated sections, and for each topic its richest level —
 // a plan switched to a level nobody opened yet would otherwise show the recipient nothing
@@ -1029,7 +1042,7 @@ Output EXACTLY: ###KIND### REAL or ORIGINAL ###TITLE### title ###AUTHOR### autho
 // План по текст → Цитати: for each quote, the section types that would genuinely illuminate THAT quote
 const QUOTE_EXPLORE_EXCLUDED = ["isQuotes","isSimulation","isAppIdeas","isInvestment","isPrediction","isPreface","isNext","isInception"];
 async function genQuoteSuggestions(topicLabel, subtopicName, quotes, ctx){
-  const pool = PODCAST_DEFAULT_ORDER.filter(k=>!QUOTE_EXPLORE_EXCLUDED.includes(k));
+  const pool = PODCAST_DEFAULT_ORDER.filter(k=>!QUOTE_EXPLORE_EXCLUDED.includes(k) && !["isInterview","isSocratic"].includes(k)); // those two live in the 🪞 Рефлексия menu
   const menu = pool.map(k=>`${k} — ${PODCAST_SECTIONS[k][0]}: ${PODCAST_SECTIONS[k][1]}`).join("\n");
   const raw = await callClaudeRaw(NOSRC+
 `A learner reads ${quotes.length===1?"a quote":"quotes"} from a text (plan "${topicLabel}", topic "${subtopicName}") and wants to explore single quotes deeper through one of the sections below — e.g. a Timeline of just that quote's idea, or a Comparison of that quote with other views.
@@ -4408,6 +4421,27 @@ function Aperture() {
     }catch(e){ if(isCur(entry.nodeId)) setNodeError(`Грешка: ${e.message}`); }
     finally{ if(isCur(entry.nodeId)) setLoadingL(false); }
   }
+  // 🗑 delete ONE note for good — not to the trash: it leaves the plan, and a generated section's content is erased too
+  async function deleteNotePermanently(n, subIdxArg=null){
+    const sub = (hierRef.current||hierarchy)?.[subIdxArg ?? subtopicIdx];
+    if(!sub || !n) return;
+    if(n.type==="explore" || n.type==="app"){
+      const nid = n.ref?.nodeId;
+      const shared = nid && Object.values(planRef.current?.byLevel||planData?.byLevel||{}).flat().some(x=>(x?.interesting||[]).some(e=>e.nodeId===nid && e.id!==n.id));
+      mutateSub(sub.name, s=>({...s, interesting:(s.interesting||[]).filter(e=>e.id!==n.id)}));
+      if(nid && !shared){ deleteJSON(`node:${nid}`).then(r=>{ if(!r.ok) console.warn("delete node", r.detail); }); untrackNodeKey(nid); }
+      if(interestOpen?.id===n.id){ setInterestOpen(null); setNodeId(null); setNodeData({}); }
+    } else if(n.type==="question"){
+      let left;
+      mutateSub(sub.name, s=>{ left = (s.curiosityQuestions||[]).filter(q=>q.id!==n.id); return {...s, curiosityQuestions:left}; });
+      if(nodeIdRef.current===curiousNodeId(sub)) setNodeData(cur=>cur ? {...cur, questions:left, quotes:answersAsQuotes(left||[])} : cur);
+    } else if(n.type==="habit"){
+      mutateSub(sub.name, s=>({...s, reminders:(s.reminders||[]).filter(r=>r.id!==n.id)}));
+    } else if(n.type==="later"){
+      mutateSub(sub.name, s=>({...s, later:(s.later||[]).filter(l=>l.id!==n.id)}));
+    }
+    showToast("🗑 Бележката е изтрита завинаги");
+  }
   async function deleteInterestEntry(eid){
     const subIdx = subtopicIdx, sub = hierarchy?.[subIdx];
     if(!sub || !planData) return;
@@ -5379,7 +5413,7 @@ function Aperture() {
               isConfession={isConfessionItem(curNodeItem)}
               isHumor={isHumorItem(curNodeItem)}
               isCurious={isCuriousItem(curNodeItem)}
-              isNotes={isNotesItem(curNodeItem)} notesSub={hierarchy[subtopicIdx]} noteTools={makeTools()} onDeleteLater={guestPlanId?null:(lid=>mutateSub(hierarchy[subtopicIdx].name, s=>({...s, later:(s.later||[]).filter(l=>l.id!==lid)})))}
+              isNotes={isNotesItem(curNodeItem)} notesSub={hierarchy[subtopicIdx]} noteTools={makeTools()} onDeleteNote={guestPlanId?null:(n=>deleteNotePermanently(n))} onDeleteLater={guestPlanId?null:(lid=>mutateSub(hierarchy[subtopicIdx].name, s=>({...s, later:(s.later||[]).filter(l=>l.id!==lid)})))}
               pendingJobs={pendingJobs} onSource={goToSource} highlightSrc={highlightSrc}
               onOpenNotes={planData?.isSource ? (()=>openTopicPart(subtopicIdx,"notes")) : null}
               onBack={interestOpen ? ()=>{setInterestOpen(null);setNodeId(null);setNodeData({});setNodeError(null);setLoadingL(false);} : desktopApp ? exitDesktopApp : ()=>{ if(planData?.isSource && isNotesItem(curNodeItem)){ openTopicPart(subtopicIdx,"quotes"); return; } setSubsubIdx(null);setNodeId(null);setNodeData(null);setNodeError(null); if(listReturn || planData?.isSource){ setSubtopicIdx(null); setListReturn(false); }}}
@@ -6204,7 +6238,7 @@ function SubsubList({topic,subtopic,onBack,onPick,onChangeLevel,currentLevel,onG
   </div>;
 }
 
-function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onRepairApp,repairingApp,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy,isNotes,notesSub,noteTools,onDeleteLater,pendingJobs,onSource,highlightSrc,onOpenNotes}){
+function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception,isGlossary,isExamples,isResources,isShopping,isEncyclopedia,isBefore,isCompare,isTimeline,isButterfly,isExperiments,isInterview,isInvestment,isPrediction,isQuotes,isBooks,isBible,isActionPlan,isSocratic,isTest,isSimulation,isGames,isAppIdeas,isConfession,isHumor,isCurious,onBack,tab,setTab,nodeData,loadingLevels,loadingBlend,error,onRetryLevels,onRetryPreface,onOpenPrefaceEntry,onRetryNext,onOpenNextEntry,onRetryInception,onOpenInceptionEntry,onRetryGlossary,onRetryEssay,onRetryExamples,onRetryResources,onRetryShopping,onRetryEncyclopedia,onRetryBefore,onRetryCompare,onRetryTimeline,onRetryButterfly,onRetryExperiments,onRetryInterview,onInterviewAnswerChange,onRetryQuotes,onRetryBooks,onRetryBible,onRetryActionPlan,onRetrySocratic,onRetryTest,onRetrySimulation,onSelectCrossword,onSelectCryptic,onSelectOpposites,onSelectConnections,onSelectMillionaire,onBackToGamesMenu,onCrosswordInputChange,onCrypticInputChange,onOppositesInputChange,onConnectionsStateChange,onMillionaireStateChange,onRetryConfession,onRetryAppIdeas,onRetryHumor,onRetryCurious,onAsk,curiosityQuestions,onTuneAbstraction,onTuneBlend,onTunePreface,onTuneNext,onTuneInception,onTuneGlossary,onTuneEssay,onTuneExamples,onTuneResources,onTuneShopping,onTuneEncyclopedia,onTuneBefore,onTuneCompare,onTuneTimeline,onTuneButterfly,onTuneExperiments,onTuneInterview,onRetryInvestment,onTuneInvestment,onRetryPrediction,onTunePrediction,onPredict,onTuneQuotes,onTuneBooks,onTuneBible,onTuneActionPlan,onTuneSocratic,onTuneTest,onTuneSimulation,onTuneGames,onTuneAppIdeas,onTuneConfession,onTuneHumor,onUnitConfused,onUnitUnconfused,prefs,topLevel,canBlend,onGenerateBlend,isPoetry,isReminders,reminders,onRemind,remindBusy,onDeleteReminder,onRetryPoetry,onTunePoetry,isInteresting,isCustomApp,onRunApp,appRunBusy,onAppState,onRepairApp,repairingApp,onSaveMine,onRemoveMine,savingMine,myApps,interesting,onOpenInterest,onDeleteInterest,onExploreQuote,interestBusy,interestErr,onSuggestQuotes,suggestBusy,isNotes,notesSub,noteTools,onDeleteNote,onDeleteLater,pendingJobs,onSource,highlightSrc,onOpenNotes}){
   const unitConfused=!!nodeData?.unitConfused;
 
   if(isPreface){
@@ -6849,7 +6883,7 @@ function NodeView({topic,subtopic,subsub,isOverview,isPreface,isNext,isInception
       </div>
       {error&&<ErrorNote message={error} onRetry={onRetryCurious}/>}
       <NotesPanel sub={notesSub} questions={nodeData?.questions||notesSub?.curiosityQuestions||[]} tools={noteTools ? {...noteTools, habitTitles:nodeData?.habitTitlesV===2?nodeData?.habitTitles:null, habitLessons:nodeData?.habitLessons} : null}
-        onOpenInterest={onOpenInterest} onDeleteInterest={onDeleteInterest} onDeleteReminder={onDeleteReminder} onDeleteLater={onDeleteLater} onAsk={onAsk} pendingJobs={pendingJobs} onSource={onSource}/>
+        onOpenInterest={onOpenInterest} onDeleteInterest={onDeleteInterest} onDeleteReminder={onDeleteReminder} onDeleteLater={onDeleteLater} onDeleteNote={onDeleteNote} onAsk={onAsk} pendingJobs={pendingJobs} onSource={onSource}/>
     </div>;
   }
   if(isCurious){
@@ -7670,6 +7704,20 @@ function InterestingPanel({entries,onOpen,onDelete}){
     ))}
   </div>;
 }
+const REFLECT_KEYS = ["isInterview","isSocratic"];
+const REFLECT_HINT = {isInterview:"подкаст: водещ и гост разговарят за това", isSocratic:"въпроси, които те водят сам до отговора"};
+const REFLECT_CACHE = {};
+async function genReflectTitles(item, here){
+  const raw = await callClaudeRaw(NOSRC+`A learner reflects on this item:
+"""${(item||"").slice(0,900)}"""
+${here?`(it is part of „${here}“)\n`:""}Write two titles, in the SAME language as the item (Cyrillic = BULGARIAN), each 3-8 words, like the name of a podcast episode / a magazine article, specific to THIS item, honest, no clickbait, no quotes, no emoji:
+1) a PODCAST episode where a host interviews a guest about the personal side of this item;
+2) a SOCRATIC dialogue — guiding questions that lead the learner to understand it by themselves.
+Output EXACTLY: ###POD### title ###SOC### title ###END###`, 200);
+  const f = extractSequentialFields(raw, ["POD","SOC"]);
+  const c = t=>(t||"").trim().replace(/^["„“']+|["“”']+$/g,"");
+  return {isInterview:c(f.POD), isSocratic:c(f.SOC)};
+}
 function QuoteExplorer({q,srcId,startOpen,topicLevel,habitTools,exclude,onExplore,suggestions,suggestionsV,onSuggest,suggestBusy,interestBusy,interestErr,interesting,onOpenInterest}){
   const [open,setOpen] = useState(!!startOpen);
   useEffect(()=>{ if(startOpen){ const k=suggestions?.[q.quote]; if((!k || k.some?.(x=>typeof x==="string") || suggestionsV!==6) && !suggestBusy) onSuggest(q.quote, q.author); } }, []);
@@ -7686,18 +7734,8 @@ function QuoteExplorer({q,srcId,startOpen,topicLevel,habitTools,exclude,onExplor
     // inside a Речник (or same title as here): the title is written by the AI after the content is made — like an article name
     return {key:"isGlossary", catchy:"", autoTitle:true, hint: inside||sameAsHere ? "думите в това обяснение" : "ключовите думи тук"};
   }
-  function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(q.quote, q.author); }
-  return <div className="mt-2">
-    {!startOpen && <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>}
-    {open && <div className="mt-2 flex flex-wrap gap-2">
-      {(!keys || legacy) && mineBusy && <span className="w-full flex items-center gap-1 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> подбирам подходящите секции…</span>}
-      {(keysOk.length || !mineBusy) && [...(topicLevel ? [keysOk.find(x=>typeof x!=="string" && x.key==="isOverview") || {key:"isOverview", catchy:"Голямата картина на темата"}] : []),
-        ...(habitTools ? [keysOk.find(x=>typeof x!=="string" && x.key==="isHabit") || {key:"isHabit"}] : []),
-        // 📖 Речник is ALWAYS offered — also for one item inside a Речник (then it is about that item's own words)
-        glossaryChip(),
-        ...keysOk.filter(x=>!(topicLevel && typeof x!=="string" && x.key==="isOverview") && !(typeof x!=="string" && x.key==="isHabit") && !(typeof x!=="string" && x.key==="isGlossary")
-          && !(exclude && typeof x!=="string" && (exclude.key===x.key && (x.key!=="isCustomApp" || normT(x.catchy)===normT(exclude.catchy))))
-          && !(exclude && typeof x!=="string" && x.catchy && normT(x.catchy)===normT(exclude.catchy))), ...MY_APPS.filter(a=>!keysOk.some(x=>typeof x!=="string" && x.key==="isCustomApp" && x.catchy===a.name)).map(a=>({key:"isCustomApp", catchy:a.name, instr:a.purpose, icon:a.icon, kind:a.kind, mine:true}))].map(x=>{
+  // one option chip (section / app / habit) — used by the main list and by the 🪞 Рефлексия menu
+  const chip = x=>{
         const k = typeof x==="string" ? x : x.key, catchy = typeof x==="string" ? "" : (x.catchy||"");
         if(k==="isHabit") return x.none ? null : <HabitChip key="habit" x={x} q={q} srcId={srcId} tools={habitTools}/>;
         const done = (interesting||[]).find(e=>e.quote===q.quote && e.key===k && (k!=="isCustomApp" || e.catchy===catchy))
@@ -7719,7 +7757,39 @@ function QuoteExplorer({q,srcId,startOpen,topicLevel,habitTools,exclude,onExplor
                      : x.hint ? <span className="font-read text-xs text-stone-400 italic">{x.hint}</span> : null)}
           </span>
         </button>;
-      })}
+  };
+  // 🪞 Рефлексия: Интервю (подкаст) + Сократически диалог live in their own menu; their titles load only when it is opened
+  const [reflectOpen,setReflectOpen] = useState(false);
+  const [reflectTitles,setReflectTitles] = useState(()=>REFLECT_CACHE[q.quote]||null);
+  const [reflectBusy,setReflectBusy] = useState(false);
+  async function openReflect(){
+    const nx = !reflectOpen; setReflectOpen(nx);
+    if(!nx || reflectTitles || reflectBusy) return;
+    setReflectBusy(true);
+    try{ const t = await genReflectTitles(q.quote, exclude?.catchy||""); REFLECT_CACHE[q.quote]=t; setReflectTitles(t); }
+    catch(_){ setReflectTitles({}); }
+    finally{ setReflectBusy(false); }
+  }
+  function toggle(){ const nx=!open; setOpen(nx); if(nx && (!keys || legacy) && !suggestBusy) onSuggest(q.quote, q.author); }
+  return <div className="mt-2">
+    {!startOpen && <button onClick={toggle} className={`inline-flex items-center gap-1 font-mono-cal text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${open?"border-yellow-600 text-yellow-300":"border-stone-700 text-stone-400 hover:border-yellow-600 hover:text-yellow-300"}`}>💡 Разгледай цитата {open?"▴":"▾"}</button>}
+    {open && <div className="mt-2 flex flex-wrap gap-2">
+      {(!keys || legacy) && mineBusy && <span className="w-full flex items-center gap-1 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> подбирам подходящите секции…</span>}
+      {(keysOk.length || !mineBusy) && [...(topicLevel ? [keysOk.find(x=>typeof x!=="string" && x.key==="isOverview") || {key:"isOverview", catchy:"Голямата картина на темата"}] : []),
+        ...(habitTools ? [keysOk.find(x=>typeof x!=="string" && x.key==="isHabit") || {key:"isHabit"}] : []),
+        // 📖 Речник is ALWAYS offered — also for one item inside a Речник (then it is about that item's own words)
+        glossaryChip(),
+        ...keysOk.filter(x=>!(topicLevel && typeof x!=="string" && x.key==="isOverview") && !(typeof x!=="string" && x.key==="isHabit") && !(typeof x!=="string" && x.key==="isGlossary")
+          && !(exclude && typeof x!=="string" && (exclude.key===x.key && (x.key!=="isCustomApp" || normT(x.catchy)===normT(exclude.catchy))))
+          && !(exclude && typeof x!=="string" && x.catchy && normT(x.catchy)===normT(exclude.catchy))
+          && !(typeof x!=="string" && REFLECT_KEYS.includes(x.key))), ...MY_APPS.filter(a=>!keysOk.some(x=>typeof x!=="string" && x.key==="isCustomApp" && x.catchy===a.name)).map(a=>({key:"isCustomApp", catchy:a.name, instr:a.purpose, icon:a.icon, kind:a.kind, mine:true}))].map(chip)}
+      {(keysOk.length || !mineBusy) && <div className="w-full">
+        <button onClick={openReflect} className={`inline-flex items-center gap-1.5 font-mono-cal text-[11px] uppercase tracking-wide px-3 py-1.5 rounded-lg border ${reflectOpen?"border-violet-500 text-violet-300 bg-violet-950/30":"border-stone-700 text-stone-400 hover:border-violet-500 hover:text-violet-300"}`}>🪞 Рефлексия {reflectOpen?"▴":"▾"}</button>
+        {reflectOpen && <div className="mt-2 flex flex-wrap gap-2 pl-2 border-l border-violet-900/60">
+          {reflectBusy ? <span className="flex items-center gap-1 text-xs text-stone-400 font-mono-cal"><Loader2 size={12} className="animate-spin"/> подбирам въпросите за размисъл…</span>
+            : REFLECT_KEYS.map(k=>({key:k, catchy:(reflectTitles||{})[k]||"", autoTitle:!(reflectTitles||{})[k], hint:REFLECT_HINT[k]})).map(chip)}
+        </div>}
+      </div>}
       {interestErr && interestErr.quote===q.quote && <span className="w-full font-read text-xs text-red-300">⚠ {interestErr.msg} — опитай пак.</span>}
       {keys && <span className="w-full font-read text-[11px] text-stone-500">Можеш да пуснеш няколко наведнъж и да продължиш да четеш — готовото отива в {SOURCE_TEXT?"„Бележки“":"„Интересно“"}; ✓ = вече е там.</span>}
     </div>}
@@ -8649,9 +8719,10 @@ function DepthBadge({depth}){
     {deep?"🔥 ":""}{depth} {depth===1?"ниво":"нива"}</span>;
 }
 // 📒 Бележки: everything you made for this topic, filterable, deepest first when you want
-function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDeleteReminder,onDeleteLater,onAsk,pendingJobs,onSource}){
+function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDeleteReminder,onDeleteLater,onDeleteNote,onAsk,pendingJobs,onSource}){
   const [filter,setFilter] = useState("all");
   const [openId,setOpenId] = useState(null);
+  const [confirmDel,setConfirmDel] = useState(null);
   const base = notesOf({...sub, curiosityQuestions:questions});
   const map = Object.fromEntries(base.map(n=>[n.id,n]));
   const notes = base.map(n=>({...n, depth:noteDepth(map, n.id)}));
@@ -8688,10 +8759,17 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
           </button>
           <div className="flex flex-col items-end gap-1">
             <DepthBadge depth={n.depth}/>
+            {onDeleteNote && <button onClick={()=>setConfirmDel(confirmDel===n.id?null:n.id)} title="Изтрий завинаги"
+              className="font-mono-cal text-[10px] text-stone-500 hover:text-red-400 whitespace-nowrap flex items-center gap-0.5"><Trash2 size={11}/> изтрий</button>}
             {onSource && (rootText || n.anchor) && <button onClick={()=>onSource(n.type==="question" && path.length===1 ? (n.anchor||rootText) : rootText)}
               className="font-mono-cal text-[10px] text-stone-500 hover:text-amber-300 whitespace-nowrap">↗ източник</button>}
           </div>
         </div>
+        {confirmDel===n.id && <div className="rounded border border-red-900 bg-red-950/30 px-3 py-2 flex flex-wrap items-center gap-2">
+          <span className="font-read text-xs text-red-200 flex-1">Изтриване завинаги — без кошче, не може да се върне.{n.type==="explore"||n.type==="app" ? " Генерираното съдържание също се изтрива." : ""}{notes.some(c=>c.srcId===n.id) ? " Бележките, тръгнали от нея, остават." : ""}</span>
+          <button onClick={()=>{ setConfirmDel(null); if(openId===n.id) setOpenId(null); onDeleteNote(n); }} className="font-mono-cal text-[11px] uppercase tracking-wide bg-red-700 hover:bg-red-600 text-white px-2.5 py-1 rounded">Изтрий</button>
+          <button onClick={()=>setConfirmDel(null)} className="font-mono-cal text-[11px] uppercase tracking-wide text-stone-400 hover:text-stone-200 px-2 py-1">Отказ</button>
+        </div>}
         {isOpen && n.type==="question" && <div className="pl-1">
           {n.ref.answered ? <><p className="font-read text-stone-300 leading-relaxed">{n.ref.answer}</p><ItemTools text={n.ref.answer} label={`Отговор: ${n.ref.q}`} srcId={n.id} tools={tools}/></>
             : <div className="flex items-center gap-2 text-stone-500 text-sm"><Loader2 size={13} className="animate-spin"/> генерирам отговор…</div>}
@@ -8702,7 +8780,7 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
           <ItemTools text={n.ref.text} label={n.ref.label} srcId={n.ref.srcId} tools={tools}/>
           {onDeleteLater && <button onClick={()=>onDeleteLater(n.id)} className="mt-2 font-mono-cal text-[11px] text-stone-500 hover:text-red-400">махни от По-късно</button>}
         </div>}
-        {(n.type==="explore"||n.type==="app") && onDeleteInterest && <button onClick={()=>onDeleteInterest(n.id)} className="font-mono-cal text-[10px] text-stone-600 hover:text-red-400">изтрий</button>}
+        {!onDeleteNote && (n.type==="explore"||n.type==="app") && onDeleteInterest && <button onClick={()=>onDeleteInterest(n.id)} className="font-mono-cal text-[10px] text-stone-600 hover:text-red-400">изтрий</button>}
       </div>;
     })}
   </div>;
