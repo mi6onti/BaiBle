@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-20 · 11:05";
+const APP_VERSION = "2026-11-20 · 11:30";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -8726,6 +8726,10 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
   const [openId,setOpenId] = useState(null);
   const [confirmDel,setConfirmDel] = useState(null);
   const [grouped,setGrouped] = useState(()=>{ try{ return localStorage.getItem("aperture:_notesGrouped")!=="0"; }catch(_){ return true; } }); // by default ON
+  // 🗂 explorer-like tree: folders open / close (remembered on this device); a filter opens everything it matches
+  const [openF,setOpenF] = useState(()=>{ try{ return new Set(JSON.parse(localStorage.getItem("aperture:_notesOpen")||"[]")); }catch(_){ return new Set(); } });
+  function saveOpen(set){ setOpenF(set); try{ localStorage.setItem("aperture:_notesOpen", JSON.stringify([...set].slice(-500))); }catch(_){ } }
+  function toggleFolder(id){ const n=new Set(openF); n.has(id)?n.delete(id):n.add(id); saveOpen(n); }
   function toggleGrouped(){ const v=!grouped; setGrouped(v); try{ localStorage.setItem("aperture:_notesGrouped", v?"1":"0"); }catch(_){ } }
   const base = notesOf({...sub, curiosityQuestions:questions});
   const map = Object.fromEntries(base.map(n=>[n.id,n]));
@@ -8764,16 +8768,34 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
     const latest = (n, seen=new Set()) => { if(seen.has(n.id)) return n.at; seen.add(n.id); return Math.max(n.at||0, ...kids(n.id).map(k=>latest(k, seen))); };
     const roots = nodes.filter(n=>!n.srcId || !map[n.srcId] || !inSet.has(n.srcId)).sort((a,b)=>latest(b)-latest(a));
     const count = (id, seen=new Set()) => { if(seen.has(id)) return 0; seen.add(id); return kids(id).reduce((t,k)=>t+1+count(k.id, seen), 0); };
+    const forceOpen = filter!=="all";
+    const isOpenF = id => forceOpen || openF.has(id);
+    const folders = nodes.filter(n=>kids(n.id).length).map(n=>n.id);
     const walk = (n, lvl, seen) => {
       if(seen.has(n.id)) return null; seen.add(n.id);
       const ch = kids(n.id).sort((a,b)=>latest(b)-latest(a));
-      return <div key={n.id} className={lvl?"":"space-y-2"}>
-        {renderNote(n, {inTree:lvl>0, context:!shownIds.has(n.id), childCount: ch.length ? count(n.id) : 0})}
-        {ch.length>0 && <div className="mt-2 ml-3 pl-3 border-l-2 border-sky-900/60 space-y-2">{ch.map(c=>walk(c, lvl+1, seen))}</div>}
+      const op = ch.length>0 && isOpenF(n.id);
+      return <div key={n.id}>
+        <div className="flex items-start gap-1.5">
+          {ch.length>0
+            ? <button onClick={()=>toggleFolder(n.id)} disabled={forceOpen} title={op?"Затвори":"Отвори"} aria-expanded={op}
+                className="mt-3.5 shrink-0 w-[15px] h-[15px] flex items-center justify-center rounded-[2px] border border-sky-700 bg-gradient-to-b from-stone-800 to-stone-900 text-sky-200 font-mono-cal text-[11px] leading-none hover:border-sky-400 disabled:opacity-60">{op?"−":"+"}</button>
+            : <span className="shrink-0 w-[15px]"/>}
+          <div className="flex-1 min-w-0" onDoubleClick={ch.length ? (()=>toggleFolder(n.id)) : undefined}>
+            {renderNote(n, {inTree:lvl>0, context:!shownIds.has(n.id), childCount: ch.length ? count(n.id) : 0, folder: ch.length ? (op?"📂":"📁") : ""})}
+          </div>
+        </div>
+        {op && <div className="mt-1.5 ml-[7px] pl-4 border-l border-dotted border-sky-700/70 space-y-1.5">{ch.map(c=>walk(c, lvl+1, seen))}</div>}
       </div>;
     };
     const seen = new Set();
-    return roots.map(r=>walk(r, 0, seen));
+    return <div className="space-y-1.5">
+      {folders.length>0 && !forceOpen && <div className="flex gap-3 font-mono-cal text-[10px] text-sky-300/80">
+        <button onClick={()=>saveOpen(new Set([...openF, ...folders]))} className="hover:text-sky-200">⊞ разгъни всички</button>
+        <button onClick={()=>{ const n=new Set(openF); folders.forEach(f=>n.delete(f)); saveOpen(n); }} className="hover:text-sky-200">⊟ свий всички</button>
+      </div>}
+      {roots.map(r=>walk(r, 0, seen))}
+    </div>;
   }
   function renderNote(n, opt={}){
       const path = notePath(map, n.id), isOpen = openId===n.id;
@@ -8781,7 +8803,7 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
       return <div key={n.id} className={`rounded-lg border p-3 space-y-2 ${opt.context?"opacity-70 ":""}${n.depth>=3?"border-orange-800 bg-orange-950/10":n.depth===2?"border-amber-900/60":"border-stone-800"}`}>
         <div className="flex items-start gap-2">
           <button onClick={()=> (n.type==="explore"||n.type==="app") ? onOpenInterest(n.ref) : setOpenId(isOpen?null:n.id)} className="flex-1 text-left">
-            <div className="font-read text-stone-100 font-semibold leading-snug">{n.label}{opt.childCount>0 && <span className="ml-2 align-middle font-mono-cal text-[10px] text-sky-300 border border-sky-800 rounded-full px-1.5 py-0.5">🗂 {opt.childCount}</span>}</div>
+            <div className="font-read text-stone-100 font-semibold leading-snug">{opt.folder && <span className="mr-1">{opt.folder}</span>}{n.label}{opt.childCount>0 && <span className="ml-2 align-middle font-mono-cal text-[10px] text-sky-300 border border-sky-800 rounded-full px-1.5 py-0.5">🗂 {opt.childCount}</span>}</div>
             {path.length>1 && !opt.inTree && <div className="font-read text-[11px] text-stone-500 mt-0.5">{path.slice(0,-1).map(p=>p.label).join(" → ")} →</div>}
             {n.type==="later" && n.ref?.text && (path.length>1 || opt.inTree) && <div className="font-read text-xs text-stone-400 italic mt-0.5">„{n.ref.text.length>140?n.ref.text.slice(0,140)+"…":n.ref.text}“</div>}
             {rootText && path.length===1 && n.type!=="question" && <div className="font-read text-xs text-stone-500 italic mt-0.5">„{rootText.length>110?rootText.slice(0,110)+"…":rootText}“</div>}
@@ -8807,7 +8829,7 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
         {isOpen && n.type==="habit" && <RemindersPanel reminders={[n.ref]} onDelete={onDeleteReminder}/>}
         {isOpen && n.type==="later" && <div className="pl-1">
           <p className="font-read text-stone-300 leading-relaxed">{n.ref.text}</p>
-          <ItemTools text={n.ref.text} label={n.ref.label} srcId={n.ref.srcId} tools={tools}/>
+          <ItemTools text={n.ref.text} label={n.ref.label} srcId={n.id} tools={tools}/>
           {onDeleteLater && <button onClick={()=>onDeleteLater(n.id)} className="mt-2 font-mono-cal text-[11px] text-stone-500 hover:text-red-400">махни от По-късно</button>}
         </div>}
         {!onDeleteNote && (n.type==="explore"||n.type==="app") && onDeleteInterest && <button onClick={()=>onDeleteInterest(n.id)} className="font-mono-cal text-[10px] text-stone-600 hover:text-red-400">изтрий</button>}
