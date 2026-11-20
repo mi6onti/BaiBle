@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-20 · 11:30";
+const APP_VERSION = "2026-11-20 · 12:00";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -2179,7 +2179,15 @@ function notesOf(sub){
     ...(sub.reminders||[]).map(r=>({type:"habit", id:r.id, srcId:r.srcId||null, label:`🌱 ${r.title||"Навик"}`, text:r.quote, at:r.createdAt||0, ref:r})),
     ...(sub.curiosityQuestions||[]).map(q=>({type:"question", id:q.id, srcId:q.srcId||q.parentId||null, label:`❓ ${q.q}`, text:q.answer||"", anchor:q.quote||"", at:q.createdAt||0, ref:q})),
     ...(sub.later||[]).map(l=>({type:"later", id:l.id, srcId:l.srcId||null, label:`🔖 ${l.label||"По-късно"}`, text:l.text, at:l.createdAt||0, ref:l})),
-  ];
+  ].map((n,_i,all)=>{
+    // older notes made from a 🔖 „По-късно“ note were saved without a link to it (they pointed one level higher).
+    // Re-link them on display: same text as a „По-късно“ note saved BEFORE them, and no other parent → that note is the parent.
+    if(n.srcId || n.type==="later") return n;
+    const own = normT(n.type==="question" ? (n.ref?.quote||"") : (n.ref?.quote||n.text||""));
+    if(!own) return n;
+    const later = all.filter(l=>l.type==="later" && l.id!==n.id && normT(l.text)===own && (l.at||0)<=(n.at||0)).sort((a,b)=>b.at-a.at)[0];
+    return later ? {...n, srcId:later.id, relinked:true} : n;
+  });
 }
 function noteDepth(map, id, seen){
   const n = map[id]; if(!n) return 0;
