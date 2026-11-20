@@ -35,7 +35,7 @@ const ArrowRight    = ({size=16}) => <Ic size={size} d="M5 12h14M12 5l7 7-7 7"/>
 const Loader2       = ({size=16,className=""}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>;
 
 /* ── Config ─────────────────────────────────────────────────────────── */
-const APP_VERSION = "2026-11-20 · 12:00";
+const APP_VERSION = "2026-11-20 · 13:55";
 const SUPABASE_URL = "https://ochtxuziiblkpcrphrmx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_xg4UZfDSs0X8WiFBem3uWg_Yita3qs0";
 const CLAUDE_PROXY = "https://ochtxuziiblkpcrphrmx.supabase.co/functions/v1/dynamic-function";
@@ -7823,6 +7823,7 @@ function QuotesPanel({loading,quotes,tuned,onTune,onRemind,remindBusy,reminders,
           className={`rounded border p-4 ${highlight && q.quote===highlight ? "border-amber-500 bg-amber-950/20 ring-2 ring-amber-600/40" : "border-pink-900/50 bg-pink-950/10"}`}>
           {highlight && q.quote===highlight && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-400 mb-1.5">↳ източникът на бележката</div>}
           {q.speculative && <div className="font-mono-cal text-[10px] uppercase tracking-wide text-amber-500 mb-1.5">⚠ Хипотетично — не е потвърден реален цитат</div>}
+          <ItemTitle text={q.quote} className="font-display text-base font-bold text-pink-200 mb-1.5 leading-snug"/>
           <p className="font-read text-stone-100 leading-relaxed text-lg italic">„{cleanQuoteText(q.quote)}“</p>
           <div className="mt-2 font-mono-cal text-xs text-pink-400">— {q.author}{q.role?`, ${q.role}`:""}</div>
           {laterTools ? <ItemTools text={q.quote} label={`Цитат · ${q.author||"Из текста"}`} srcId={null} tools={laterTools}/> : <>
@@ -8627,6 +8628,56 @@ function SourceGroup({sub,tools,onOverview,onNotes}){
   </section>;
 }
 // puts the tool row (❓ 🌱 💡 🔖) INTO each card / paragraph of the section that is on screen
+// 🏷 every quote / paragraph with options gets its own short title.
+// Items that already start with a short heading line keep it (no AI). The others are titled in small batches
+// (one call for up to 25 visible items), cached in storage under "itemTitles" — each text is titled only once.
+const ITEM_TITLES = {}; const TITLE_FAIL = new Set(); const titleSubs = new Set(); const titleQueue = new Map();
+let titleTimer = null, titlesLoad = null, titlesSaveT = null;
+function titleKey(t){ return normT(t).slice(0,240); }
+function ownHeading(t){
+  const lines = (t||"").split("\n").map(x=>x.trim()).filter(Boolean);
+  return (lines.length>1 && lines[0].split(/\s+/).length<=9 && lines[0].length<=90 && !/[.!?…]["“”»]?$/.test(lines[0])) ? lines[0] : "";
+}
+function ensureTitlesLoaded(){ if(!titlesLoad) titlesLoad = loadJSON("itemTitles", {}).then(m=>{ Object.assign(ITEM_TITLES, m||{}); }).catch(()=>{}); return titlesLoad; }
+function itemTitleOf(text){ return ownHeading(text) || ITEM_TITLES[titleKey(text)] || ""; }
+function requestTitle(text){
+  const k = titleKey(text);
+  if(!k || ITEM_TITLES[k] || titleQueue.has(k) || TITLE_FAIL.has(k) || GUEST) return;
+  titleQueue.set(k, text); clearTimeout(titleTimer); titleTimer = setTimeout(flushTitles, 350);
+}
+async function flushTitles(){
+  const batch = [...titleQueue.entries()].slice(0,25);
+  batch.forEach(([k])=>titleQueue.delete(k));
+  if(titleQueue.size) titleTimer = setTimeout(flushTitles, 350);
+  if(!batch.length) return;
+  try{
+    const raw = await callClaudeRaw(NOSRC+`Give each numbered passage its OWN short title, like a heading in a good book: 2-7 words, specific to what THAT passage says (not the general topic), no quotes, no emoji, no ending period. Different passages must get different titles. Write each title in the passage's language (Cyrillic = BULGARIAN).
+${batch.map(([,t],i)=>`${i+1}. ${t.replace(/\s+/g," ").slice(0,600)}`).join("\n")}
+Output one line per passage, exactly: NUMBER | title`, 40*batch.length+120);
+    const got = {};
+    (raw||"").split("\n").forEach(l=>{ const m = l.match(/^\s*(\d+)\s*[|.):-]\s*(.+)$/); if(m) got[+m[1]] = m[2].trim().replace(/^["„“'«]+|["“”'»]+$/g,"").replace(/\.$/,""); });
+    batch.forEach(([k],i)=>{ const t=got[i+1]; if(t && t.length<=90) ITEM_TITLES[k]=t; else TITLE_FAIL.add(k); });
+    clearTimeout(titlesSaveT);
+    titlesSaveT = setTimeout(()=>{ const e=Object.entries(ITEM_TITLES); saveJSON("itemTitles", Object.fromEntries(e.slice(-3000))); }, 800);
+  }catch(e){ batch.forEach(([k])=>TITLE_FAIL.add(k)); }
+  titleSubs.forEach(f=>f());
+}
+function useItemTitle(text){
+  const [,force] = useState(0);
+  useEffect(()=>{
+    const f = ()=>force(x=>x+1); titleSubs.add(f);
+    if(text && !ownHeading(text)) ensureTitlesLoaded().then(()=>{ if(!ITEM_TITLES[titleKey(text)]) requestTitle(text); f(); });
+    return ()=>{ titleSubs.delete(f); };
+  }, [text]);
+  return itemTitleOf(text);
+}
+function ItemTitle({text, className}){
+  const t = useItemTitle(text);
+  if(!text || ownHeading(text)) return null;
+  if(!t) return TITLE_FAIL.has(titleKey(text)) ? null : <div className="h-3.5 w-36 mb-1.5 rounded bg-stone-800/70 animate-pulse"/>;
+  return <div className={className || "font-display text-sm font-bold text-amber-200 mb-1 leading-snug"}>{t}</div>;
+}
+function LaterTitle({n}){ const t = useItemTitle(n.ref?.text||""); return <>{t ? `🔖 ${t}` : n.label}</>; }
 function InlineItemTools({rootRef, sig, tools, label, srcId, highlight}){
   const [hosts,setHosts] = useState([]);
   useEffect(()=>{
@@ -8660,6 +8711,12 @@ function InlineItemTools({rootRef, sig, tools, label, srcId, highlight}){
         const host = document.createElement("div");
         host.dataset.toolsHost = "1";
         if(after) el.after(host); else el.appendChild(host);
+        let thost = null;
+        if(!ownHeading(text)){
+          thost = document.createElement("div"); thost.dataset.toolsHost = "1";
+          if(after) el.before(thost); else el.prepend(thost);
+          created.push({host:thost, text, title:true});
+        }
         if(highlight && text.includes(highlight.slice(0,60))){
           el.style.outline = "2px solid #d97706"; el.style.outlineOffset = "4px"; el.style.borderRadius = "6px";
           setTimeout(()=>el.scrollIntoView({behavior:"smooth", block:"center"}), 200);
@@ -8671,7 +8728,7 @@ function InlineItemTools({rootRef, sig, tools, label, srcId, highlight}){
     return ()=>{ clearTimeout(timer); created.forEach(h=>h.host.remove()); };
   }, [sig]);
   if(!tools) return null;
-  return <>{hosts.map((h,i)=>ReactDOM.createPortal(<ItemTools text={h.text} label={label} srcId={srcId} tools={tools} compact/>, h.host, "it"+i))}</>;
+  return <>{hosts.map((h,i)=>ReactDOM.createPortal(h.title ? <ItemTitle text={h.text}/> : <ItemTools text={h.text} label={label} srcId={srcId} tools={tools} compact/>, h.host, "it"+i))}</>;
 }
 // every section of a text plan: tools for the whole section + for each of its parts
 function SectionParts({nd,tools,srcId,label,anchor,highlight}){
@@ -8811,7 +8868,7 @@ function NotesPanel({sub,questions,tools,onOpenInterest,onDeleteInterest,onDelet
       return <div key={n.id} className={`rounded-lg border p-3 space-y-2 ${opt.context?"opacity-70 ":""}${n.depth>=3?"border-orange-800 bg-orange-950/10":n.depth===2?"border-amber-900/60":"border-stone-800"}`}>
         <div className="flex items-start gap-2">
           <button onClick={()=> (n.type==="explore"||n.type==="app") ? onOpenInterest(n.ref) : setOpenId(isOpen?null:n.id)} className="flex-1 text-left">
-            <div className="font-read text-stone-100 font-semibold leading-snug">{opt.folder && <span className="mr-1">{opt.folder}</span>}{n.label}{opt.childCount>0 && <span className="ml-2 align-middle font-mono-cal text-[10px] text-sky-300 border border-sky-800 rounded-full px-1.5 py-0.5">🗂 {opt.childCount}</span>}</div>
+            <div className="font-read text-stone-100 font-semibold leading-snug">{opt.folder && <span className="mr-1">{opt.folder}</span>}{n.type==="later" ? <LaterTitle n={n}/> : n.label}{opt.childCount>0 && <span className="ml-2 align-middle font-mono-cal text-[10px] text-sky-300 border border-sky-800 rounded-full px-1.5 py-0.5">🗂 {opt.childCount}</span>}</div>
             {path.length>1 && !opt.inTree && <div className="font-read text-[11px] text-stone-500 mt-0.5">{path.slice(0,-1).map(p=>p.label).join(" → ")} →</div>}
             {n.type==="later" && n.ref?.text && (path.length>1 || opt.inTree) && <div className="font-read text-xs text-stone-400 italic mt-0.5">„{n.ref.text.length>140?n.ref.text.slice(0,140)+"…":n.ref.text}“</div>}
             {rootText && path.length===1 && n.type!=="question" && <div className="font-read text-xs text-stone-500 italic mt-0.5">„{rootText.length>110?rootText.slice(0,110)+"…":rootText}“</div>}
